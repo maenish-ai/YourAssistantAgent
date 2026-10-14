@@ -162,6 +162,17 @@ CREATE TABLE IF NOT EXISTS audit_log (
     details TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    role TEXT NOT NULL,
+    text TEXT NOT NULL DEFAULT '',
+    attachments_json TEXT NOT NULL DEFAULT '[]',
+    meta_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_messages_id ON chat_messages(id);
+
 CREATE INDEX IF NOT EXISTS idx_queue_due ON queue_items(status, scheduled_at);
 CREATE INDEX IF NOT EXISTS idx_campaign_next ON campaigns(enabled, next_run_at);
 CREATE INDEX IF NOT EXISTS idx_wa_queue_due ON wa_queue_items(status, scheduled_at);
@@ -231,6 +242,17 @@ class Database:
                 "wol_target_mac": "",
                 "wol_broadcast_ip": "255.255.255.255",
                 "wol_port": 9,
+                "owner_name": "",
+                "business_name": "",
+                "auto_discover_groups": True,
+                "auto_group_discovery_attempted": False,
+                "cloud_backup_folder": "",
+                "cloud_backup_enabled": False,
+                "cloud_backup_interval_hours": 6,
+                "cloud_backup_keep_versions": 7,
+                "cloud_backup_last_at": "",
+                "cloud_backup_last_file": "",
+                "chat_pending_plan": {},
             }
             for k, v in defaults.items():
                 con.execute(
@@ -750,6 +772,39 @@ class Database:
         with self.conn() as con:
             con.execute("UPDATE queue_items SET status='cancelled', completed_at=? WHERE status='pending'", (now,))
             con.execute("UPDATE wa_queue_items SET status='cancelled', completed_at=? WHERE status='pending'", (now,))
+
+    # Chat-first assistant history
+    def add_chat_message(self, role: str, text: str, attachments=None, meta=None) -> int:
+        attachments = list(attachments or [])
+        meta = dict(meta or {})
+        with self.conn() as con:
+            cur = con.execute(
+                "INSERT INTO chat_messages(role,text,attachments_json,meta_json) VALUES (?,?,?,?)",
+                (str(role), str(text), json.dumps(attachments, ensure_ascii=False), json.dumps(meta, ensure_ascii=False)),
+            )
+            return int(cur.lastrowid)
+
+    def list_chat_messages(self, limit: int = 100):
+        limit = max(1, min(int(limit), 1000))
+        with self.conn() as con:
+            rows = con.execute(
+                "SELECT * FROM chat_messages ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return list(reversed(rows))
+
+    def clear_chat_messages(self):
+        with self.conn() as con:
+            con.execute("DELETE FROM chat_messages")
+        self.set_setting("chat_pending_plan", {})
+        self.audit("INFO", "chat_history_cleared")
+
+    def chat_context_text(self, limit: int = 20) -> str:
+        lines = []
+        for row in self.list_chat_messages(limit=limit):
+            role = str(row["role"] or "user")
+            text = str(row["text"] or "")
+            lines.append(f"{role.upper()}: {text}")
+        return "\n".join(lines)
 
     def recent_audit(self, limit=200):
         with self.conn() as con:

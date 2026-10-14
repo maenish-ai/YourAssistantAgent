@@ -319,8 +319,18 @@ Return exactly this object shape (values are examples, not defaults):
         context = SmartPlanner._coerce_context(context_plan)
         now = datetime.now().replace(microsecond=0).isoformat()
         context_json = json.dumps(context.to_dict() if context else {}, ensure_ascii=False)
+        owner_name = str(self.db.get_setting("owner_name", "") or "").strip()
+        business_name = str(self.db.get_setting("business_name", "") or "").strip()
+        try:
+            group_rows = self.db.list_groups(enabled_only=True, limit=80)
+            group_names = [str(r["name"]) for r in group_rows]
+        except Exception:
+            group_names = []
         return (
             f"CURRENT_LOCAL_DATETIME: {now}\n"
+            f"OWNER_NAME: {owner_name}\n"
+            f"BUSINESS_NAME: {business_name}\n"
+            f"KNOWN_FACEBOOK_GROUP_NAMES: {json.dumps(group_names, ensure_ascii=False)}\n"
             f"DEFAULT_SOURCE: {default_source_page}\n"
             f"DEFAULT_INTERVAL_SECONDS: {int(default_interval)}\n"
             f"DEFAULT_MAX_GROUPS: {int(default_max_groups)}\n"

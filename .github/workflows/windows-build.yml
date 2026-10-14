@@ -43,7 +43,7 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: |
-          .\.venv\Scripts\python.exe -c "import your_assistant_agent.github_deploy; import your_assistant_agent.local_ai_runtime; import your_assistant_agent.ui; print('Required modules OK')"
+          .\.venv\Scripts\python.exe -c "import your_assistant_agent.github_deploy; import your_assistant_agent.local_ai_runtime; import your_assistant_agent.cloud_backup; import your_assistant_agent.ui; print('Required modules OK')"
 
       - name: Cache bundled Local AI assets
         uses: actions/cache@v4

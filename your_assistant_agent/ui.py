@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import csv
+import html
+import json
 import math
 import os
+import shutil
 import sys
 import time
+from pathlib import Path
 
 from PySide6.QtCore import Qt, QEventLoop, QProcess, QTimer, QTime
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
     QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
-    QLineEdit, QMainWindow, QMessageBox, QPushButton, QSpinBox, QTabWidget,
+    QLineEdit, QMainWindow, QMessageBox, QPushButton, QSpinBox, QTabWidget, QInputDialog,
     QTableWidget, QTableWidgetItem, QTextEdit, QTimeEdit, QVBoxLayout, QWidget,
     QSystemTrayIcon, QMenu
 )
@@ -28,6 +32,8 @@ from .agent_brain import AgentBrain, AgentBrainError
 from .startup import is_enabled as startup_is_enabled, migrate_legacy_startup, set_enabled as startup_set_enabled
 from .text_utils import is_valid_international_phone
 from .theme import apply_modern_theme
+from .cloud_backup import CloudBackupManager, BackupError
+from .paths import attachments_dir
 
 APP_TITLE = "Your Assistant Agent"
 
@@ -358,25 +364,42 @@ class MainWindow(QMainWindow):
         self.resize(1280, 820)
         self.setLayoutDirection(Qt.RightToLeft if tr.rtl else Qt.LeftToRight)
 
+        self.cloud_backup = CloudBackupManager(self.db, self.security)
+        self._chat_pending_plans = []
+        self._chat_attachments = []
+
+        # v1.3 is chat-first. Operational screens remain available under an
+        # Advanced tab instead of competing with the assistant conversation.
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
+        self.chat_tab = QWidget()
         self.dashboard = QWidget()
+        self.settings_tab = QWidget()
+        self.advanced_tab = QWidget()
         self.groups_tab = QWidget()
         self.campaigns_tab = QWidget()
         self.smart_tab = QWidget()
         self.github_tab = QWidget()
         self.whatsapp_tab = QWidget()
         self.logs_tab = QWidget()
-        self.settings_tab = QWidget()
-        self.tabs.addTab(self.dashboard, tr.t("dashboard"))
-        self.tabs.addTab(self.groups_tab, tr.t("facebook_groups"))
-        self.tabs.addTab(self.campaigns_tab, tr.t("facebook_campaigns"))
-        self.tabs.addTab(self.smart_tab, tr.t("smart_agent"))
-        self.tabs.addTab(self.github_tab, tr.t("github_deployment"))
-        self.tabs.addTab(self.whatsapp_tab, tr.t("whatsapp"))
-        self.tabs.addTab(self.logs_tab, tr.t("audit_log"))
-        self.tabs.addTab(self.settings_tab, tr.t("settings"))
 
+        self.tabs.addTab(self.chat_tab, "المحادثة" if tr.rtl else "Chat")
+        self.tabs.addTab(self.dashboard, "النشاط" if tr.rtl else "Activity")
+        self.tabs.addTab(self.settings_tab, tr.t("settings"))
+        self.tabs.addTab(self.advanced_tab, "متقدم" if tr.rtl else "Advanced")
+
+        advanced_layout = QVBoxLayout(self.advanced_tab)
+        advanced_layout.setContentsMargins(0, 0, 0, 0)
+        self.advanced_tabs = QTabWidget()
+        advanced_layout.addWidget(self.advanced_tabs)
+        self.advanced_tabs.addTab(self.groups_tab, tr.t("facebook_groups"))
+        self.advanced_tabs.addTab(self.campaigns_tab, tr.t("facebook_campaigns"))
+        self.advanced_tabs.addTab(self.smart_tab, tr.t("smart_agent"))
+        self.advanced_tabs.addTab(self.github_tab, tr.t("github_deployment"))
+        self.advanced_tabs.addTab(self.whatsapp_tab, tr.t("whatsapp"))
+        self.advanced_tabs.addTab(self.logs_tab, tr.t("audit_log"))
+
+        self._build_chat()
         self._build_dashboard()
         self._build_groups()
         self._build_campaigns()
@@ -393,7 +416,362 @@ class MainWindow(QMainWindow):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh_all)
         self.timer.start(2500)
+        self.backup_timer = QTimer(self)
+        self.backup_timer.timeout.connect(self._auto_backup_tick)
+        self.backup_timer.start(60000)
         self.refresh_all()
+        self._render_chat_history()
+        QTimer.singleShot(1200, self._chat_first_run_welcome)
+        QTimer.singleShot(2200, self._auto_discover_after_connect)
+
+    def _build_chat(self):
+        root = QVBoxLayout(self.chat_tab)
+        root.setContentsMargins(24, 18, 24, 18)
+        root.setSpacing(12)
+
+        header = QHBoxLayout()
+        title_box = QVBoxLayout()
+        title = QLabel("Your Assistant Agent")
+        title.setStyleSheet("font-size:24px;font-weight:850;color:#262B63;")
+        subtitle = QLabel("احكي معي بشكل طبيعي، وأنا أفهم المهمة وأعرضها عليك قبل التنفيذ." if self.tr.rtl else "Talk naturally. I understand the task and show you the plan before execution.")
+        subtitle.setStyleSheet("color:#6B7280;font-size:11pt;")
+        title_box.addWidget(title); title_box.addWidget(subtitle)
+        header.addLayout(title_box, 1)
+        self.chat_fb_state = QLabel()
+        self.chat_fb_state.setStyleSheet("padding:7px 12px;border-radius:12px;background:#EEF1FF;color:#3F46A0;font-weight:700;")
+        header.addWidget(self.chat_fb_state)
+        connect = QPushButton("ربط فيسبوك" if self.tr.rtl else "Connect Facebook")
+        connect.clicked.connect(self.open_facebook_browser)
+        discover = QPushButton("تحديث الجروبات" if self.tr.rtl else "Refresh Groups")
+        discover.clicked.connect(self.discover_groups)
+        header.addWidget(connect); header.addWidget(discover)
+        root.addLayout(header)
+
+        self.chat_view = QTextEdit()
+        self.chat_view.setReadOnly(True)
+        self.chat_view.setAcceptRichText(True)
+        self.chat_view.setStyleSheet("QTextEdit{background:white;border:1px solid #DDE3F5;border-radius:16px;padding:14px;font-size:11pt;}")
+        root.addWidget(self.chat_view, 1)
+
+        self.chat_attachment_label = QLabel("")
+        self.chat_attachment_label.setWordWrap(True)
+        self.chat_attachment_label.setStyleSheet("color:#5E6687;")
+        root.addWidget(self.chat_attachment_label)
+
+        composer = QHBoxLayout()
+        attach = QPushButton("＋ إرفاق" if self.tr.rtl else "+ Attach")
+        attach.clicked.connect(self.chat_attach_files)
+        self.chat_input = QTextEdit()
+        self.chat_input.setMaximumHeight(96)
+        self.chat_input.setPlaceholderText("اكتب طلبك هنا... مثلاً: اليوم الساعة 11 شارك آخر إعلان على جروبات خلدة" if self.tr.rtl else "Type naturally... e.g. Today at 11 PM share the latest post to groups related to Khalda")
+        send = QPushButton("إرسال" if self.tr.rtl else "Send")
+        send.setMinimumWidth(110)
+        send.clicked.connect(self.chat_send_message)
+        composer.addWidget(attach)
+        composer.addWidget(self.chat_input, 1)
+        composer.addWidget(send)
+        root.addLayout(composer)
+
+        actions = QHBoxLayout()
+        self.chat_approve_btn = QPushButton("✓ وافق ونفّذ الجدولة" if self.tr.rtl else "✓ Approve & schedule")
+        self.chat_approve_btn.clicked.connect(self.chat_approve_pending)
+        self.chat_approve_btn.setVisible(False)
+        self.chat_cancel_btn = QPushButton("إلغاء الخطة" if self.tr.rtl else "Cancel plan")
+        self.chat_cancel_btn.clicked.connect(self.chat_cancel_pending)
+        self.chat_cancel_btn.setVisible(False)
+        clear = QPushButton("محادثة جديدة" if self.tr.rtl else "New conversation")
+        clear.clicked.connect(self.chat_new_conversation)
+        actions.addWidget(self.chat_approve_btn)
+        actions.addWidget(self.chat_cancel_btn)
+        actions.addStretch(1)
+        actions.addWidget(clear)
+        root.addLayout(actions)
+
+    def _render_chat_history(self):
+        if not hasattr(self, "chat_view"):
+            return
+        rows = self.db.list_chat_messages(limit=120)
+        pieces = ["<div style='font-family:Segoe UI;'>"]
+        for row in rows:
+            role = str(row["role"] or "assistant")
+            text = html.escape(str(row["text"] or "")).replace("\n", "<br>")
+            try:
+                attachments = json.loads(row["attachments_json"] or "[]")
+            except Exception:
+                attachments = []
+            if role == "user":
+                align = "right" if self.tr.rtl else "left"
+                bg = "#6757F5"; color = "white"; who = "أنت" if self.tr.rtl else "You"
+            else:
+                align = "left" if self.tr.rtl else "left"
+                bg = "#F0F3FF"; color = "#202646"; who = "الوكيل" if self.tr.rtl else "Agent"
+            attach_html = ""
+            if attachments:
+                names = [html.escape(Path(str(x)).name) for x in attachments]
+                attach_html = "<div style='margin-top:6px;font-size:9pt;opacity:.8'>📎 " + " • ".join(names) + "</div>"
+            pieces.append(
+                f"<div style='text-align:{align};margin:10px 4px;'>"
+                f"<div style='font-size:8pt;color:#777;margin-bottom:3px'>{who}</div>"
+                f"<span style='display:inline-block;background:{bg};color:{color};padding:9px 12px;border-radius:12px;'>"
+                f"{text}{attach_html}</span></div>"
+            )
+        pieces.append("</div>")
+        self.chat_view.setHtml("".join(pieces))
+        bar = self.chat_view.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    def _chat_add(self, role: str, text: str, attachments=None, meta=None):
+        self.db.add_chat_message(role, text, attachments=attachments, meta=meta)
+        self._render_chat_history()
+
+    def _chat_first_run_welcome(self):
+        if self.db.list_chat_messages(limit=1):
+            return
+        owner = str(self.db.get_setting("owner_name", "") or "").strip()
+        fb = str(self.db.get_setting("facebook_connection_status", "not_checked") or "not_checked")
+        groups = self.db.count_groups(enabled_only=False)
+        if self.tr.rtl:
+            hello = f"أهلًا {owner}. " if owner else "أهلًا. "
+            if fb == "connected":
+                hello += f"فيسبوك متصل، وعندي حاليًا {groups} مجموعة محفوظة. "
+            else:
+                hello += "لسه فيسبوك مش مربوط بشكل مؤكد. تقدر تربطه من الزر فوق مرة واحدة. "
+            hello += "من هسا احكي معي بشكل طبيعي: شو بدك تنشر، وين، ومتى. أنا بعرض عليك الخطة قبل ما أحفظها أو أنفذها."
+        else:
+            hello = f"Hi {owner}. " if owner else "Hi. "
+            hello += f"Facebook is connected and I know {groups} saved groups. " if fb == "connected" else "Facebook is not verified yet. Connect it once from the button above. "
+            hello += "From now on, talk naturally: tell me what to publish, where, and when. I will show the plan before saving or executing it."
+        self._chat_add("assistant", hello)
+
+    def _auto_discover_after_connect(self):
+        if not bool(self.db.get_setting("auto_discover_groups", True)):
+            return
+        if str(self.db.get_setting("facebook_connection_status", "") or "") != "connected":
+            return
+        if self.db.count_groups(enabled_only=False) > 0:
+            return
+        if bool(self.db.get_setting("auto_group_discovery_attempted", False)):
+            return
+        result = self.db.get_setting("facebook_group_discovery_result", {}) or {}
+        if isinstance(result, dict) and str(result.get("status")) in {"queued", "running"}:
+            return
+        self.db.set_setting("auto_group_discovery_attempted", True)
+        self.discover_groups()
+        self._chat_add("assistant", "فيسبوك متصل وما عندي جروبات محفوظة، فبلشت أكتشف جروباتك تلقائيًا." if self.tr.rtl else "Facebook is connected and no groups are saved, so I started group discovery automatically.")
+
+    @staticmethod
+    def _chat_confirmation_word(text: str) -> str:
+        compact = " ".join(str(text or "").strip().casefold().split())
+        yes = {"نفذ", "نفّذ", "وافق", "تمام نفذ", "تمام نفّذ", "اعتمد", "ابدأ", "yes", "approve", "do it", "go ahead"}
+        no = {"الغ", "الغي", "إلغاء", "الغاء", "لا", "cancel", "no", "stop"}
+        if compact in yes:
+            return "approve"
+        if compact in no:
+            return "cancel"
+        return ""
+
+    def chat_attach_files(self):
+        paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "اختر صور أو ملفات" if self.tr.rtl else "Choose images or files",
+            "",
+            "Images and files (*.png *.jpg *.jpeg *.webp *.pdf *.txt *.docx);;All files (*.*)",
+        )
+        if not paths:
+            return
+        dest_dir = attachments_dir()
+        saved = []
+        for raw in paths[:10]:
+            src = Path(raw)
+            try:
+                if src.stat().st_size > 25 * 1024 * 1024:
+                    continue
+                stamp = int(time.time() * 1000)
+                dst = dest_dir / f"{stamp}_{src.name}"
+                counter = 1
+                while dst.exists():
+                    dst = dest_dir / f"{stamp}_{counter}_{src.name}"; counter += 1
+                shutil.copy2(src, dst)
+                saved.append(str(dst))
+            except Exception:
+                continue
+        self._chat_attachments.extend(saved)
+        if self._chat_attachments:
+            names = ", ".join(Path(x).name for x in self._chat_attachments)
+            self.chat_attachment_label.setText(("المرفقات الجاهزة: " if self.tr.rtl else "Ready attachments: ") + names)
+
+    def _chat_status_reply(self) -> str:
+        fb = str(self.db.get_setting("facebook_connection_status", "not_checked") or "not_checked")
+        groups = self.db.count_groups(enabled_only=False)
+        rules = len(self.db.list_smart_rules())
+        try:
+            with self.db.conn() as con:
+                pending_admin = int(con.execute("SELECT COUNT(*) n FROM share_history WHERE status IN ('pending_approval','submitted')").fetchone()["n"])
+        except Exception:
+            pending_admin = 0
+        if self.tr.rtl:
+            state = "متصل" if fb == "connected" else "غير متصل/بحاجة تحقق"
+            return f"الحالة الآن: فيسبوك {state}، عندي {groups} جروب محفوظ، {rules} قاعدة ذكية، و{pending_admin} مشاركة بانتظار موافقة أدمن."
+        state = "connected" if fb == "connected" else "not connected / needs verification"
+        return f"Current status: Facebook {state}, {groups} saved groups, {rules} smart rules, and {pending_admin} share(s) pending admin approval."
+
+    def _chat_rules_reply(self) -> str:
+        rows = self.db.list_smart_rules()[:8]
+        if not rows:
+            return "ما عندك قواعد محفوظة حاليًا." if self.tr.rtl else "You do not have saved rules yet."
+        lines = []
+        for r in rows:
+            enabled = "شغالة" if r["enabled"] else "موقوفة"
+            if not self.tr.rtl:
+                enabled = "enabled" if r["enabled"] else "disabled"
+            lines.append(f"#{r['id']} — {r['name']} — {r['next_run_at'] or '-'} — {enabled}")
+        return ("آخر القواعد:\n" if self.tr.rtl else "Recent rules:\n") + "\n".join(lines)
+
+    def _chat_plan_summary(self, plans) -> str:
+        blocks = []
+        for i, plan in enumerate(plans, 1):
+            keyword = str(plan.group_keyword or "").strip()
+            matches = self.db.list_groups(enabled_only=True, keyword=keyword or None, limit=None)
+            sample = ", ".join(str(r["name"]) for r in matches[:5])
+            when = plan.run_once_at or (("كل يوم" if not plan.weekdays else str(plan.weekdays)) + f" {plan.run_time}")
+            post = "آخر منشور" if int(plan.post_offset) == 0 else f"المنشور السابق رقم {int(plan.post_offset)}"
+            target = f"الجروبات المطابقة لـ «{keyword}»" if keyword else "كل الجروبات المحفوظة"
+            if self.tr.rtl:
+                text = (
+                    f"الخطة {i}: {post} من صفحة المصدر.\n"
+                    f"الموعد: {when}\nالاستهداف: {target}\n"
+                    f"المطابق فعليًا الآن: {len(matches)} جروب\n"
+                    f"الفاصل: {int(plan.interval_seconds)} ثانية\n"
+                    f"منع التكرار: {int(plan.no_repeat_days)} يوم"
+                )
+                if sample:
+                    text += f"\nأمثلة: {sample}"
+            else:
+                text = (
+                    f"Plan {i}: post offset {int(plan.post_offset)} from the source page.\n"
+                    f"Schedule: {when}\nTarget: {target}\n"
+                    f"Matches now: {len(matches)} group(s)\nInterval: {int(plan.interval_seconds)} seconds\n"
+                    f"No-repeat window: {int(plan.no_repeat_days)} days"
+                )
+                if sample:
+                    text += f"\nExamples: {sample}"
+            blocks.append(text)
+        return "\n\n".join(blocks)
+
+    def chat_send_message(self):
+        text = self.chat_input.toPlainText().strip()
+        attachments = list(self._chat_attachments)
+        if not text and not attachments:
+            return
+        if not text:
+            text = "استخدم هذه المرفقات" if self.tr.rtl else "Use these attachments"
+        confirm = self._chat_confirmation_word(text)
+        if self._chat_pending_plans and confirm == "approve":
+            self._chat_add("user", text, attachments=attachments)
+            self.chat_input.clear(); self._chat_attachments = []; self.chat_attachment_label.clear()
+            self.chat_approve_pending()
+            return
+        if self._chat_pending_plans and confirm == "cancel":
+            self._chat_add("user", text, attachments=attachments)
+            self.chat_input.clear(); self._chat_attachments = []; self.chat_attachment_label.clear()
+            self.chat_cancel_pending()
+            return
+
+        self._chat_add("user", text, attachments=attachments)
+        self.chat_input.clear(); self._chat_attachments = []; self.chat_attachment_label.clear()
+        brain = AgentBrain(self.db, self.security, self.tr.language)
+        source = str(self.db.get_setting("smart_default_source_page", "") or "")
+        context_plan = self._chat_pending_plans[0] if len(self._chat_pending_plans) == 1 else None
+        attachment_context = ""
+        if attachments:
+            attachment_context = "\nATTACHMENTS: " + ", ".join(Path(x).name for x in attachments)
+        try:
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            interpretation = brain.interpret_with_fallback(
+                text + attachment_context,
+                default_source_page=source,
+                default_interval=int(self.db.get_setting("smart_default_interval_seconds", 60) or 60),
+                default_max_groups=int(self.db.get_setting("smart_default_max_groups", 100) or 100),
+                default_no_repeat_days=int(self.db.get_setting("smart_no_repeat_days", 14) or 14),
+                context_plan=context_plan,
+                conversation_context=self.db.chat_context_text(limit=24),
+            )
+        except Exception as exc:
+            self._chat_add("assistant", ("ما قدرت أفهم الطلب بأمان: " if self.tr.rtl else "I could not interpret that safely: ") + str(exc))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        if interpretation.needs_clarification:
+            self._chat_add("assistant", interpretation.question or ("بدي منك توضيح نقطة واحدة قبل التنفيذ." if self.tr.rtl else "I need one clarification before execution."))
+            return
+
+        intent = interpretation.intent
+        if intent == "status":
+            reply = self._chat_status_reply()
+        elif intent == "rules":
+            reply = self._chat_rules_reply()
+        elif intent == "github":
+            repo = str(self.db.get_setting("github_repo_path", "") or "")
+            reply = (f"مستودع GitHub المحلي الحالي: {repo or 'غير محدد'}. أقدر أفحص Patch وأشغل الاختبارات وأجهز Push، لكن Commit/Push يظل بحاجة موافقتك الصريحة." if self.tr.rtl else f"Current local GitHub repository: {repo or 'not set'}. I can inspect patches and run checks, but Commit/Push still requires your explicit approval.")
+        elif intent == "telegram":
+            enabled = bool(self.db.get_setting("telegram_enabled", False))
+            reply = ("تيليجرام مفعّل." if enabled else "تيليجرام غير مفعّل بعد. افتح Settings لربطه مرة واحدة.") if self.tr.rtl else ("Telegram Remote is enabled." if enabled else "Telegram Remote is not enabled yet. Connect it once in Settings.")
+        elif intent in {"help", "conversation"}:
+            reply = interpretation.reply or interpretation.understanding or ("أنا معك. احكيلي شو بدك أعمل." if self.tr.rtl else "I'm with you. Tell me what you want me to do.")
+        else:
+            plans = list(interpretation.plans or [])
+            if not plans:
+                reply = interpretation.reply or ("فهمت كلامك، لكن ما عندي خطة تنفيذ كاملة لسه." if self.tr.rtl else "I understood you, but I do not have a complete executable plan yet.")
+            else:
+                self._chat_pending_plans = plans
+                self.db.set_setting("chat_pending_plan", [p.to_dict() for p in plans])
+                reply = (interpretation.understanding.strip() + "\n\n" if interpretation.understanding.strip() else "") + self._chat_plan_summary(plans)
+                if attachments:
+                    reply += ("\n\nالمرفقات محفوظة مع المحادثة. حاليًا أداة Facebook التنفيذية تشارك منشورًا موجودًا من الصفحة؛ لن أنشر الصور كمنشور جديد من عندي بدون أداة Composer مخصصة حتى ما أنفذ شيء مختلف عن طلبك." if self.tr.rtl else "\n\nThe attachments are saved with this conversation. The current Facebook execution tool shares an existing page post; I will not silently create a new media post until a dedicated Composer tool is configured.")
+                self.chat_approve_btn.setVisible(True)
+                self.chat_cancel_btn.setVisible(True)
+        self._chat_add("assistant", reply, meta={"intent": intent, "source": interpretation.source, "confidence": interpretation.confidence})
+
+    def chat_approve_pending(self):
+        if not self._chat_pending_plans:
+            return
+        ids = [self.db.add_smart_rule(plan) for plan in self._chat_pending_plans]
+        self._chat_pending_plans = []
+        self.db.set_setting("chat_pending_plan", {})
+        self.chat_approve_btn.setVisible(False); self.chat_cancel_btn.setVisible(False)
+        self._chat_add("assistant", (f"تم. حفظت المهمة كقاعدة/قواعد رقم {', '.join(map(str, ids))}. رح أتابع التنفيذ والنتائج، وPending Approval ما رح أعتبره فشل." if self.tr.rtl else f"Done. Saved as rule(s) {', '.join(map(str, ids))}. I will track execution; Pending Approval is not treated as failure."))
+        self.refresh_smart_rules()
+
+    def chat_cancel_pending(self):
+        self._chat_pending_plans = []
+        self.db.set_setting("chat_pending_plan", {})
+        self.chat_approve_btn.setVisible(False); self.chat_cancel_btn.setVisible(False)
+        self._chat_add("assistant", "تمام، ألغيت الخطة وما انحفظ شيء." if self.tr.rtl else "Okay, I cancelled the plan and saved nothing.")
+
+    def chat_new_conversation(self):
+        if QMessageBox.question(self, "المحادثة" if self.tr.rtl else "Chat", "تمسح سجل المحادثة المحلي وتبدأ من جديد؟" if self.tr.rtl else "Clear local chat history and start a new conversation?") != QMessageBox.Yes:
+            return
+        self.db.clear_chat_messages()
+        self._chat_pending_plans = []
+        self.chat_approve_btn.setVisible(False); self.chat_cancel_btn.setVisible(False)
+        self._render_chat_history()
+        self._chat_first_run_welcome()
+
+    def _auto_backup_tick(self):
+        if not bool(self.db.get_setting("cloud_backup_enabled", False)):
+            return
+        if not str(self.db.get_setting("cloud_backup_folder", "") or "").strip():
+            return
+        hours = max(1, int(self.db.get_setting("cloud_backup_interval_hours", 6) or 6))
+        last = float(self.db.get_setting("cloud_backup_last_epoch", 0) or 0)
+        if time.time() - last < hours * 3600:
+            return
+        try:
+            self.cloud_backup.backup_now()
+            self.db.set_setting("cloud_backup_last_epoch", time.time())
+        except Exception as exc:
+            self.db.audit("WARNING", "cloud_backup_failed", str(exc))
 
     def _build_dashboard(self):
         lay = QVBoxLayout(self.dashboard)
@@ -774,6 +1152,51 @@ class MainWindow(QMainWindow):
         form.addRow(self.tr.t("language"), self.lang_combo); form.addRow(apply)
         lay.addWidget(lang_box)
 
+        profile_box = QGroupBox("الملف الشخصي للوكيل" if self.tr.rtl else "Agent profile")
+        profile_form = QFormLayout(profile_box)
+        self.owner_name_edit = QLineEdit(str(self.db.get_setting("owner_name", "") or ""))
+        self.business_name_edit = QLineEdit(str(self.db.get_setting("business_name", "") or ""))
+        self.default_page_edit = QLineEdit(str(self.db.get_setting("smart_default_source_page", "") or ""))
+        self.default_page_edit.setPlaceholderText("https://www.facebook.com/...")
+        self.auto_discover_check = QCheckBox("اكتشف جروبات فيسبوك تلقائيًا بعد الربط" if self.tr.rtl else "Discover Facebook groups automatically after connection")
+        self.auto_discover_check.setChecked(bool(self.db.get_setting("auto_discover_groups", True)))
+        profile_save = QPushButton("حفظ الملف الشخصي" if self.tr.rtl else "Save profile")
+        profile_save.clicked.connect(self.save_agent_profile)
+        profile_form.addRow("اسمك" if self.tr.rtl else "Your name", self.owner_name_edit)
+        profile_form.addRow("اسم النشاط" if self.tr.rtl else "Business name", self.business_name_edit)
+        profile_form.addRow("صفحة فيسبوك الافتراضية" if self.tr.rtl else "Default Facebook page", self.default_page_edit)
+        profile_form.addRow(self.auto_discover_check)
+        profile_form.addRow(profile_save)
+        lay.addWidget(profile_box)
+
+        cloud_box = QGroupBox("Google Drive والنسخ الاحتياطي" if self.tr.rtl else "Google Drive & Backup")
+        cloud_form = QFormLayout(cloud_box)
+        self.cloud_backup_enabled = QCheckBox("نسخ احتياطي تلقائي مشفّر" if self.tr.rtl else "Automatic encrypted backup")
+        self.cloud_backup_enabled.setChecked(bool(self.db.get_setting("cloud_backup_enabled", False)))
+        self.cloud_folder = QLineEdit(str(self.db.get_setting("cloud_backup_folder", "") or ""))
+        cloud_folder_row = QHBoxLayout(); cloud_folder_row.addWidget(self.cloud_folder, 1)
+        cloud_browse = QPushButton("اختيار مجلد Drive" if self.tr.rtl else "Choose Drive folder")
+        cloud_browse.clicked.connect(self.choose_cloud_backup_folder); cloud_folder_row.addWidget(cloud_browse)
+        self.cloud_interval = QSpinBox(); self.cloud_interval.setRange(1, 168); self.cloud_interval.setValue(int(self.db.get_setting("cloud_backup_interval_hours", 6) or 6)); self.cloud_interval.setSuffix(" ساعة" if self.tr.rtl else " h")
+        self.cloud_keep = QSpinBox(); self.cloud_keep.setRange(1, 50); self.cloud_keep.setValue(int(self.db.get_setting("cloud_backup_keep_versions", 7) or 7))
+        self.cloud_last = QLabel(str(self.db.get_setting("cloud_backup_last_at", "") or ("لا يوجد" if self.tr.rtl else "None")))
+        cloud_note = QLabel("اختَر مجلدًا متزامنًا مع Google Drive for desktop. تُحفظ المحادثات والذاكرة والقواعد والمرفقات والتوكنات داخل ملف AES-256 مشفّر. جلسة Facebook لا تُنقل؛ على جهاز جديد تسجل دخول Facebook يدويًا مرة واحدة." if self.tr.rtl else "Choose a folder synced by Google Drive for desktop. Chats, memory, rules, attachments and portable secrets are stored in an AES-256 encrypted backup. Facebook browser sessions are not migrated; sign in once on a new PC.")
+        cloud_note.setWordWrap(True); cloud_note.setStyleSheet("color:#6b7280;")
+        cloud_buttons = QHBoxLayout()
+        cloud_save = QPushButton("حفظ إعدادات النسخ" if self.tr.rtl else "Save backup settings"); cloud_save.clicked.connect(self.save_cloud_backup_settings)
+        cloud_now = QPushButton("نسخ الآن" if self.tr.rtl else "Back up now"); cloud_now.clicked.connect(self.backup_now)
+        cloud_restore = QPushButton("استعادة" if self.tr.rtl else "Restore"); cloud_restore.clicked.connect(self.restore_backup)
+        cloud_key = QPushButton("Recovery Key" if not self.tr.rtl else "مفتاح الاستعادة"); cloud_key.clicked.connect(self.show_recovery_key)
+        cloud_buttons.addWidget(cloud_save); cloud_buttons.addWidget(cloud_now); cloud_buttons.addWidget(cloud_restore); cloud_buttons.addWidget(cloud_key)
+        cloud_form.addRow(self.cloud_backup_enabled)
+        cloud_form.addRow("مجلد Google Drive" if self.tr.rtl else "Google Drive folder", cloud_folder_row)
+        cloud_form.addRow("كل" if self.tr.rtl else "Every", self.cloud_interval)
+        cloud_form.addRow("عدد النسخ" if self.tr.rtl else "Keep versions", self.cloud_keep)
+        cloud_form.addRow("آخر نسخة" if self.tr.rtl else "Last backup", self.cloud_last)
+        cloud_form.addRow(cloud_note)
+        cloud_form.addRow(cloud_buttons)
+        lay.addWidget(cloud_box)
+
         wake_box = QGroupBox(self.tr.t("wake_settings"))
         wake_form = QFormLayout(wake_box)
         self.auto_wake_check = QCheckBox(self.tr.t("auto_wake_for_rules")); self.auto_wake_check.setChecked(bool(self.db.get_setting("auto_wake_for_smart_rules", False)))
@@ -796,6 +1219,102 @@ class MainWindow(QMainWindow):
 
         sec = QGroupBox(self.tr.t("about_security")); s = QVBoxLayout(sec); text = QLabel(self.tr.t("security_text")); text.setWordWrap(True); s.addWidget(text); lay.addWidget(sec)
         lay.addStretch(1)
+
+    def save_agent_profile(self):
+        self.db.set_setting("owner_name", self.owner_name_edit.text().strip())
+        self.db.set_setting("business_name", self.business_name_edit.text().strip())
+        self.db.set_setting("smart_default_source_page", self.default_page_edit.text().strip())
+        if hasattr(self, "smart_source"):
+            self.smart_source.setText(self.default_page_edit.text().strip())
+        self.db.set_setting("auto_discover_groups", bool(self.auto_discover_check.isChecked()))
+        QMessageBox.information(self, "Settings", "تم حفظ ملف الوكيل." if self.tr.rtl else "Agent profile saved.")
+
+    def choose_cloud_backup_folder(self):
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "اختر مجلدًا داخل Google Drive" if self.tr.rtl else "Choose a folder inside Google Drive",
+            self.cloud_folder.text().strip() or str(Path.home()),
+        )
+        if folder:
+            self.cloud_folder.setText(folder)
+
+    def save_cloud_backup_settings(self):
+        folder = self.cloud_folder.text().strip()
+        if folder:
+            try:
+                self.cloud_backup.set_folder(folder)
+            except Exception as exc:
+                QMessageBox.warning(self, "Backup", str(exc)); return
+        self.db.set_setting("cloud_backup_enabled", bool(self.cloud_backup_enabled.isChecked()))
+        self.db.set_setting("cloud_backup_interval_hours", int(self.cloud_interval.value()))
+        self.db.set_setting("cloud_backup_keep_versions", int(self.cloud_keep.value()))
+        QMessageBox.information(self, "Backup", "تم حفظ إعدادات النسخ الاحتياطي." if self.tr.rtl else "Backup settings saved.")
+
+    def show_recovery_key(self):
+        try:
+            key = self.cloud_backup.ensure_recovery_key()
+        except Exception as exc:
+            QMessageBox.warning(self, "Recovery Key", str(exc)); return
+        QApplication.clipboard().setText(key)
+        text = (
+            "هذا مفتاح استعادة بياناتك على جهاز جديد. تم نسخه للحافظة. خزّنه بمكان آمن ولا ترسله لأي شخص:\n\n" + key
+            if self.tr.rtl else
+            "This key restores your encrypted backup on another PC. It has been copied to the clipboard. Keep it private:\n\n" + key
+        )
+        QMessageBox.information(self, "Recovery Key", text)
+
+    def backup_now(self):
+        self.save_cloud_backup_settings()
+        try:
+            result = self.cloud_backup.backup_now(keep_versions=int(self.cloud_keep.value()))
+            self.db.set_setting("cloud_backup_last_epoch", time.time())
+            self.cloud_last.setText(result.created_at)
+            QMessageBox.information(
+                self, "Backup",
+                (f"تم إنشاء نسخة مشفرة:\n{result.path}" if self.tr.rtl else f"Encrypted backup created:\n{result.path}")
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Backup", str(exc))
+
+    def restore_backup(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "اختر نسخة Your Assistant Agent" if self.tr.rtl else "Choose Your Assistant Agent backup",
+            self.cloud_folder.text().strip() or "",
+            "Your Assistant Agent Backup (*.yaa);;All files (*.*)",
+        )
+        if not path:
+            return
+        saved_key = self.cloud_backup.current_recovery_key()
+        key, ok = QInputDialog.getText(
+            self,
+            "Recovery Key",
+            "أدخل مفتاح الاستعادة:" if self.tr.rtl else "Enter the Recovery Key:",
+            QLineEdit.Normal,
+            saved_key,
+        )
+        if not ok or not key.strip():
+            return
+        if QMessageBox.question(
+            self, "Restore",
+            "سيتم استبدال البيانات المحلية الحالية بالنسخة الاحتياطية. نكمل؟" if self.tr.rtl else "This will replace current local data with the backup. Continue?"
+        ) != QMessageBox.Yes:
+            return
+        try:
+            meta = self.cloud_backup.restore(path, key.strip())
+            QMessageBox.information(
+                self, "Restore",
+                "تمت الاستعادة. سيتم إعادة تشغيل البرنامج لتطبيق كل البيانات." if self.tr.rtl else "Restore completed. The app will restart to load all restored data."
+            )
+            self._really_quit = True
+            self.engine.shutdown(); self.engine.join(timeout=3); self.tray.hide()
+            if getattr(sys, "frozen", False):
+                QProcess.startDetached(sys.executable, sys.argv[1:])
+            else:
+                QProcess.startDetached(sys.executable, [sys.argv[0], *sys.argv[1:]])
+            QApplication.quit()
+        except Exception as exc:
+            QMessageBox.critical(self, "Restore", str(exc))
 
     def _refresh_browser_current_label(self):
         if not hasattr(self, "browser_current_label"):
@@ -1423,6 +1942,15 @@ class MainWindow(QMainWindow):
             if err:
                 fb_text += f" — {err[:180]}"
         self.fb_status_label.setText(fb_text)
+        if hasattr(self, "chat_fb_state"):
+            groups_now = self.db.count_groups(enabled_only=False)
+            if self.tr.rtl:
+                badge = (f"● فيسبوك متصل • {groups_now} جروب" if fb_state == "connected" else "○ فيسبوك غير متصل")
+            else:
+                badge = (f"● Facebook connected • {groups_now} groups" if fb_state == "connected" else "○ Facebook not connected")
+            self.chat_fb_state.setText(badge)
+            if fb_state == "connected" and groups_now == 0 and bool(self.db.get_setting("auto_discover_groups", True)) and not bool(self.db.get_setting("auto_group_discovery_attempted", False)):
+                QTimer.singleShot(250, self._auto_discover_after_connect)
         fb_stats = self.db.queue_stats(); smart_stats = self.db.smart_queue_stats(); wa_stats = self.db.wa_queue_stats()
         smart_status_labels = {
             "pending": "مجدول", "published": "منشور", "submitted": "تم الإرسال",

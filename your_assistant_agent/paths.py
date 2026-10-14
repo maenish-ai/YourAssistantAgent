@@ -56,3 +56,9 @@ def log_dir() -> Path:
     p = app_data_dir() / "logs"
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+def attachments_dir() -> Path:
+    p = app_data_dir() / "attachments"
+    p.mkdir(parents=True, exist_ok=True)
+    return p

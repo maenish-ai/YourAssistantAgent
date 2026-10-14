@@ -5,3 +5,6 @@
 - RightNow-Arabic-0.5B-Turbo — Apache-2.0 — https://huggingface.co/RightNowAI/RightNow-Arabic-0.5B-Turbo
 
 The Windows build pins download URLs and SHA256 values in `scripts/prepare_local_ai.ps1`. Large model/runtime files are downloaded during build and are not committed to Git.
+
+## cryptography
+The Python `cryptography` package is used for AES-GCM encrypted backup files. See the package's upstream license notices in the installed dependency distribution.

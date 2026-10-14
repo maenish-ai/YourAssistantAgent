@@ -1,9 +1,15 @@
-Your Assistant Agent v1.2.0 — FULL PROJECT FOR GITHUB
+Your Assistant Agent v1.3.0 — FULL PROJECT FOR GITHUB
 
-1) ارفع محتويات هذا المجلد إلى مستودع GitHub (وليس ملف ZIP كملف واحد داخل المستودع).
-2) لا ترفع ملفات GGUF أو llama.cpp يدويًا؛ GitHub Actions ينزلها تلقائيًا ويتحقق من SHA256.
-3) افتح Actions وانتظر Workflow: Build Your Assistant Agent for Windows.
-4) بعد النجاح نزّل Artifact باسم YourAssistantAgent-Windows-Setup.
-5) ثبّت Setup؛ النسخة الناتجة تحتوي Local AI المجاني داخلها.
+1) فك ZIP المشروع الكامل.
+2) ارفع محتويات المجلد إلى مستودع GitHub.
+3) Commit + Push.
+4) افتح Actions وانتظر Build Your Assistant Agent for Windows.
+5) حمّل Artifact باسم YourAssistantAgent-Windows-Setup.
 
-Dual Local AI هو الافتراضي ولا يحتاج Token: Auto / Qwen General / RightNow Arabic. موديل واحد فقط يعمل في الذاكرة في كل لحظة.
+بعد التثبيت:
+- افتح Chat وتكلم مع الوكيل بشكل طبيعي.
+- اربط Facebook مرة واحدة؛ إذا لم توجد جروبات سيحاول اكتشافها تلقائيًا.
+- من Settings أدخل اسمك/نشاطك وصفحة Facebook الافتراضية.
+- للنسخ المجاني: ثبّت Google Drive for desktop، اختر مجلدًا داخل Drive، فعّل Automatic encrypted backup، ثم اعرض Recovery Key وخزّنه بمكان آمن.
+
+مهم: ملف الـAI الكبير لا يوجد في Source ZIP. GitHub Actions ينزله أثناء Build ويضعه داخل Setup النهائي.

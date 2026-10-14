@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.3.0
+- Chat-first interface with persistent conversational memory and attachments.
+- Encrypted Google Drive-folder backup/restore using AES-256-GCM and a cross-device Recovery Key.
+- Automatic group discovery after Facebook connection, profile context, live plan matching counts, and Advanced second-layer tools.
+
 ## 1.2.0 — Dual Local Brain
 - Added RightNow-Arabic-0.5B-Turbo Q4_K_M alongside Qwen3-0.6B.
 - Added Auto / General / Arabic local brain selection.

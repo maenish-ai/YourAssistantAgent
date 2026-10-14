@@ -1,0 +1,3 @@
+هذا المجلد جاهز للرفع إلى GitHub Desktop كما هو.
+بعد Push إلى main/master سيعمل Workflow تلقائياً ويبني نسخة Windows.
+الملفات الناتجة ستظهر في GitHub > Actions > آخر Build > Artifacts.

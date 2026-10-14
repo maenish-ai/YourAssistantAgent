@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from typing import Any, Iterable
 
 from .paths import db_path
+from .text_utils import contains_normalized, normalize_phone
 
 DB_LOCK = threading.RLock()
 
@@ -60,6 +61,48 @@ CREATE TABLE IF NOT EXISTS queue_items (
     FOREIGN KEY(group_id) REFERENCES groups(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS wa_contacts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    phone TEXT NOT NULL UNIQUE,
+    tags TEXT NOT NULL DEFAULT '',
+    opt_in INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS wa_campaigns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    message_mode TEXT NOT NULL DEFAULT 'text',
+    message_text TEXT NOT NULL DEFAULT '',
+    template_name TEXT NOT NULL DEFAULT '',
+    template_language TEXT NOT NULL DEFAULT 'ar',
+    target_keyword TEXT NOT NULL DEFAULT '',
+    batch_size INTEGER NOT NULL DEFAULT 100,
+    interval_seconds INTEGER NOT NULL DEFAULT 60,
+    cadence_days INTEGER NOT NULL DEFAULT 1,
+    run_time TEXT NOT NULL DEFAULT '19:00',
+    next_run_at TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS wa_queue_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id INTEGER,
+    contact_id INTEGER NOT NULL,
+    batch_no INTEGER NOT NULL DEFAULT 1,
+    scheduled_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TEXT,
+    FOREIGN KEY(campaign_id) REFERENCES wa_campaigns(id) ON DELETE SET NULL,
+    FOREIGN KEY(contact_id) REFERENCES wa_contacts(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS audit_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -70,6 +113,9 @@ CREATE TABLE IF NOT EXISTS audit_log (
 
 CREATE INDEX IF NOT EXISTS idx_queue_due ON queue_items(status, scheduled_at);
 CREATE INDEX IF NOT EXISTS idx_campaign_next ON campaigns(enabled, next_run_at);
+CREATE INDEX IF NOT EXISTS idx_wa_queue_due ON wa_queue_items(status, scheduled_at);
+CREATE INDEX IF NOT EXISTS idx_wa_campaign_next ON wa_campaigns(enabled, next_run_at);
+CREATE INDEX IF NOT EXISTS idx_wa_contacts_enabled ON wa_contacts(enabled, opt_in);
 """
 
 
@@ -100,9 +146,13 @@ class Database:
                 "paused": False,
                 "pin_hash": "",
                 "first_run_done": False,
+                "language": "",
                 "facebook_mode": "link_post",
                 "stop_on_checkpoint": True,
                 "default_timezone": "Asia/Amman",
+                "wa_phone_number_id": "",
+                "wa_api_version": "v24.0",
+                "wa_access_token_protected": "",
             }
             for k, v in defaults.items():
                 con.execute(
@@ -132,10 +182,10 @@ class Database:
         with self.conn() as con:
             con.execute(
                 "INSERT INTO audit_log(level,event,details) VALUES (?,?,?)",
-                (level, event, details[:4000]),
+                (level, event, str(details)[:4000]),
             )
 
-    # Groups
+    # Facebook groups
     def add_group(self, name: str, url: str, tags: str = ""):
         with self.conn() as con:
             con.execute(
@@ -156,22 +206,19 @@ class Database:
             con.execute("DELETE FROM groups WHERE id=?", (group_id,))
 
     def list_groups(self, enabled_only=False, keyword: str | None = None, limit: int | None = None):
-        sql = "SELECT * FROM groups WHERE 1=1"
-        args: list[Any] = []
+        sql = "SELECT * FROM groups"
         if enabled_only:
-            sql += " AND enabled=1"
-        if keyword:
-            sql += " AND (name LIKE ? OR tags LIKE ?)"
-            needle = f"%{keyword}%"
-            args += [needle, needle]
+            sql += " WHERE enabled=1"
         sql += " ORDER BY name COLLATE NOCASE"
-        if limit:
-            sql += " LIMIT ?"
-            args.append(limit)
         with self.conn() as con:
-            return con.execute(sql, args).fetchall()
+            rows = con.execute(sql).fetchall()
+        if keyword:
+            rows = [r for r in rows if contains_normalized(f"{r['name']} {r['tags']}", keyword)]
+        if limit:
+            rows = rows[: int(limit)]
+        return rows
 
-    # Campaigns
+    # Facebook campaigns
     def add_campaign(
         self,
         name: str,
@@ -223,28 +270,10 @@ class Database:
 
     def bump_campaign(self, campaign_id: int):
         camp = self.get_campaign(campaign_id)
-        if not camp:
-            return
-        try:
-            base = datetime.fromisoformat(camp["next_run_at"]) if camp["next_run_at"] else datetime.now()
-        except Exception:
-            base = datetime.now()
-        now = datetime.now()
-        while base <= now:
-            base += timedelta(days=max(1, int(camp["cadence_days"])))
-        with self.conn() as con:
-            con.execute("UPDATE campaigns SET next_run_at=? WHERE id=?", (base.replace(microsecond=0).isoformat(), campaign_id))
+        if camp:
+            self._bump_table("campaigns", campaign_id, camp["next_run_at"], camp["cadence_days"])
 
-    @staticmethod
-    def compute_next_run(cadence_days: int, run_time: str) -> str:
-        hour, minute = [int(x) for x in run_time.split(":", 1)]
-        now = datetime.now()
-        candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if candidate <= now:
-            candidate += timedelta(days=max(1, int(cadence_days)))
-        return candidate.isoformat()
-
-    # Queue
+    # Facebook queue
     def enqueue(self, campaign_id: int | None, group_ids: Iterable[int], post_url: str, interval_seconds: int):
         start = datetime.now()
         rows = []
@@ -279,15 +308,180 @@ class Database:
                 (status, error[:2000], completed, item_id),
             )
 
+    # WhatsApp contacts
+    def add_wa_contact(self, name: str, phone: str, tags: str = "", opt_in: bool = False):
+        number = normalize_phone(phone)
+        with self.conn() as con:
+            con.execute(
+                "INSERT INTO wa_contacts(name,phone,tags,opt_in) VALUES (?,?,?,?)",
+                (name.strip(), number, tags.strip(), int(bool(opt_in))),
+            )
+        self.audit("INFO", "wa_contact_added", f"{name}: {number}")
+
+    def upsert_wa_contact(self, name: str, phone: str, tags: str = "", opt_in: bool = False):
+        number = normalize_phone(phone)
+        with self.conn() as con:
+            con.execute(
+                """INSERT INTO wa_contacts(name,phone,tags,opt_in) VALUES (?,?,?,?)
+                   ON CONFLICT(phone) DO UPDATE SET name=excluded.name,tags=excluded.tags,opt_in=excluded.opt_in""",
+                (name.strip(), number, tags.strip(), int(bool(opt_in))),
+            )
+
+    def delete_wa_contact(self, contact_id: int):
+        with self.conn() as con:
+            con.execute("DELETE FROM wa_contacts WHERE id=?", (contact_id,))
+
+    def list_wa_contacts(self, enabled_only=False, opted_in_only=False, keyword: str | None = None, limit: int | None = None):
+        clauses = []
+        if enabled_only:
+            clauses.append("enabled=1")
+        if opted_in_only:
+            clauses.append("opt_in=1")
+        sql = "SELECT * FROM wa_contacts"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY name COLLATE NOCASE"
+        with self.conn() as con:
+            rows = con.execute(sql).fetchall()
+        if keyword:
+            rows = [r for r in rows if contains_normalized(f"{r['name']} {r['tags']} {r['phone']}", keyword)]
+        if limit:
+            rows = rows[: int(limit)]
+        return rows
+
+    # WhatsApp campaigns
+    def add_wa_campaign(
+        self,
+        name: str,
+        message_mode: str,
+        message_text: str,
+        template_name: str,
+        template_language: str,
+        target_keyword: str,
+        batch_size: int,
+        interval_seconds: int,
+        cadence_days: int,
+        run_time: str,
+    ):
+        next_run = self.compute_next_run(cadence_days, run_time)
+        mode = message_mode if message_mode in {"text", "template"} else "text"
+        with self.conn() as con:
+            con.execute(
+                """INSERT INTO wa_campaigns
+                   (name,message_mode,message_text,template_name,template_language,target_keyword,batch_size,interval_seconds,cadence_days,run_time,next_run_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    name.strip(), mode, message_text.strip(), template_name.strip(), template_language.strip() or "ar",
+                    target_keyword.strip(), max(1, min(256, int(batch_size))), max(30, int(interval_seconds)),
+                    max(1, int(cadence_days)), run_time, next_run,
+                ),
+            )
+        self.audit("INFO", "wa_campaign_added", name)
+
+    def list_wa_campaigns(self):
+        with self.conn() as con:
+            return con.execute("SELECT * FROM wa_campaigns ORDER BY id DESC").fetchall()
+
+    def get_wa_campaign(self, campaign_id: int):
+        with self.conn() as con:
+            return con.execute("SELECT * FROM wa_campaigns WHERE id=?", (campaign_id,)).fetchone()
+
+    def update_wa_campaign_enabled(self, campaign_id: int, enabled: bool):
+        with self.conn() as con:
+            con.execute("UPDATE wa_campaigns SET enabled=? WHERE id=?", (int(enabled), campaign_id))
+
+    def delete_wa_campaign(self, campaign_id: int):
+        with self.conn() as con:
+            con.execute("DELETE FROM wa_campaigns WHERE id=?", (campaign_id,))
+
+    def due_wa_campaigns(self, now_iso: str):
+        with self.conn() as con:
+            return con.execute(
+                "SELECT * FROM wa_campaigns WHERE enabled=1 AND next_run_at IS NOT NULL AND next_run_at<=? ORDER BY next_run_at",
+                (now_iso,),
+            ).fetchall()
+
+    def bump_wa_campaign(self, campaign_id: int):
+        camp = self.get_wa_campaign(campaign_id)
+        if camp:
+            self._bump_table("wa_campaigns", campaign_id, camp["next_run_at"], camp["cadence_days"])
+
+    def enqueue_wa(self, campaign_id: int, contact_ids: Iterable[int], batch_size: int, interval_seconds: int):
+        start = datetime.now()
+        batch_size = max(1, min(256, int(batch_size)))
+        interval_seconds = max(30, int(interval_seconds))
+        rows = []
+        for i, cid in enumerate(contact_ids):
+            batch_no = i // batch_size + 1
+            when = start + timedelta(seconds=i * interval_seconds)
+            rows.append((campaign_id, cid, batch_no, when.replace(microsecond=0).isoformat()))
+        with self.conn() as con:
+            con.executemany(
+                "INSERT INTO wa_queue_items(campaign_id,contact_id,batch_no,scheduled_at) VALUES (?,?,?,?)",
+                rows,
+            )
+        return len(rows), (0 if not rows else rows[-1][2])
+
+    def next_due_wa_queue_item(self, now_iso: str):
+        with self.conn() as con:
+            return con.execute(
+                """SELECT q.*, c.name AS contact_name, c.phone AS contact_phone,
+                          wc.message_mode, wc.message_text, wc.template_name, wc.template_language,
+                          wc.name AS campaign_name
+                   FROM wa_queue_items q
+                   JOIN wa_contacts c ON c.id=q.contact_id
+                   LEFT JOIN wa_campaigns wc ON wc.id=q.campaign_id
+                   WHERE q.status='pending' AND q.scheduled_at<=?
+                   ORDER BY q.scheduled_at, q.id LIMIT 1""",
+                (now_iso,),
+            ).fetchone()
+
+    def mark_wa_queue(self, item_id: int, status: str, error: str = ""):
+        completed = utcnow_iso() if status in {"done", "failed", "blocked", "cancelled"} else None
+        with self.conn() as con:
+            con.execute(
+                "UPDATE wa_queue_items SET status=?, attempts=attempts+1, last_error=?, completed_at=? WHERE id=?",
+                (status, error[:2000], completed, item_id),
+            )
+
     def queue_stats(self):
         with self.conn() as con:
             rows = con.execute("SELECT status,COUNT(*) n FROM queue_items GROUP BY status").fetchall()
         return {r["status"]: r["n"] for r in rows}
 
-    def clear_pending(self):
+    def wa_queue_stats(self):
         with self.conn() as con:
-            con.execute("UPDATE queue_items SET status='cancelled', completed_at=? WHERE status='pending'", (utcnow_iso(),))
+            rows = con.execute("SELECT status,COUNT(*) n FROM wa_queue_items GROUP BY status").fetchall()
+        return {r["status"]: r["n"] for r in rows}
+
+    def clear_pending(self):
+        now = utcnow_iso()
+        with self.conn() as con:
+            con.execute("UPDATE queue_items SET status='cancelled', completed_at=? WHERE status='pending'", (now,))
+            con.execute("UPDATE wa_queue_items SET status='cancelled', completed_at=? WHERE status='pending'", (now,))
 
     def recent_audit(self, limit=200):
         with self.conn() as con:
             return con.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+
+    @staticmethod
+    def compute_next_run(cadence_days: int, run_time: str) -> str:
+        hour, minute = [int(x) for x in run_time.split(":", 1)]
+        now = datetime.now()
+        candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if candidate <= now:
+            candidate += timedelta(days=max(1, int(cadence_days)))
+        return candidate.isoformat()
+
+    def _bump_table(self, table: str, row_id: int, next_run_at: str | None, cadence_days: int):
+        try:
+            base = datetime.fromisoformat(next_run_at) if next_run_at else datetime.now()
+        except Exception:
+            base = datetime.now()
+        now = datetime.now()
+        while base <= now:
+            base += timedelta(days=max(1, int(cadence_days)))
+        if table not in {"campaigns", "wa_campaigns"}:
+            raise ValueError("Invalid schedule table")
+        with self.conn() as con:
+            con.execute(f"UPDATE {table} SET next_run_at=? WHERE id=?", (base.replace(microsecond=0).isoformat(), row_id))

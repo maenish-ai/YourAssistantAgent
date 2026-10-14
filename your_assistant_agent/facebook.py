@@ -38,6 +38,7 @@ class CheckpointDetected(FacebookError):
 class FacebookConfig:
     profile_dir: Path = browser_profile_dir()
     headless: bool = False
+    locale: str = "en-US"
 
 
 class FacebookAutomation:
@@ -61,7 +62,7 @@ class FacebookAutomation:
             user_data_dir=str(self.config.profile_dir),
             headless=self.config.headless,
             viewport={"width": 1360, "height": 900},
-            locale="ar-JO",
+            locale=self.config.locale,
             args=["--disable-notifications"],
         )
         self.page = self.context.pages[0] if self.context.pages else self.context.new_page()

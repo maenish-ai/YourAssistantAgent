@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import base64
 from pathlib import Path
 
 from argon2 import PasswordHasher
@@ -39,6 +40,29 @@ class SecurityManager:
             return False
         except Exception:
             return False
+
+
+    def set_secret(self, name: str, value: str):
+        if not name:
+            raise ValueError("Secret name is required")
+        key = f"secret_{name}"
+        if not value:
+            self.db.set_setting(key, "")
+            return
+        blob = DpapiVault.protect(value.encode("utf-8"))
+        self.db.set_setting(key, base64.b64encode(blob).decode("ascii"))
+        self.db.audit("SECURITY", "secret_updated", name)
+
+    def get_secret(self, name: str) -> str:
+        key = f"secret_{name}"
+        encoded = self.db.get_setting(key, "") or ""
+        if not encoded:
+            return ""
+        try:
+            blob = base64.b64decode(encoded.encode("ascii"))
+            return DpapiVault.unprotect(blob).decode("utf-8")
+        except Exception:
+            return ""
 
     def restrict_app_folder_windows(self):
         """Best-effort ACL hardening. Never runs elevated automatically."""

@@ -1,5 +1,5 @@
 #define MyAppName "Your Assistant Agent"
-#define MyAppVersion "0.4.0"
+#define MyAppVersion "0.6.0"
 #define MyAppPublisher "Your Assistant Agent"
 #define MyAppExeName "YourAssistantAgent.exe"
 
@@ -8,12 +8,14 @@ AppId={{BCF9FD95-7625-49C5-9CD0-3461189D785D}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-DefaultDirName={autopf}\Your Assistant Agent
+DefaultDirName={localappdata}\Programs\Your Assistant Agent
 DefaultGroupName={#MyAppName}
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+WizardImageFile=..\assets\installer_wizard.bmp
+WizardSmallImageFile=..\assets\installer_small.bmp
 SetupIconFile=..\assets\icon.ico
 OutputDir=..\release
 OutputBaseFilename=YourAssistantAgent-Setup

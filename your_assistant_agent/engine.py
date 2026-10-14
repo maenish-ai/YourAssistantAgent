@@ -2,21 +2,26 @@ from __future__ import annotations
 
 import queue
 import threading
-import time
 from datetime import datetime
 from typing import Any
 
 from .db import Database
-from .facebook import CheckpointDetected, FacebookAutomation, FacebookError, LoginRequired
+from .facebook import CheckpointDetected, FacebookAutomation, FacebookConfig, FacebookError, LoginRequired
+from .security import SecurityManager
+from .whatsapp import WhatsAppBusinessClient, WhatsAppError, WhatsAppNotConfigured
 
 
 class AgentEngine(threading.Thread):
-    def __init__(self, db: Database):
+    def __init__(self, db: Database, security: SecurityManager):
         super().__init__(name="YourAssistantAgentEngine", daemon=True)
         self.db = db
+        self.security = security
         self.stop_event = threading.Event()
         self.commands: queue.Queue[tuple[str, Any]] = queue.Queue()
-        self.fb = FacebookAutomation()
+        language = db.get_setting("language", "en") or "en"
+        locale = "ar-JO" if language == "ar" else "en-US"
+        self.fb = FacebookAutomation(FacebookConfig(locale=locale))
+        self.wa = WhatsAppBusinessClient(db, security)
 
     def command(self, name: str, payload=None):
         self.commands.put((name, payload))
@@ -31,8 +36,10 @@ class AgentEngine(threading.Thread):
             try:
                 self._handle_commands()
                 if not self.db.get_setting("paused", False):
-                    self._schedule_due_campaigns()
-                    self._process_due_queue()
+                    self._schedule_due_facebook_campaigns()
+                    self._schedule_due_whatsapp_campaigns()
+                    self._process_due_facebook_queue()
+                    self._process_due_whatsapp_queue()
             except Exception as exc:
                 self.db.audit("ERROR", "engine_loop_error", repr(exc))
             self.stop_event.wait(1.0)
@@ -60,19 +67,34 @@ class AgentEngine(threading.Thread):
                 try:
                     camp = self.db.get_campaign(int(payload))
                     if camp:
-                        self._create_campaign_queue(camp)
+                        self._create_facebook_campaign_queue(camp)
                 except Exception as exc:
                     self.db.audit("ERROR", "manual_campaign_error", str(exc))
+            elif name == "run_wa_campaign_now":
+                try:
+                    camp = self.db.get_wa_campaign(int(payload))
+                    if camp:
+                        self._create_whatsapp_campaign_queue(camp)
+                except Exception as exc:
+                    self.db.audit("ERROR", "wa_manual_campaign_error", str(exc))
 
-    def _schedule_due_campaigns(self):
+    def _schedule_due_facebook_campaigns(self):
         now = datetime.now().replace(microsecond=0).isoformat()
         for camp in self.db.due_campaigns(now):
             try:
-                self._create_campaign_queue(camp)
+                self._create_facebook_campaign_queue(camp)
             finally:
                 self.db.bump_campaign(camp["id"])
 
-    def _create_campaign_queue(self, camp):
+    def _schedule_due_whatsapp_campaigns(self):
+        now = datetime.now().replace(microsecond=0).isoformat()
+        for camp in self.db.due_wa_campaigns(now):
+            try:
+                self._create_whatsapp_campaign_queue(camp)
+            finally:
+                self.db.bump_wa_campaign(camp["id"])
+
+    def _create_facebook_campaign_queue(self, camp):
         self.db.audit("INFO", "campaign_start", camp["name"])
         groups = self.db.list_groups(
             enabled_only=True,
@@ -106,7 +128,24 @@ class AgentEngine(threading.Thread):
         count = self.db.enqueue(camp["id"], [g["id"] for g in groups], post_url, int(camp["interval_seconds"]))
         self.db.audit("INFO", "campaign_queued", f"{camp['name']}: {count} groups; source={post_url}")
 
-    def _process_due_queue(self):
+    def _create_whatsapp_campaign_queue(self, camp):
+        contacts = self.db.list_wa_contacts(
+            enabled_only=True,
+            opted_in_only=True,
+            keyword=camp["target_keyword"] or None,
+        )
+        if not contacts:
+            self.db.audit("WARNING", "wa_campaign_no_contacts", camp["name"])
+            return
+        count, batches = self.db.enqueue_wa(
+            camp["id"],
+            [c["id"] for c in contacts],
+            int(camp["batch_size"]),
+            int(camp["interval_seconds"]),
+        )
+        self.db.audit("INFO", "wa_campaign_queued", f"{camp['name']}: {count} contacts; {batches} batches")
+
+    def _process_due_facebook_queue(self):
         item = self.db.next_due_queue_item(datetime.now().replace(microsecond=0).isoformat())
         if not item:
             return
@@ -133,3 +172,25 @@ class AgentEngine(threading.Thread):
         except Exception as exc:
             self.db.mark_queue(item["id"], "failed", repr(exc))
             self.db.audit("ERROR", "group_post_failed", f"{item['group_name']}: {repr(exc)}")
+
+    def _process_due_whatsapp_queue(self):
+        item = self.db.next_due_wa_queue_item(datetime.now().replace(microsecond=0).isoformat())
+        if not item:
+            return
+        try:
+            mode = item["message_mode"] or "text"
+            if mode == "template":
+                self.wa.send_template(item["contact_phone"], item["template_name"] or "", item["template_language"] or "ar")
+            else:
+                self.wa.send_text(item["contact_phone"], item["message_text"] or "")
+            self.db.mark_wa_queue(item["id"], "done")
+            self.db.audit("INFO", "wa_message_done", f"{item['contact_name']} / batch {item['batch_no']}")
+        except WhatsAppNotConfigured as exc:
+            self.db.mark_wa_queue(item["id"], "failed", str(exc))
+            self.db.audit("WARNING", "wa_not_configured", item["campaign_name"] or "")
+        except WhatsAppError as exc:
+            self.db.mark_wa_queue(item["id"], "failed", str(exc))
+            self.db.audit("ERROR", "wa_message_failed", f"{item['contact_name']}: {exc}")
+        except Exception as exc:
+            self.db.mark_wa_queue(item["id"], "failed", repr(exc))
+            self.db.audit("ERROR", "wa_message_failed", f"{item['contact_name']}: {repr(exc)}")

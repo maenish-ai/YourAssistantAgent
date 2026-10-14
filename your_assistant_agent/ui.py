@@ -1,85 +1,189 @@
 from __future__ import annotations
 
+import csv
+import math
+import os
 import sys
-from datetime import datetime
 
-from PySide6.QtCore import Qt, QTimer, QTime
-from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtCore import Qt, QEventLoop, QProcess, QTimer, QTime
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
-    QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow,
-    QMessageBox, QPushButton, QSpinBox, QTabWidget, QTableWidget, QTableWidgetItem,
-    QTimeEdit, QVBoxLayout, QWidget, QSystemTrayIcon, QMenu, QSplashScreen, QFrame
+    QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
+    QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
+    QLineEdit, QMainWindow, QMessageBox, QPushButton, QSpinBox, QTabWidget,
+    QTableWidget, QTableWidgetItem, QTextEdit, QTimeEdit, QVBoxLayout, QWidget,
+    QSystemTrayIcon, QMenu
 )
 
-from .branding import pixmap, splash_path, window_icon
+from .branding import pixmap, window_icon
 from .db import Database
 from .engine import AgentEngine
+from .i18n import LANGUAGES, Translator
 from .security import SecurityManager
-from .startup import (
-    is_enabled as startup_is_enabled,
-    migrate_legacy_startup,
-    set_enabled as startup_set_enabled,
-)
-
+from .startup import is_enabled as startup_is_enabled, migrate_legacy_startup, set_enabled as startup_set_enabled
+from .text_utils import is_valid_international_phone
 
 APP_TITLE = "Your Assistant Agent"
 
+EVENT_AR = {
+    "engine_started": "بدء محرك الوكيل",
+    "engine_stopped": "إيقاف محرك الوكيل",
+    "group_added": "إضافة مجموعة فيسبوك",
+    "campaign_added": "إضافة حملة فيسبوك",
+    "campaign_queued": "إضافة حملة فيسبوك إلى الطابور",
+    "campaign_no_groups": "لا توجد مجموعات مطابقة",
+    "group_post_done": "تم نشر منشور المجموعة",
+    "group_post_failed": "فشل نشر منشور المجموعة",
+    "facebook_browser_opened": "تم فتح متصفح فيسبوك",
+    "facebook_login_required": "يلزم تسجيل الدخول إلى فيسبوك",
+    "facebook_checkpoint": "تحقق أمني من فيسبوك",
+    "wa_contact_added": "إضافة جهة اتصال واتساب",
+    "wa_campaign_added": "إضافة حملة واتساب",
+    "wa_campaign_queued": "إضافة حملة واتساب إلى الطابور",
+    "wa_campaign_no_contacts": "لا توجد جهات اتصال مؤهلة",
+    "wa_message_done": "تم إرسال رسالة واتساب",
+    "wa_message_failed": "فشل إرسال رسالة واتساب",
+    "wa_not_configured": "واتساب غير مهيأ",
+    "emergency_stop": "إيقاف طارئ",
+    "startup_changed": "تغيير التشغيل مع ويندوز",
+    "secret_updated": "تحديث سر محمي",
+    "pin_set": "إنشاء رمز PIN",
+    "pin_failed": "محاولة PIN غير صحيحة",
+}
+
+
+class LanguageDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Language / اللغة")
+        self.setWindowIcon(window_icon())
+        self.setModal(True)
+        self.setFixedWidth(430)
+        root = QVBoxLayout(self)
+        root.setSpacing(16)
+
+        logo = QLabel()
+        pm = pixmap("brand_mark.png")
+        if not pm.isNull():
+            logo.setPixmap(pm.scaled(180, 140, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        logo.setAlignment(Qt.AlignCenter)
+        root.addWidget(logo)
+
+        title = QLabel("Choose language  |  اختر اللغة")
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("font-size:20px;font-weight:800;color:#1f2455;")
+        root.addWidget(title)
+
+        self.combo = QComboBox()
+        self.combo.addItem("العربية", "ar")
+        self.combo.addItem("English", "en")
+        self.combo.setCurrentIndex(0)
+        root.addWidget(self.combo)
+
+        btn = QPushButton("متابعة  |  Continue")
+        btn.setMinimumHeight(40)
+        btn.clicked.connect(self.accept)
+        root.addWidget(btn)
+
+    @property
+    def language(self):
+        return self.combo.currentData() or "ar"
+
+
+class SplashWidget(QWidget):
+    def __init__(self, tr: Translator):
+        super().__init__(None, Qt.SplashScreen | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.tr = tr
+        self.setAttribute(Qt.WA_TranslucentBackground, False)
+        self.setFixedSize(610, 570)
+        self.setStyleSheet("background:white;border:1px solid #ececff;")
+        root = QVBoxLayout(self)
+        root.setContentsMargins(36, 30, 36, 28)
+        root.setSpacing(10)
+
+        mark = QLabel()
+        pm = pixmap("brand_mark.png")
+        if not pm.isNull():
+            mark.setPixmap(pm.scaled(360, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        mark.setAlignment(Qt.AlignCenter)
+        root.addWidget(mark)
+
+        title = QLabel(APP_TITLE)
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("font-size:35px;font-weight:800;color:#20285c;")
+        root.addWidget(title)
+
+        desc = QLabel(tr.t("splash_desc"))
+        desc.setAlignment(Qt.AlignCenter)
+        desc.setWordWrap(True)
+        desc.setStyleSheet("font-size:14px;color:#60658a;")
+        root.addWidget(desc)
+
+        features = QLabel(tr.t("splash_features"))
+        features.setAlignment(Qt.AlignCenter)
+        features.setWordWrap(True)
+        features.setStyleSheet("font-size:12px;color:#7668ce;")
+        root.addWidget(features)
+
+        init = QLabel(tr.t("initializing"))
+        init.setAlignment(Qt.AlignCenter)
+        init.setStyleSheet("font-size:12px;color:#8a8da8;margin-top:14px;")
+        root.addWidget(init)
+
 
 class BrandBanner(QWidget):
-    def __init__(self, title: str = APP_TITLE, subtitle: str = "Smarter posting. Stronger control.", parent=None):
+    def __init__(self, tr: Translator, subtitle: str, parent=None):
         super().__init__(parent)
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(14)
-
-        logo_label = QLabel()
-        logo = pixmap("app_icon.png")
-        if not logo.isNull():
-            logo_label.setPixmap(logo.scaled(72, 72, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        lay.addWidget(logo_label)
-
+        lay.setSpacing(12)
+        logo = QLabel()
+        pm = pixmap("app_icon.png")
+        if not pm.isNull():
+            logo.setPixmap(pm.scaled(64, 64, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        lay.addWidget(logo)
         txt = QVBoxLayout()
-        head = QLabel(title)
-        head.setStyleSheet("font-size: 24px; font-weight: 800; color: #1E1B4B;")
+        head = QLabel(APP_TITLE)
+        head.setStyleSheet("font-size:23px;font-weight:800;color:#20285c;")
         sub = QLabel(subtitle)
-        sub.setStyleSheet("font-size: 12px; color: #6B7280;")
+        sub.setWordWrap(True)
+        sub.setStyleSheet("font-size:12px;color:#6b7280;")
         txt.addWidget(head)
         txt.addWidget(sub)
-        txt.addStretch(1)
         lay.addLayout(txt, 1)
 
 
 class PinDialog(QDialog):
-    def __init__(self, security: SecurityManager, create=False, parent=None):
+    def __init__(self, security: SecurityManager, tr: Translator, create=False, parent=None):
         super().__init__(parent)
         self.security = security
+        self.tr = tr
         self.create = create
-        self.setWindowTitle(f"{APP_TITLE} - Security")
+        self.setWindowTitle(f"{APP_TITLE} - {tr.t('security')}")
         self.setWindowIcon(window_icon())
         self.setModal(True)
+        self.setMinimumWidth(470)
+        self.setLayoutDirection(Qt.RightToLeft if tr.rtl else Qt.LeftToRight)
 
         root = QVBoxLayout(self)
-        root.setSpacing(12)
-        root.addWidget(BrandBanner(APP_TITLE, "Secure local access with your private PIN."))
-
+        root.addWidget(BrandBanner(tr, tr.t("security")))
         form = QFormLayout()
         self.pin = QLineEdit()
         self.pin.setEchoMode(QLineEdit.Password)
-        form.addRow("PIN:" if not create else "Create PIN:", self.pin)
+        form.addRow((tr.t("create_pin") if create else tr.t("pin")) + ":", self.pin)
         self.confirm = None
         if create:
             self.confirm = QLineEdit()
             self.confirm.setEchoMode(QLineEdit.Password)
-            form.addRow("Confirm PIN:", self.confirm)
+            form.addRow(tr.t("confirm_pin") + ":", self.confirm)
         root.addLayout(form)
-
-        note = QLabel("This PIN protects the agent locally on your Windows device. Facebook password is never requested here.")
+        note = QLabel(tr.t("pin_note"))
         note.setWordWrap(True)
-        note.setStyleSheet("color:#6B7280;")
+        note.setStyleSheet("color:#6b7280;")
         root.addWidget(note)
-
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText(tr.t("continue"))
+        buttons.button(QDialogButtonBox.Cancel).setText(tr.t("cancel"))
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
@@ -88,45 +192,54 @@ class PinDialog(QDialog):
         value = self.pin.text()
         if self.create:
             if len(value) < 4:
-                QMessageBox.warning(self, "PIN", "Use at least 4 characters.")
+                QMessageBox.warning(self, self.tr.t("pin"), self.tr.t("pin_min"))
                 return
             if value != self.confirm.text():
-                QMessageBox.warning(self, "PIN", "PIN values do not match.")
+                QMessageBox.warning(self, self.tr.t("pin"), self.tr.t("pin_mismatch"))
                 return
             self.security.set_pin(value)
             self.accept()
             return
         if not self.security.verify_pin(value):
-            QMessageBox.warning(self, "PIN", "Incorrect PIN.")
+            QMessageBox.warning(self, self.tr.t("pin"), self.tr.t("pin_wrong"))
             return
         self.accept()
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, db: Database, engine: AgentEngine):
+    def __init__(self, db: Database, engine: AgentEngine, security: SecurityManager, tr: Translator):
         super().__init__()
         self.db = db
         self.engine = engine
+        self.security = security
+        self.tr = tr
+        self._really_quit = False
         self.setWindowTitle(APP_TITLE)
         self.setWindowIcon(window_icon())
-        self.resize(1180, 760)
-        self._really_quit = False
+        self.resize(1280, 820)
+        self.setLayoutDirection(Qt.RightToLeft if tr.rtl else Qt.LeftToRight)
+
         self.tabs = QTabWidget()
         self.setCentralWidget(self.tabs)
-
         self.dashboard = QWidget()
         self.groups_tab = QWidget()
         self.campaigns_tab = QWidget()
+        self.whatsapp_tab = QWidget()
         self.logs_tab = QWidget()
-        self.tabs.addTab(self.dashboard, "Dashboard")
-        self.tabs.addTab(self.groups_tab, "Groups")
-        self.tabs.addTab(self.campaigns_tab, "Campaigns")
-        self.tabs.addTab(self.logs_tab, "Audit Log")
+        self.settings_tab = QWidget()
+        self.tabs.addTab(self.dashboard, tr.t("dashboard"))
+        self.tabs.addTab(self.groups_tab, tr.t("facebook_groups"))
+        self.tabs.addTab(self.campaigns_tab, tr.t("facebook_campaigns"))
+        self.tabs.addTab(self.whatsapp_tab, tr.t("whatsapp"))
+        self.tabs.addTab(self.logs_tab, tr.t("audit_log"))
+        self.tabs.addTab(self.settings_tab, tr.t("settings"))
 
         self._build_dashboard()
         self._build_groups()
         self._build_campaigns()
+        self._build_whatsapp()
         self._build_logs()
+        self._build_settings()
         self._build_tray()
 
         self.timer = QTimer(self)
@@ -136,24 +249,16 @@ class MainWindow(QMainWindow):
 
     def _build_dashboard(self):
         lay = QVBoxLayout(self.dashboard)
-        lay.addWidget(BrandBanner(APP_TITLE, "Local automation controller with persistent branding across startup, window and tray."))
-
-        hero = QLabel()
-        brand = pixmap("branding_full.png")
-        if not brand.isNull():
-            hero.setPixmap(brand.scaledToWidth(430, Qt.SmoothTransformation))
-            hero.setAlignment(Qt.AlignLeft)
-            lay.addWidget(hero)
-
+        lay.addWidget(BrandBanner(self.tr, self.tr.t("dashboard_subtitle")))
         buttons = QHBoxLayout()
-        self.login_btn = QPushButton("Open dedicated Facebook browser")
+        self.login_btn = QPushButton(self.tr.t("open_facebook"))
         self.login_btn.clicked.connect(lambda: self.engine.command("open_login"))
         self.pause_btn = QPushButton()
         self.pause_btn.clicked.connect(self.toggle_pause)
-        self.kill_btn = QPushButton("EMERGENCY STOP")
-        self.kill_btn.setStyleSheet("font-weight:700; padding:8px;")
+        self.kill_btn = QPushButton(self.tr.t("emergency_stop"))
+        self.kill_btn.setStyleSheet("font-weight:800;padding:8px;")
         self.kill_btn.clicked.connect(self.emergency_stop)
-        self.startup_check = QCheckBox("Start with Windows")
+        self.startup_check = QCheckBox(self.tr.t("start_windows"))
         try:
             self.startup_check.setChecked(startup_is_enabled())
         except Exception:
@@ -165,267 +270,368 @@ class MainWindow(QMainWindow):
         buttons.addWidget(self.startup_check)
         lay.addLayout(buttons)
 
-        box = QGroupBox("Status")
+        box = QGroupBox(self.tr.t("status"))
         grid = QGridLayout(box)
         self.status_label = QLabel()
         self.queue_label = QLabel()
         self.next_label = QLabel()
-        grid.addWidget(QLabel("Agent:"), 0, 0)
+        self.wa_next_label = QLabel()
+        grid.addWidget(QLabel(self.tr.t("agent") + ":"), 0, 0)
         grid.addWidget(self.status_label, 0, 1)
-        grid.addWidget(QLabel("Queue:"), 1, 0)
+        grid.addWidget(QLabel(self.tr.t("queue") + ":"), 1, 0)
         grid.addWidget(self.queue_label, 1, 1)
-        grid.addWidget(QLabel("Next campaign:"), 2, 0)
+        grid.addWidget(QLabel(self.tr.t("next_campaign") + ":"), 2, 0)
         grid.addWidget(self.next_label, 2, 1)
+        grid.addWidget(QLabel(self.tr.t("next_wa_campaign") + ":"), 3, 0)
+        grid.addWidget(self.wa_next_label, 3, 1)
         lay.addWidget(box)
-
-        note = QLabel(
-            "First use: open the dedicated Facebook browser and sign in manually. "
-            "The application never asks for or stores your Facebook password. "
-            "If Facebook requests a security checkpoint, the agent pauses automatically."
-        )
+        note = QLabel(self.tr.t("facebook_note"))
         note.setWordWrap(True)
         lay.addWidget(note)
         lay.addStretch(1)
 
     def _build_groups(self):
         lay = QVBoxLayout(self.groups_tab)
-        helper = QLabel("Add Facebook groups once, then classify them by area or keyword such as دابوق, صويلح, ألف حرس.")
-        helper.setWordWrap(True)
-        helper.setStyleSheet("color:#6B7280;")
+        helper = QLabel(self.tr.t("group_help")); helper.setWordWrap(True); helper.setStyleSheet("color:#6b7280;")
         lay.addWidget(helper)
         form = QHBoxLayout()
-        self.g_name = QLineEdit(); self.g_name.setPlaceholderText("Group name")
+        self.g_name = QLineEdit(); self.g_name.setPlaceholderText(self.tr.t("group_name"))
         self.g_url = QLineEdit(); self.g_url.setPlaceholderText("https://www.facebook.com/groups/...")
-        self.g_tags = QLineEdit(); self.g_tags.setPlaceholderText("Tags / area e.g. دابوق, صويلح")
-        add = QPushButton("Add group")
-        add.clicked.connect(self.add_group)
+        self.g_tags = QLineEdit(); self.g_tags.setPlaceholderText(self.tr.t("tags"))
+        add = QPushButton(self.tr.t("add_group")); add.clicked.connect(self.add_group)
         form.addWidget(self.g_name, 2); form.addWidget(self.g_url, 4); form.addWidget(self.g_tags, 2); form.addWidget(add)
         lay.addLayout(form)
         self.groups_table = QTableWidget(0, 5)
-        self.groups_table.setHorizontalHeaderLabels(["ID", "Name", "URL", "Tags", "Enabled"])
+        self.groups_table.setHorizontalHeaderLabels([self.tr.t("id"), self.tr.t("group_name"), self.tr.t("url"), self.tr.t("tags"), self.tr.t("enabled")])
         self.groups_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         lay.addWidget(self.groups_table)
-        del_btn = QPushButton("Delete selected group")
-        del_btn.clicked.connect(self.delete_group)
-        lay.addWidget(del_btn)
+        delete = QPushButton(self.tr.t("delete_group")); delete.clicked.connect(self.delete_group); lay.addWidget(delete)
 
     def _build_campaigns(self):
         lay = QVBoxLayout(self.campaigns_tab)
-        box = QGroupBox("New campaign")
+        box = QGroupBox(self.tr.t("new_campaign"))
         form = QFormLayout(box)
-        self.c_name = QLineEdit(); self.c_name.setPlaceholderText("مثال: آخر بوست - ألف حرس")
-        self.c_page = QLineEdit(); self.c_page.setPlaceholderText("Facebook Page URL")
-        self.c_offset = QSpinBox(); self.c_offset.setRange(0, 20); self.c_offset.setToolTip("0 = latest, 1 = previous, 2 = one before that")
-        self.c_keyword = QLineEdit(); self.c_keyword.setPlaceholderText("Group name/tag contains...")
+        self.c_name = QLineEdit()
+        self.c_page = QLineEdit(); self.c_page.setPlaceholderText("https://www.facebook.com/...")
+        self.c_offset = QSpinBox(); self.c_offset.setRange(0, 20)
+        self.c_keyword = QLineEdit()
         self.c_max = QSpinBox(); self.c_max.setRange(1, 100); self.c_max.setValue(10)
-        self.c_interval = QSpinBox(); self.c_interval.setRange(30, 3600); self.c_interval.setValue(60); self.c_interval.setSuffix(" sec")
-        self.c_days = QSpinBox(); self.c_days.setRange(1, 365); self.c_days.setValue(3); self.c_days.setSuffix(" days")
+        self.c_interval = QSpinBox(); self.c_interval.setRange(30, 3600); self.c_interval.setValue(60); self.c_interval.setSuffix(self.tr.t("seconds"))
+        self.c_days = QSpinBox(); self.c_days.setRange(1, 365); self.c_days.setValue(3); self.c_days.setSuffix(self.tr.t("days"))
         self.c_time = QTimeEdit(); self.c_time.setDisplayFormat("HH:mm"); self.c_time.setTime(QTime(20, 0))
-        self.c_prefix = QLineEdit(); self.c_prefix.setPlaceholderText("Optional text before the source post link")
-        form.addRow("Campaign name", self.c_name)
-        form.addRow("Source page", self.c_page)
-        form.addRow("Post offset", self.c_offset)
-        form.addRow("Target group keyword/tag", self.c_keyword)
-        form.addRow("Maximum groups", self.c_max)
-        form.addRow("Delay between groups", self.c_interval)
-        form.addRow("Run every", self.c_days)
-        form.addRow("At", self.c_time)
-        form.addRow("Optional prefix", self.c_prefix)
-        add = QPushButton("Create campaign")
-        add.clicked.connect(self.add_campaign)
-        form.addRow(add)
+        self.c_prefix = QLineEdit()
+        for label, widget in [
+            ("campaign_name", self.c_name), ("source_page", self.c_page), ("post_offset", self.c_offset),
+            ("target_keyword", self.c_keyword), ("maximum_groups", self.c_max), ("delay_groups", self.c_interval),
+            ("run_every", self.c_days), ("at", self.c_time), ("optional_prefix", self.c_prefix)
+        ]:
+            form.addRow(self.tr.t(label), widget)
+        add = QPushButton(self.tr.t("create_campaign")); add.clicked.connect(self.add_campaign); form.addRow(add)
         lay.addWidget(box)
 
         self.campaign_table = QTableWidget(0, 10)
         self.campaign_table.setHorizontalHeaderLabels([
-            "ID","Name","Page","Offset","Keyword","Max","Delay","Every days","Time","Next run"
+            self.tr.t("id"), self.tr.t("campaign_name"), self.tr.t("page"), self.tr.t("offset"),
+            self.tr.t("keyword"), self.tr.t("max"), self.tr.t("delay"), self.tr.t("every_days"), self.tr.t("at"), self.tr.t("next_run")
         ])
         self.campaign_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.campaign_table.horizontalHeader().setStretchLastSection(True)
         lay.addWidget(self.campaign_table)
-
         row = QHBoxLayout()
-        run = QPushButton("Run selected now")
-        run.clicked.connect(self.run_campaign_now)
-        toggle = QPushButton("Enable/Disable selected")
-        toggle.clicked.connect(self.toggle_campaign)
-        delete = QPushButton("Delete selected")
-        delete.clicked.connect(self.delete_campaign)
-        row.addWidget(run); row.addWidget(toggle); row.addWidget(delete)
-        lay.addLayout(row)
+        run = QPushButton(self.tr.t("run_now")); run.clicked.connect(self.run_campaign_now)
+        toggle = QPushButton(self.tr.t("toggle_selected")); toggle.clicked.connect(self.toggle_campaign)
+        delete = QPushButton(self.tr.t("delete_selected")); delete.clicked.connect(self.delete_campaign)
+        row.addWidget(run); row.addWidget(toggle); row.addWidget(delete); lay.addLayout(row)
+
+    def _build_whatsapp(self):
+        root = QVBoxLayout(self.whatsapp_tab)
+        info = QLabel(self.tr.t("wa_info")); info.setWordWrap(True); info.setStyleSheet("color:#5d6386;")
+        root.addWidget(info)
+        self.wa_tabs = QTabWidget(); root.addWidget(self.wa_tabs)
+        contacts = QWidget(); campaigns = QWidget(); settings = QWidget()
+        self.wa_tabs.addTab(contacts, self.tr.t("whatsapp_contacts"))
+        self.wa_tabs.addTab(campaigns, self.tr.t("whatsapp_campaigns"))
+        self.wa_tabs.addTab(settings, self.tr.t("whatsapp_settings"))
+        self._build_wa_contacts(contacts)
+        self._build_wa_campaigns(campaigns)
+        self._build_wa_settings(settings)
+
+    def _build_wa_contacts(self, widget):
+        lay = QVBoxLayout(widget)
+        note = QLabel(self.tr.t("wa_contact_help")); note.setWordWrap(True); note.setStyleSheet("color:#6b7280;"); lay.addWidget(note)
+        form = QHBoxLayout()
+        self.wa_name = QLineEdit(); self.wa_name.setPlaceholderText(self.tr.t("contact_name"))
+        self.wa_phone = QLineEdit(); self.wa_phone.setPlaceholderText(self.tr.t("phone"))
+        self.wa_tags = QLineEdit(); self.wa_tags.setPlaceholderText(self.tr.t("tags"))
+        self.wa_optin = QCheckBox(self.tr.t("opt_in")); self.wa_optin.setChecked(True)
+        add = QPushButton(self.tr.t("add_contact")); add.clicked.connect(self.add_wa_contact)
+        form.addWidget(self.wa_name, 2); form.addWidget(self.wa_phone, 2); form.addWidget(self.wa_tags, 2); form.addWidget(self.wa_optin); form.addWidget(add)
+        lay.addLayout(form)
+        self.wa_contacts_table = QTableWidget(0, 6)
+        self.wa_contacts_table.setHorizontalHeaderLabels([self.tr.t("id"), self.tr.t("contact_name"), self.tr.t("phone"), self.tr.t("tags"), self.tr.t("opt_in"), self.tr.t("enabled")])
+        self.wa_contacts_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        lay.addWidget(self.wa_contacts_table)
+        buttons = QHBoxLayout()
+        imp = QPushButton(self.tr.t("import_csv")); imp.clicked.connect(self.import_wa_csv)
+        dele = QPushButton(self.tr.t("delete_contact")); dele.clicked.connect(self.delete_wa_contact)
+        buttons.addWidget(imp); buttons.addWidget(dele); buttons.addStretch(1); lay.addLayout(buttons)
+
+    def _build_wa_campaigns(self, widget):
+        lay = QVBoxLayout(widget)
+        box = QGroupBox(self.tr.t("whatsapp_campaigns"))
+        form = QFormLayout(box)
+        self.wac_name = QLineEdit()
+        self.wac_mode = QComboBox(); self.wac_mode.addItem(self.tr.t("text_message"), "text"); self.wac_mode.addItem(self.tr.t("template_message"), "template")
+        self.wac_message = QTextEdit(); self.wac_message.setMaximumHeight(90)
+        self.wac_template = QLineEdit()
+        self.wac_template_lang = QLineEdit("ar" if self.tr.rtl else "en_US")
+        self.wac_keyword = QLineEdit()
+        self.wac_batch = QSpinBox(); self.wac_batch.setRange(1, 256); self.wac_batch.setValue(100)
+        self.wac_interval = QSpinBox(); self.wac_interval.setRange(30, 3600); self.wac_interval.setValue(60); self.wac_interval.setSuffix(self.tr.t("seconds"))
+        self.wac_days = QSpinBox(); self.wac_days.setRange(1, 365); self.wac_days.setValue(1); self.wac_days.setSuffix(self.tr.t("days"))
+        self.wac_time = QTimeEdit(); self.wac_time.setDisplayFormat("HH:mm"); self.wac_time.setTime(QTime(19, 0))
+        for key, widget2 in [
+            ("wa_campaign_name", self.wac_name), ("message_mode", self.wac_mode), ("message_text", self.wac_message),
+            ("template_name", self.wac_template), ("template_language", self.wac_template_lang),
+            ("target_contact_keyword", self.wac_keyword), ("batch_size", self.wac_batch), ("delay_contacts", self.wac_interval),
+            ("run_every", self.wac_days), ("at", self.wac_time)
+        ]:
+            form.addRow(self.tr.t(key), widget2)
+        row = QHBoxLayout()
+        preview = QPushButton(self.tr.t("preview_batches")); preview.clicked.connect(self.preview_wa_batches)
+        add = QPushButton(self.tr.t("create_wa_campaign")); add.clicked.connect(self.add_wa_campaign)
+        row.addWidget(preview); row.addWidget(add); form.addRow(row)
+        lay.addWidget(box)
+
+        self.wa_campaign_table = QTableWidget(0, 9)
+        self.wa_campaign_table.setHorizontalHeaderLabels([
+            self.tr.t("id"), self.tr.t("wa_campaign_name"), self.tr.t("mode"), self.tr.t("keyword"), self.tr.t("batch"),
+            self.tr.t("delay"), self.tr.t("every_days"), self.tr.t("at"), self.tr.t("next_run")
+        ])
+        self.wa_campaign_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.wa_campaign_table.horizontalHeader().setStretchLastSection(True)
+        lay.addWidget(self.wa_campaign_table)
+        buttons = QHBoxLayout()
+        run = QPushButton(self.tr.t("run_now")); run.clicked.connect(self.run_wa_campaign_now)
+        toggle = QPushButton(self.tr.t("toggle_selected")); toggle.clicked.connect(self.toggle_wa_campaign)
+        delete = QPushButton(self.tr.t("delete_selected")); delete.clicked.connect(self.delete_wa_campaign)
+        buttons.addWidget(run); buttons.addWidget(toggle); buttons.addWidget(delete); lay.addLayout(buttons)
+
+    def _build_wa_settings(self, widget):
+        lay = QVBoxLayout(widget)
+        form = QFormLayout()
+        self.wa_phone_id = QLineEdit(str(self.db.get_setting("wa_phone_number_id", "") or ""))
+        self.wa_api_version = QLineEdit(str(self.db.get_setting("wa_api_version", "v24.0") or "v24.0"))
+        self.wa_token = QLineEdit(); self.wa_token.setEchoMode(QLineEdit.Password); self.wa_token.setPlaceholderText(self.tr.t("wa_token_placeholder"))
+        form.addRow(self.tr.t("wa_phone_id"), self.wa_phone_id)
+        form.addRow(self.tr.t("wa_api_version"), self.wa_api_version)
+        form.addRow(self.tr.t("wa_token"), self.wa_token)
+        save = QPushButton(self.tr.t("save_wa_settings")); save.clicked.connect(self.save_wa_settings); form.addRow(save)
+        lay.addLayout(form); lay.addStretch(1)
 
     def _build_logs(self):
         lay = QVBoxLayout(self.logs_tab)
-        note = QLabel("Audit log records important events, safety actions and execution results.")
-        note.setStyleSheet("color:#6B7280;")
-        lay.addWidget(note)
+        note = QLabel(self.tr.t("log_note")); note.setStyleSheet("color:#6b7280;"); lay.addWidget(note)
         self.logs_table = QTableWidget(0, 4)
-        self.logs_table.setHorizontalHeaderLabels(["Time", "Level", "Event", "Details"])
+        self.logs_table.setHorizontalHeaderLabels([self.tr.t("time"), self.tr.t("level"), self.tr.t("event"), self.tr.t("details")])
         self.logs_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         lay.addWidget(self.logs_table)
 
+    def _build_settings(self):
+        lay = QVBoxLayout(self.settings_tab)
+        lang_box = QGroupBox(self.tr.t("language"))
+        form = QFormLayout(lang_box)
+        self.lang_combo = QComboBox()
+        self.lang_combo.addItem("العربية", "ar")
+        self.lang_combo.addItem("English", "en")
+        idx = self.lang_combo.findData(self.tr.language)
+        if idx >= 0: self.lang_combo.setCurrentIndex(idx)
+        apply = QPushButton(self.tr.t("apply_language")); apply.clicked.connect(self.apply_language)
+        form.addRow(self.tr.t("language"), self.lang_combo); form.addRow(apply)
+        lay.addWidget(lang_box)
+        sec = QGroupBox(self.tr.t("about_security")); s = QVBoxLayout(sec); text = QLabel(self.tr.t("security_text")); text.setWordWrap(True); s.addWidget(text); lay.addWidget(sec)
+        lay.addStretch(1)
+
     def _build_tray(self):
-        self.tray = QSystemTrayIcon(self)
-        self.tray.setToolTip(APP_TITLE)
-        self.tray.setIcon(window_icon())
+        self.tray = QSystemTrayIcon(self); self.tray.setToolTip(APP_TITLE); self.tray.setIcon(window_icon())
         menu = QMenu(self)
-        show_action = menu.addAction(f"Open {APP_TITLE}")
-        show_action.triggered.connect(self.show_normal)
-        stop_action = menu.addAction("Emergency stop")
-        stop_action.triggered.connect(self.emergency_stop)
-        menu.addSeparator()
-        exit_action = menu.addAction("Exit")
-        exit_action.triggered.connect(self.exit_app)
-        self.tray.setContextMenu(menu)
-        self.tray.activated.connect(lambda reason: self.show_normal() if reason == QSystemTrayIcon.DoubleClick else None)
-        self.tray.show()
+        show = menu.addAction(APP_TITLE); show.triggered.connect(self.show_normal)
+        stop = menu.addAction(self.tr.t("emergency_stop")); stop.triggered.connect(self.emergency_stop)
+        menu.addSeparator(); exit_action = menu.addAction("Exit" if not self.tr.rtl else "خروج"); exit_action.triggered.connect(self.exit_app)
+        self.tray.setContextMenu(menu); self.tray.activated.connect(lambda reason: self.show_normal() if reason == QSystemTrayIcon.DoubleClick else None); self.tray.show()
 
-    def show_normal(self):
-        self.show()
-        self.raise_()
-        self.activateWindow()
+    def show_normal(self): self.show(); self.raise_(); self.activateWindow()
+    def exit_app(self): self._really_quit = True; self.close()
 
-    def exit_app(self):
-        self._really_quit = True
-        self.close()
-
-    def toggle_startup(self, checked: bool):
+    def toggle_startup(self, checked):
         try:
-            startup_set_enabled(bool(checked))
-            self.db.audit("INFO", "startup_changed", str(bool(checked)))
+            startup_set_enabled(bool(checked)); self.db.audit("INFO", "startup_changed", str(bool(checked)))
         except Exception as exc:
-            QMessageBox.warning(self, "Startup", str(exc))
-            self.startup_check.blockSignals(True)
-            self.startup_check.setChecked(False)
-            self.startup_check.blockSignals(False)
+            QMessageBox.warning(self, self.tr.t("settings"), str(exc))
 
     def toggle_pause(self):
-        self.db.set_setting("paused", not bool(self.db.get_setting("paused", False)))
-        self.db.audit("INFO", "agent_pause_toggled", str(self.db.get_setting("paused")))
-        self.refresh_all()
+        self.db.set_setting("paused", not bool(self.db.get_setting("paused", False))); self.refresh_all()
 
     def emergency_stop(self):
-        reply = QMessageBox.question(self, "Emergency stop", "Pause the agent and cancel all pending queue items?")
-        if reply == QMessageBox.Yes:
-            self.db.set_setting("paused", True)
-            self.db.clear_pending()
-            self.db.audit("SECURITY", "emergency_stop")
-            self.refresh_all()
+        if QMessageBox.question(self, self.tr.t("emergency_stop"), self.tr.t("emergency_question")) == QMessageBox.Yes:
+            self.db.set_setting("paused", True); self.db.clear_pending(); self.db.audit("SECURITY", "emergency_stop"); self.refresh_all()
 
     def add_group(self):
-        if not self.g_name.text().strip() or not self.g_url.text().strip():
-            QMessageBox.warning(self, "Group", "Name and URL are required.")
-            return
+        if not self.g_name.text().strip() or not self.g_url.text().strip(): QMessageBox.warning(self, self.tr.t("facebook_groups"), self.tr.t("name_required")); return
         try:
-            self.db.add_group(self.g_name.text(), self.g_url.text(), self.g_tags.text())
-            self.g_name.clear(); self.g_url.clear(); self.g_tags.clear()
-            self.refresh_groups()
-        except Exception as exc:
-            QMessageBox.critical(self, "Group", str(exc))
+            self.db.add_group(self.g_name.text(), self.g_url.text(), self.g_tags.text()); self.g_name.clear(); self.g_url.clear(); self.g_tags.clear(); self.refresh_groups()
+        except Exception as exc: QMessageBox.critical(self, self.tr.t("facebook_groups"), str(exc))
 
     def delete_group(self):
         row = self.groups_table.currentRow()
-        if row < 0:
-            return
-        gid = int(self.groups_table.item(row, 0).text())
-        self.db.delete_group(gid)
-        self.refresh_groups()
+        if row >= 0: self.db.delete_group(int(self.groups_table.item(row, 0).text())); self.refresh_groups()
 
     def add_campaign(self):
-        if not self.c_name.text().strip() or not self.c_page.text().strip():
-            QMessageBox.warning(self, "Campaign", "Campaign name and source page are required.")
-            return
-        self.db.add_campaign(
-            self.c_name.text(), self.c_page.text(), self.c_offset.value(), self.c_keyword.text(),
-            self.c_max.value(), self.c_interval.value(), self.c_days.value(), self.c_time.time().toString("HH:mm"),
-            self.c_prefix.text(),
-        )
-        self.c_name.clear(); self.c_keyword.clear(); self.c_prefix.clear()
-        self.refresh_campaigns()
+        if not self.c_name.text().strip() or not self.c_page.text().strip(): QMessageBox.warning(self, self.tr.t("facebook_campaigns"), self.tr.t("campaign_required")); return
+        self.db.add_campaign(self.c_name.text(), self.c_page.text(), self.c_offset.value(), self.c_keyword.text(), self.c_max.value(), self.c_interval.value(), self.c_days.value(), self.c_time.time().toString("HH:mm"), self.c_prefix.text())
+        self.c_name.clear(); self.c_keyword.clear(); self.c_prefix.clear(); self.refresh_campaigns()
 
-    def _selected_campaign_id(self):
-        row = self.campaign_table.currentRow()
-        if row < 0:
-            return None
-        return int(self.campaign_table.item(row, 0).text())
-
+    def _selected_id(self, table):
+        row = table.currentRow(); return None if row < 0 else int(table.item(row, 0).text())
     def run_campaign_now(self):
-        cid = self._selected_campaign_id()
-        if cid is not None:
-            self.engine.command("run_campaign_now", cid)
-
+        cid = self._selected_id(self.campaign_table)
+        if cid is not None: self.engine.command("run_campaign_now", cid)
     def toggle_campaign(self):
-        cid = self._selected_campaign_id()
-        if cid is None:
-            return
-        camp = self.db.get_campaign(cid)
-        self.db.update_campaign_enabled(cid, not bool(camp["enabled"]))
-        self.refresh_campaigns()
-
+        cid = self._selected_id(self.campaign_table)
+        if cid is not None:
+            c = self.db.get_campaign(cid); self.db.update_campaign_enabled(cid, not bool(c["enabled"])); self.refresh_campaigns()
     def delete_campaign(self):
-        cid = self._selected_campaign_id()
-        if cid is None:
-            return
-        self.db.delete_campaign(cid)
-        self.refresh_campaigns()
+        cid = self._selected_id(self.campaign_table)
+        if cid is not None: self.db.delete_campaign(cid); self.refresh_campaigns()
+
+    def add_wa_contact(self):
+        name, phone = self.wa_name.text().strip(), self.wa_phone.text().strip()
+        if not name or not phone: QMessageBox.warning(self, self.tr.t("whatsapp"), self.tr.t("contact_required")); return
+        if not is_valid_international_phone(phone): QMessageBox.warning(self, self.tr.t("whatsapp"), self.tr.t("invalid_phone")); return
+        try:
+            self.db.add_wa_contact(name, phone, self.wa_tags.text(), self.wa_optin.isChecked())
+            self.wa_name.clear(); self.wa_phone.clear(); self.wa_tags.clear(); self.refresh_wa_contacts()
+        except Exception as exc: QMessageBox.critical(self, self.tr.t("whatsapp"), str(exc))
+
+    def delete_wa_contact(self):
+        cid = self._selected_id(self.wa_contacts_table)
+        if cid is not None: self.db.delete_wa_contact(cid); self.refresh_wa_contacts()
+
+    def import_wa_csv(self):
+        path, _ = QFileDialog.getOpenFileName(self, self.tr.t("select_csv"), "", "CSV Files (*.csv);;All Files (*)")
+        if not path: return
+        count = 0
+        try:
+            with open(path, "r", encoding="utf-8-sig", newline="") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    name = (row.get("name") or row.get("Name") or "").strip()
+                    phone = (row.get("phone") or row.get("Phone") or "").strip()
+                    tags = (row.get("tags") or row.get("Tags") or "").strip()
+                    opt_raw = str(row.get("opt_in") or row.get("OptIn") or "1").strip().casefold()
+                    opt_in = opt_raw in {"1", "true", "yes", "y", "نعم"}
+                    if name and is_valid_international_phone(phone):
+                        self.db.upsert_wa_contact(name, phone, tags, opt_in); count += 1
+            QMessageBox.information(self, self.tr.t("import_csv"), self.tr.t("csv_import_done", count=count)); self.refresh_wa_contacts()
+        except Exception as exc: QMessageBox.critical(self, self.tr.t("import_csv"), str(exc))
+
+    def preview_wa_batches(self):
+        contacts = self.db.list_wa_contacts(enabled_only=True, opted_in_only=True, keyword=self.wac_keyword.text().strip() or None)
+        size = self.wac_batch.value(); batches = math.ceil(len(contacts) / size) if contacts else 0
+        QMessageBox.information(self, self.tr.t("preview_batches"), self.tr.t("batch_preview_text", contacts=len(contacts), batches=batches, size=size))
+
+    def add_wa_campaign(self):
+        name = self.wac_name.text().strip(); mode = self.wac_mode.currentData(); text = self.wac_message.toPlainText().strip(); template = self.wac_template.text().strip()
+        if not name or (mode == "text" and not text): QMessageBox.warning(self, self.tr.t("whatsapp"), self.tr.t("wa_campaign_required")); return
+        if mode == "template" and not template: QMessageBox.warning(self, self.tr.t("whatsapp"), self.tr.t("wa_template_required")); return
+        self.db.add_wa_campaign(name, mode, text, template, self.wac_template_lang.text(), self.wac_keyword.text(), self.wac_batch.value(), self.wac_interval.value(), self.wac_days.value(), self.wac_time.time().toString("HH:mm"))
+        self.wac_name.clear(); self.wac_message.clear(); self.wac_template.clear(); self.wac_keyword.clear(); self.refresh_wa_campaigns()
+
+    def run_wa_campaign_now(self):
+        cid = self._selected_id(self.wa_campaign_table)
+        if cid is not None: self.engine.command("run_wa_campaign_now", cid)
+    def toggle_wa_campaign(self):
+        cid = self._selected_id(self.wa_campaign_table)
+        if cid is not None:
+            c = self.db.get_wa_campaign(cid); self.db.update_wa_campaign_enabled(cid, not bool(c["enabled"])); self.refresh_wa_campaigns()
+    def delete_wa_campaign(self):
+        cid = self._selected_id(self.wa_campaign_table)
+        if cid is not None: self.db.delete_wa_campaign(cid); self.refresh_wa_campaigns()
+
+    def save_wa_settings(self):
+        try:
+            self.db.set_setting("wa_phone_number_id", self.wa_phone_id.text().strip())
+            self.db.set_setting("wa_api_version", self.wa_api_version.text().strip() or "v24.0")
+            if self.wa_token.text().strip(): self.security.set_secret("wa_access_token", self.wa_token.text().strip()); self.wa_token.clear()
+            QMessageBox.information(self, self.tr.t("whatsapp"), self.tr.t("wa_saved"))
+        except Exception as exc: QMessageBox.critical(self, self.tr.t("whatsapp"), str(exc))
+
+    def apply_language(self):
+        lang = self.lang_combo.currentData() or "en"
+        if lang == self.tr.language: return
+        self.db.set_setting("language", lang)
+        QMessageBox.information(self, self.tr.t("language"), self.tr.t("restart_language"))
+        self._really_quit = True
+        self.engine.shutdown(); self.engine.join(timeout=3); self.tray.hide()
+        if getattr(sys, "frozen", False):
+            QProcess.startDetached(sys.executable, sys.argv[1:])
+        else:
+            QProcess.startDetached(sys.executable, [sys.argv[0], *sys.argv[1:]])
+        QApplication.quit()
 
     def refresh_all(self):
-        paused = bool(self.db.get_setting("paused", False))
-        self.status_label.setText("PAUSED" if paused else "RUNNING")
-        self.pause_btn.setText("Resume agent" if paused else "Pause agent")
-        stats = self.db.queue_stats()
-        self.queue_label.setText(", ".join(f"{k}: {v}" for k, v in sorted(stats.items())) or "empty")
-        camps = self.db.list_campaigns()
-        enabled = [c for c in camps if c["enabled"] and c["next_run_at"]]
-        self.next_label.setText(min((c["next_run_at"] for c in enabled), default="—"))
-        self.refresh_groups(); self.refresh_campaigns(); self.refresh_logs()
+        paused = bool(self.db.get_setting("paused", False)); self.status_label.setText(self.tr.t("paused") if paused else self.tr.t("running")); self.pause_btn.setText(self.tr.t("resume_agent") if paused else self.tr.t("pause_agent"))
+        fb_stats = self.db.queue_stats(); wa_stats = self.db.wa_queue_stats()
+        parts = [f"FB {k}: {v}" for k, v in sorted(fb_stats.items())] + [f"WA {k}: {v}" for k, v in sorted(wa_stats.items())]
+        self.queue_label.setText(", ".join(parts) or self.tr.t("empty"))
+        camps = [c for c in self.db.list_campaigns() if c["enabled"] and c["next_run_at"]]
+        self.next_label.setText(min((c["next_run_at"] for c in camps), default="—"))
+        wcamps = [c for c in self.db.list_wa_campaigns() if c["enabled"] and c["next_run_at"]]
+        self.wa_next_label.setText(min((c["next_run_at"] for c in wcamps), default="—"))
+        self.refresh_groups(); self.refresh_campaigns(); self.refresh_wa_contacts(); self.refresh_wa_campaigns(); self.refresh_logs()
 
     def refresh_groups(self):
-        rows = self.db.list_groups()
-        self.groups_table.setRowCount(len(rows))
+        rows = self.db.list_groups(); self.groups_table.setRowCount(len(rows))
         for r, g in enumerate(rows):
-            vals = [g["id"], g["name"], g["url"], g["tags"], "Yes" if g["enabled"] else "No"]
-            for c, v in enumerate(vals):
-                self.groups_table.setItem(r, c, QTableWidgetItem(str(v)))
+            vals = [g["id"], g["name"], g["url"], g["tags"], self.tr.t("yes") if g["enabled"] else self.tr.t("no")]
+            for c, v in enumerate(vals): self.groups_table.setItem(r, c, QTableWidgetItem(str(v)))
 
     def refresh_campaigns(self):
-        rows = self.db.list_campaigns()
-        self.campaign_table.setRowCount(len(rows))
+        rows = self.db.list_campaigns(); self.campaign_table.setRowCount(len(rows))
         for r, c in enumerate(rows):
-            vals = [c["id"], c["name"], c["source_page_url"], c["post_offset"], c["group_keyword"], c["max_groups"],
-                    c["interval_seconds"], c["cadence_days"], c["run_time"], (c["next_run_at"] or "") + ("" if c["enabled"] else " [DISABLED]")]
-            for col, v in enumerate(vals):
-                self.campaign_table.setItem(r, col, QTableWidgetItem(str(v)))
+            vals = [c["id"], c["name"], c["source_page_url"], c["post_offset"], c["group_keyword"], c["max_groups"], c["interval_seconds"], c["cadence_days"], c["run_time"], (c["next_run_at"] or "") + ("" if c["enabled"] else " [OFF]")]
+            for col, v in enumerate(vals): self.campaign_table.setItem(r, col, QTableWidgetItem(str(v)))
+
+    def refresh_wa_contacts(self):
+        rows = self.db.list_wa_contacts(); self.wa_contacts_table.setRowCount(len(rows))
+        for r, c in enumerate(rows):
+            vals = [c["id"], c["name"], c["phone"], c["tags"], self.tr.t("yes") if c["opt_in"] else self.tr.t("no"), self.tr.t("yes") if c["enabled"] else self.tr.t("no")]
+            for col, v in enumerate(vals): self.wa_contacts_table.setItem(r, col, QTableWidgetItem(str(v)))
+
+    def refresh_wa_campaigns(self):
+        rows = self.db.list_wa_campaigns(); self.wa_campaign_table.setRowCount(len(rows))
+        for r, c in enumerate(rows):
+            mode = self.tr.t("text_message") if c["message_mode"] == "text" else self.tr.t("template_message")
+            vals = [c["id"], c["name"], mode, c["target_keyword"], c["batch_size"], c["interval_seconds"], c["cadence_days"], c["run_time"], (c["next_run_at"] or "") + ("" if c["enabled"] else " [OFF]")]
+            for col, v in enumerate(vals): self.wa_campaign_table.setItem(r, col, QTableWidgetItem(str(v)))
 
     def refresh_logs(self):
-        rows = self.db.recent_audit(150)
-        self.logs_table.setRowCount(len(rows))
+        rows = self.db.recent_audit(150); self.logs_table.setRowCount(len(rows))
         for r, x in enumerate(rows):
-            for c, v in enumerate([x["ts"], x["level"], x["event"], x["details"]]):
-                self.logs_table.setItem(r, c, QTableWidgetItem(str(v)))
+            event = EVENT_AR.get(x["event"], x["event"]) if self.tr.rtl else x["event"]
+            for c, v in enumerate([x["ts"], x["level"], event, x["details"]]): self.logs_table.setItem(r, c, QTableWidgetItem(str(v)))
 
     def closeEvent(self, event):
         if not self._really_quit:
-            self.hide()
-            self.tray.showMessage(APP_TITLE, "Agent is still running in the Windows tray.", QSystemTrayIcon.Information, 2500)
-            event.ignore()
-            return
-        self.engine.shutdown()
-        self.engine.join(timeout=5)
-        self.tray.hide()
-        event.accept()
+            self.hide(); self.tray.showMessage(APP_TITLE, "البرنامج ما زال يعمل في شريط ويندوز." if self.tr.rtl else "Agent is still running in the Windows tray.", QSystemTrayIcon.Information, 2500); event.ignore(); return
+        self.engine.shutdown(); self.engine.join(timeout=5); self.tray.hide(); event.accept()
 
 
-def show_splash(app: QApplication):
-    splash_pm = pixmap("splash.png")
-    if splash_pm.isNull():
-        return None
-    splash = QSplashScreen(splash_pm.scaledToWidth(620, Qt.SmoothTransformation))
-    splash.setWindowFlag(Qt.WindowStaysOnTopHint, True)
-    splash.showMessage("Initializing Your Assistant Agent...", Qt.AlignBottom | Qt.AlignHCenter, Qt.darkGray)
-    splash.show()
-    app.processEvents()
-    return splash
+def show_splash(app: QApplication, tr: Translator, milliseconds: int = 1100):
+    splash = SplashWidget(tr)
+    splash.show(); app.processEvents()
+    loop = QEventLoop(); QTimer.singleShot(milliseconds, loop.quit); loop.exec()
+    splash.close(); app.processEvents()
 
 
 def run_app():
@@ -433,24 +639,33 @@ def run_app():
     app.setApplicationName(APP_TITLE)
     app.setWindowIcon(window_icon())
     migrate_legacy_startup()
+
     db = Database()
+    language = db.get_setting("language", "") or ""
+    if language not in LANGUAGES:
+        chooser = LanguageDialog()
+        if chooser.exec() != QDialog.Accepted:
+            return
+        language = chooser.language
+        db.set_setting("language", language)
+        db.set_setting("first_run_done", True)
+
+    tr = Translator(language)
+    app.setLayoutDirection(Qt.RightToLeft if tr.rtl else Qt.LeftToRight)
+
+    # Splash is intentionally short and always closes BEFORE the PIN dialog.
+    show_splash(app, tr, 1100)
+
     security = SecurityManager(db)
     security.restrict_app_folder_windows()
-
-    splash = show_splash(app)
-
-    pin = PinDialog(security, create=not security.has_pin())
+    pin = PinDialog(security, tr, create=not security.has_pin())
     if pin.exec() != QDialog.Accepted:
-        if splash is not None:
-            splash.close()
         return
 
-    engine = AgentEngine(db)
+    engine = AgentEngine(db, security)
     engine.start()
-    win = MainWindow(db, engine)
+    win = MainWindow(db, engine, security, tr)
     app.setQuitOnLastWindowClosed(False)
-    if splash is not None:
-        splash.finish(win)
     if "--minimized" not in sys.argv:
         win.show()
     sys.exit(app.exec())

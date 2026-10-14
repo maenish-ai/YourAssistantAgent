@@ -1,17 +1,23 @@
-ابدأ من هنا — أول رفع إلى GitHub
+Your Assistant Agent v0.6
+
+هذه الحزمة جاهزة للرفع إلى GitHub.
 
 1) فك الضغط.
-2) لا ترفع ملف ZIP نفسه كملف وحيد.
-3) افتح المجلد الناتج في GitHub Desktop.
-4) تأكد أن مجلد .github موجود في نفس مستوى app.py.
-5) Commit.
-6) Publish repository.
-7) افتح GitHub > Actions.
-8) Workflow سيعمل تلقائياً من أول Push.
+2) افتح المجلد في GitHub Desktop.
+3) تأكد أن .github موجود بجانب app.py.
+4) Commit ثم Push/Publish.
+5) افتح GitHub > Actions.
+6) Workflow يعمل تلقائياً.
 
-اسم Workflow:
-Build Your Assistant Agent for Windows
+التحديثات:
+- إصلاح Splash Screen.
+- اختيار العربية/English أول تشغيل.
+- واجهة RTL/LTR.
+- دعم Unicode عربي/إنجليزي.
+- WhatsApp contacts + internal broadcasts + batches.
+- WhatsApp Business Platform integration.
+- Facebook campaigns كما في النسخة السابقة.
 
-النواتج:
+النواتج من GitHub Actions:
 - YourAssistantAgent-Windows-Portable
 - YourAssistantAgent-Windows-Setup

@@ -4,11 +4,12 @@ import json
 import sqlite3
 import threading
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
 from .paths import db_path
 from .text_utils import contains_normalized, normalize_phone
+from .smart_agent import SmartPlan, calculate_next_run
 
 DB_LOCK = threading.RLock()
 
@@ -58,6 +59,54 @@ CREATE TABLE IF NOT EXISTS queue_items (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     completed_at TEXT,
     FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE SET NULL,
+    FOREIGN KEY(group_id) REFERENCES groups(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS smart_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    command_text TEXT NOT NULL DEFAULT '',
+    source_page_url TEXT NOT NULL,
+    weekdays TEXT NOT NULL DEFAULT '[]',
+    run_time TEXT NOT NULL DEFAULT '20:00',
+    post_mode TEXT NOT NULL DEFAULT 'fixed',
+    post_offset INTEGER NOT NULL DEFAULT 0,
+    group_keyword TEXT NOT NULL DEFAULT '',
+    max_groups INTEGER NOT NULL DEFAULT 100,
+    interval_seconds INTEGER NOT NULL DEFAULT 60,
+    no_repeat_days INTEGER NOT NULL DEFAULT 14,
+    share_mode TEXT NOT NULL DEFAULT 'native_share',
+    next_run_at TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    rotation_offset INTEGER NOT NULL DEFAULT 0,
+    last_run_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS smart_queue_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rule_id INTEGER NOT NULL,
+    group_id INTEGER NOT NULL,
+    post_url TEXT NOT NULL,
+    scheduled_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TEXT,
+    FOREIGN KEY(rule_id) REFERENCES smart_rules(id) ON DELETE CASCADE,
+    FOREIGN KEY(group_id) REFERENCES groups(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS share_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rule_id INTEGER,
+    group_id INTEGER NOT NULL,
+    post_url TEXT NOT NULL,
+    shared_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    status TEXT NOT NULL DEFAULT 'done',
+    error TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY(rule_id) REFERENCES smart_rules(id) ON DELETE SET NULL,
     FOREIGN KEY(group_id) REFERENCES groups(id) ON DELETE CASCADE
 );
 
@@ -116,11 +165,14 @@ CREATE INDEX IF NOT EXISTS idx_campaign_next ON campaigns(enabled, next_run_at);
 CREATE INDEX IF NOT EXISTS idx_wa_queue_due ON wa_queue_items(status, scheduled_at);
 CREATE INDEX IF NOT EXISTS idx_wa_campaign_next ON wa_campaigns(enabled, next_run_at);
 CREATE INDEX IF NOT EXISTS idx_wa_contacts_enabled ON wa_contacts(enabled, opt_in);
+CREATE INDEX IF NOT EXISTS idx_smart_rule_next ON smart_rules(enabled, next_run_at);
+CREATE INDEX IF NOT EXISTS idx_smart_queue_due ON smart_queue_items(status, scheduled_at);
+CREATE INDEX IF NOT EXISTS idx_share_history_lookup ON share_history(group_id, post_url, shared_at);
 """
 
 
 def utcnow_iso() -> str:
-    return datetime.utcnow().replace(microsecond=0).isoformat()
+    return datetime.now(timezone.utc).replace(tzinfo=None, microsecond=0).isoformat()
 
 
 class Database:
@@ -153,6 +205,12 @@ class Database:
                 "wa_phone_number_id": "",
                 "wa_api_version": "v24.0",
                 "wa_access_token_protected": "",
+                "smart_default_source_page": "",
+                "smart_default_interval_seconds": 60,
+                "smart_default_max_groups": 100,
+                "smart_no_repeat_days": 14,
+                "telegram_enabled": False,
+                "telegram_authorized_user_id": "",
             }
             for k, v in defaults.items():
                 con.execute(
@@ -307,6 +365,171 @@ class Database:
                 "UPDATE queue_items SET status=?, attempts=attempts+1, last_error=?, completed_at=? WHERE id=?",
                 (status, error[:2000], completed, item_id),
             )
+
+    # Smart Agent rules and queue
+    def upsert_discovered_groups(self, groups: Iterable[dict]) -> int:
+        count = 0
+        with self.conn() as con:
+            for g in groups:
+                name = str(g.get("name") or "").strip()
+                url = str(g.get("url") or "").strip()
+                tags = str(g.get("tags") or "").strip()
+                if not name or not url:
+                    continue
+                con.execute(
+                    """INSERT INTO groups(name,url,tags) VALUES (?,?,?)
+                       ON CONFLICT(url) DO UPDATE SET name=excluded.name""",
+                    (name, url, tags),
+                )
+                count += 1
+        if count:
+            self.audit("INFO", "groups_discovered", str(count))
+        return count
+
+    def add_smart_rule(self, plan: SmartPlan | dict) -> int:
+        if isinstance(plan, SmartPlan):
+            data = plan.to_dict()
+        else:
+            data = dict(plan)
+        weekdays = sorted(set(int(d) for d in data.get("weekdays", []) if 0 <= int(d) <= 6))
+        run_time = str(data.get("run_time") or "20:00")
+        next_run = calculate_next_run(weekdays, run_time)
+        with self.conn() as con:
+            cur = con.execute(
+                """INSERT INTO smart_rules
+                   (name,command_text,source_page_url,weekdays,run_time,post_mode,post_offset,
+                    group_keyword,max_groups,interval_seconds,no_repeat_days,share_mode,next_run_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    str(data.get("name") or "Smart rule").strip(),
+                    str(data.get("command_text") or "").strip(),
+                    str(data.get("source_page_url") or "").strip(),
+                    json.dumps(weekdays), run_time,
+                    "rotation" if data.get("post_mode") == "rotation" else "fixed",
+                    max(0, int(data.get("post_offset", 0))),
+                    str(data.get("group_keyword") or "").strip(),
+                    max(1, min(500, int(data.get("max_groups", 100)))),
+                    max(30, int(data.get("interval_seconds", 60))),
+                    max(0, int(data.get("no_repeat_days", 14))),
+                    str(data.get("share_mode") or "native_share"),
+                    next_run,
+                ),
+            )
+            rule_id = int(cur.lastrowid)
+        self.audit("INFO", "smart_rule_added", f"{rule_id}: {data.get('name','')}")
+        return rule_id
+
+    def list_smart_rules(self):
+        with self.conn() as con:
+            return con.execute("SELECT * FROM smart_rules ORDER BY id DESC").fetchall()
+
+    def get_smart_rule(self, rule_id: int):
+        with self.conn() as con:
+            return con.execute("SELECT * FROM smart_rules WHERE id=?", (rule_id,)).fetchone()
+
+    def update_smart_rule_enabled(self, rule_id: int, enabled: bool):
+        with self.conn() as con:
+            con.execute("UPDATE smart_rules SET enabled=? WHERE id=?", (int(bool(enabled)), rule_id))
+
+    def delete_smart_rule(self, rule_id: int):
+        with self.conn() as con:
+            con.execute("DELETE FROM smart_rules WHERE id=?", (rule_id,))
+
+    def due_smart_rules(self, now_iso: str):
+        with self.conn() as con:
+            return con.execute(
+                "SELECT * FROM smart_rules WHERE enabled=1 AND next_run_at IS NOT NULL AND next_run_at<=? ORDER BY next_run_at",
+                (now_iso,),
+            ).fetchall()
+
+    @staticmethod
+    def smart_rule_weekdays(rule) -> list[int]:
+        try:
+            return [int(x) for x in json.loads(rule["weekdays"] or "[]")]
+        except Exception:
+            return []
+
+    def bump_smart_rule(self, rule_id: int, advance_rotation: bool = False):
+        rule = self.get_smart_rule(rule_id)
+        if not rule:
+            return
+        next_run = calculate_next_run(self.smart_rule_weekdays(rule), rule["run_time"])
+        with self.conn() as con:
+            if advance_rotation and rule["post_mode"] == "rotation":
+                con.execute(
+                    "UPDATE smart_rules SET next_run_at=?,last_run_at=?,rotation_offset=rotation_offset+1 WHERE id=?",
+                    (next_run, utcnow_iso(), rule_id),
+                )
+            else:
+                con.execute(
+                    "UPDATE smart_rules SET next_run_at=?,last_run_at=? WHERE id=?",
+                    (next_run, utcnow_iso(), rule_id),
+                )
+
+    def advance_smart_rotation(self, rule_id: int):
+        with self.conn() as con:
+            con.execute("UPDATE smart_rules SET rotation_offset=rotation_offset+1,last_run_at=? WHERE id=?", (utcnow_iso(), rule_id))
+
+    def enqueue_smart(self, rule_id: int, group_ids: Iterable[int], post_url: str, interval_seconds: int) -> int:
+        start = datetime.now()
+        rows = []
+        for i, gid in enumerate(group_ids):
+            when = start + timedelta(seconds=i * max(30, int(interval_seconds)))
+            rows.append((rule_id, int(gid), post_url, when.replace(microsecond=0).isoformat()))
+        with self.conn() as con:
+            con.executemany(
+                "INSERT INTO smart_queue_items(rule_id,group_id,post_url,scheduled_at) VALUES (?,?,?,?)",
+                rows,
+            )
+        return len(rows)
+
+    def next_due_smart_queue_item(self, now_iso: str):
+        with self.conn() as con:
+            return con.execute(
+                """SELECT q.*, g.name AS group_name, g.url AS group_url,
+                          r.name AS rule_name, r.share_mode AS share_mode
+                   FROM smart_queue_items q
+                   JOIN groups g ON g.id=q.group_id
+                   JOIN smart_rules r ON r.id=q.rule_id
+                   WHERE q.status='pending' AND q.scheduled_at<=?
+                   ORDER BY q.scheduled_at, q.id LIMIT 1""",
+                (now_iso,),
+            ).fetchone()
+
+    def mark_smart_queue(self, item_id: int, status: str, error: str = ""):
+        completed = utcnow_iso() if status in {"done", "failed", "blocked", "cancelled", "skipped"} else None
+        with self.conn() as con:
+            con.execute(
+                "UPDATE smart_queue_items SET status=?,attempts=attempts+1,last_error=?,completed_at=? WHERE id=?",
+                (status, error[:2000], completed, item_id),
+            )
+
+    def was_shared_recently(self, group_id: int, post_url: str, no_repeat_days: int) -> bool:
+        days = max(0, int(no_repeat_days))
+        if days <= 0:
+            return False
+        threshold = (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)).replace(microsecond=0).isoformat()
+        with self.conn() as con:
+            row = con.execute(
+                """SELECT 1 FROM share_history
+                   WHERE group_id=? AND post_url=? AND status='done' AND shared_at>=?
+                   LIMIT 1""",
+                (group_id, post_url, threshold),
+            ).fetchone()
+        return bool(row)
+
+    def record_share(self, rule_id: int | None, group_id: int, post_url: str, status: str, error: str = ""):
+        with self.conn() as con:
+            con.execute(
+                "INSERT INTO share_history(rule_id,group_id,post_url,shared_at,status,error) VALUES (?,?,?,?,?,?)",
+                (rule_id, group_id, post_url, utcnow_iso(), status, error[:2000]),
+            )
+
+    def smart_queue_stats(self):
+        with self.conn() as con:
+            return {r["status"]: r["n"] for r in con.execute(
+                "SELECT status,COUNT(*) n FROM smart_queue_items GROUP BY status"
+            ).fetchall()}
 
     # WhatsApp contacts
     def add_wa_contact(self, name: str, phone: str, tags: str = "", opt_in: bool = False):

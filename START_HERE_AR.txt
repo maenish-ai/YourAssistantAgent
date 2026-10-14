@@ -1,23 +1,19 @@
-Your Assistant Agent v0.6
+Your Assistant Agent v0.7.0 — Smart Agent
 
-هذه الحزمة جاهزة للرفع إلى GitHub.
+هذه الملفات جاهزة للرفع فوق مستودع v0.6.4 الحالي.
 
-1) فك الضغط.
-2) افتح المجلد في GitHub Desktop.
-3) تأكد أن .github موجود بجانب app.py.
-4) Commit ثم Push/Publish.
+1) فك ضغط Patch v0.7.0.
+2) انسخ محتوياته إلى جذر مشروع GitHub الحالي مع Replace.
+3) تأكد أن المجلد your_assistant_agent وinstaller وtests في أماكنها الصحيحة.
+4) Commit ثم Push.
 5) افتح GitHub > Actions.
-6) Workflow يعمل تلقائياً.
+6) Workflow يشغّل الاختبارات ثم يبني Windows Setup فقط.
 
-التحديثات:
-- إصلاح Splash Screen.
-- اختيار العربية/English أول تشغيل.
-- واجهة RTL/LTR.
-- دعم Unicode عربي/إنجليزي.
-- WhatsApp contacts + internal broadcasts + batches.
-- WhatsApp Business Platform integration.
-- Facebook campaigns كما في النسخة السابقة.
+بعد التثبيت:
+- تحقق من Facebook Connected.
+- اكتشف الجروبات أو أضف جروب اختبار.
+- افتح تبويب «الوكيل الذكي».
+- ضع رابط صفحة المصدر.
+- اكتب الأمر، Preview، ثم Approve.
 
-النواتج من GitHub Actions:
-- YourAssistantAgent-Windows-Portable
-- YourAssistantAgent-Windows-Setup
+Telegram Remote اختياري ويحتاج Bot Token من @BotFather وTelegram User ID الخاص بك.

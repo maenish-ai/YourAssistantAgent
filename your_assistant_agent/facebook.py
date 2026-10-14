@@ -477,6 +477,196 @@ class FacebookAutomation:
         self.page.wait_for_timeout(2500)
         self._check_checkpoint()
 
+    def discover_joined_groups(self, limit: int = 200) -> list[dict]:
+        """Discover groups visible to the signed-in profile.
+
+        Facebook does not expose a stable public API for enumerating a person's
+        joined groups for this desktop workflow, so this reads the normal Groups
+        UI. It never attempts to bypass a checkpoint or access a private group the
+        profile cannot already see.
+        """
+        self.ensure_logged_in()
+        self.page.goto("https://www.facebook.com/groups/feed/", wait_until="domcontentloaded", timeout=60000)
+        self._check_checkpoint()
+        self.page.wait_for_timeout(2500)
+        groups: list[dict] = []
+        seen: set[str] = set()
+        reserved = {"feed", "discover", "create", "joins", "for_you", "notifications"}
+
+        for _ in range(10):
+            anchors = self.page.locator("a[href*='/groups/']")
+            try:
+                count = min(anchors.count(), 1500)
+            except Exception:
+                count = 0
+            for i in range(count):
+                try:
+                    a = anchors.nth(i)
+                    href = str(a.get_attribute("href") or "")
+                    text = (a.inner_text(timeout=500) or "").strip()
+                except Exception:
+                    continue
+                if not href or not text:
+                    continue
+                if href.startswith("/"):
+                    href = "https://www.facebook.com" + href
+                if "facebook.com/groups/" not in href:
+                    continue
+                path = urlsplit(href).path.strip("/")
+                parts = path.split("/")
+                if len(parts) < 2 or parts[0] != "groups" or parts[1].casefold() in reserved:
+                    continue
+                clean = f"https://www.facebook.com/groups/{parts[1]}"
+                if clean in seen:
+                    continue
+                # Avoid generic navigation labels that sometimes wrap group links.
+                if text.casefold() in {"groups", "your groups", "المجموعات", "مجموعاتك"}:
+                    continue
+                seen.add(clean)
+                groups.append({"name": re.sub(r"\s+", " ", text)[:180], "url": clean, "tags": ""})
+                if len(groups) >= max(1, int(limit)):
+                    return groups
+            self.page.mouse.wheel(0, 1600)
+            self.page.wait_for_timeout(1000)
+            self._check_checkpoint()
+        return groups
+
+    def share_post_to_group(self, group_name: str, group_url: str, post_url: str):
+        """Use Facebook's own Share -> Share to a group flow from the signed-in profile.
+
+        This intentionally fails closed if Facebook does not offer native group
+        sharing for the selected post; it does not silently substitute a different
+        posting method.
+        """
+        self.ensure_logged_in()
+        self.page.goto(post_url, wait_until="domcontentloaded", timeout=60000)
+        self._check_checkpoint()
+        self.page.wait_for_timeout(2200)
+
+        share_rx = re.compile(r"^(Share|مشاركة)$", re.I)
+        share_button = None
+        candidates = [
+            self.page.get_by_role("button", name=share_rx),
+            self.page.locator("[role='button']").filter(has_text=share_rx),
+        ]
+        for loc in candidates:
+            try:
+                if loc.count():
+                    for i in range(min(loc.count(), 12)):
+                        item = loc.nth(i)
+                        if item.is_visible(timeout=500):
+                            share_button = item
+                            break
+                if share_button is not None:
+                    break
+            except Exception:
+                pass
+        if share_button is None:
+            raise FacebookError("Could not locate the Share/مشاركة control on the source post.")
+        share_button.click(timeout=5000)
+        self.page.wait_for_timeout(900)
+        self._check_checkpoint()
+
+        to_group_rx = re.compile(r"(Share to (?:a )?group|مشاركة (?:في|إلى) مجموعة)", re.I)
+        to_group = None
+        for role in ("menuitem", "button"):
+            try:
+                loc = self.page.get_by_role(role, name=to_group_rx).first
+                if loc.count() and loc.is_visible(timeout=1000):
+                    to_group = loc
+                    break
+            except Exception:
+                pass
+        if to_group is None:
+            try:
+                loc = self.page.get_by_text(to_group_rx).first
+                if loc.count() and loc.is_visible(timeout=1000):
+                    to_group = loc
+            except Exception:
+                pass
+        if to_group is None:
+            raise FacebookError("Facebook did not offer 'Share to a group' for this post.")
+        to_group.click(timeout=5000)
+        self.page.wait_for_timeout(1000)
+        self._check_checkpoint()
+
+        search_rx = re.compile(r"(Search groups|Search for a group|البحث عن مجموعة|ابحث عن مجموعة|بحث في المجموعات)", re.I)
+        search = None
+        for role in ("textbox", "combobox"):
+            try:
+                loc = self.page.get_by_role(role, name=search_rx).first
+                if loc.count() and loc.is_visible(timeout=1000):
+                    search = loc
+                    break
+            except Exception:
+                pass
+        if search is None:
+            try:
+                loc = self.page.locator("input[placeholder]").filter(has=self.page.locator("xpath=.."))
+            except Exception:
+                loc = None
+            # Generic visible input fallback inside the share dialog.
+            try:
+                inputs = self.page.locator("[role='dialog'] input")
+                for i in range(min(inputs.count(), 6)):
+                    item = inputs.nth(i)
+                    if item.is_visible(timeout=500):
+                        search = item
+                        break
+            except Exception:
+                pass
+        if search is not None:
+            try:
+                search.fill(group_name)
+                self.page.wait_for_timeout(1200)
+            except Exception:
+                pass
+
+        target = None
+        exact_rx = re.compile(rf"^{re.escape(group_name.strip())}$", re.I)
+        for role in ("button", "option", "menuitem", "link"):
+            try:
+                loc = self.page.get_by_role(role, name=exact_rx).first
+                if loc.count() and loc.is_visible(timeout=900):
+                    target = loc
+                    break
+            except Exception:
+                pass
+        if target is None:
+            try:
+                loc = self.page.get_by_text(group_name, exact=True).first
+                if loc.count() and loc.is_visible(timeout=900):
+                    target = loc
+            except Exception:
+                pass
+        if target is None:
+            raise FacebookError(f"Could not find the target group in the native share dialog: {group_name}")
+        target.click(timeout=5000)
+        self.page.wait_for_timeout(1100)
+        self._check_checkpoint()
+
+        final_rx = re.compile(r"^(Post|Share|Publish|نشر|مشاركة)$", re.I)
+        final_button = None
+        try:
+            dialog = self.page.locator("[role='dialog']")
+            loc = dialog.get_by_role("button", name=final_rx).last
+            if loc.count() and loc.is_visible(timeout=1200):
+                final_button = loc
+        except Exception:
+            pass
+        if final_button is None:
+            try:
+                loc = self.page.get_by_role("button", name=final_rx).last
+                if loc.count() and loc.is_visible(timeout=1200):
+                    final_button = loc
+            except Exception:
+                pass
+        if final_button is None:
+            raise FacebookError("Could not locate the final Post/Share button in Facebook's share dialog.")
+        final_button.click(timeout=5000)
+        self.page.wait_for_timeout(2200)
+        self._check_checkpoint()
+
     def test_group_access(self, group_url: str) -> bool:
         self.start()
         self.page.goto(group_url, wait_until="domcontentloaded", timeout=60000)

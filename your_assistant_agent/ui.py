@@ -22,6 +22,7 @@ from .db import Database
 from .engine import AgentEngine
 from .i18n import LANGUAGES, Translator
 from .security import SecurityManager
+from .smart_agent import SmartPlanner, SmartPlannerError
 from .startup import is_enabled as startup_is_enabled, migrate_legacy_startup, set_enabled as startup_set_enabled
 from .text_utils import is_valid_international_phone
 
@@ -36,6 +37,22 @@ EVENT_AR = {
     "campaign_no_groups": "لا توجد مجموعات مطابقة",
     "group_post_done": "تم نشر منشور المجموعة",
     "group_post_failed": "فشل نشر منشور المجموعة",
+    "groups_discovery_started": "بدء اكتشاف مجموعات فيسبوك",
+    "groups_discovery_done": "اكتمل اكتشاف مجموعات فيسبوك",
+    "groups_discovery_failed": "فشل اكتشاف مجموعات فيسبوك",
+    "groups_discovered": "تم حفظ مجموعات فيسبوك المكتشفة",
+    "smart_rule_added": "إضافة قاعدة ذكية",
+    "smart_rule_start": "بدء قاعدة ذكية",
+    "smart_rule_queued": "إضافة قاعدة ذكية إلى الطابور",
+    "smart_rule_no_groups": "لا توجد مجموعات مطابقة للقاعدة الذكية",
+    "smart_group_share_done": "تمت المشاركة الذكية في المجموعة",
+    "smart_group_share_failed": "فشلت المشاركة الذكية في المجموعة",
+    "smart_rule_all_deduped": "تم تخطي التكرار في القاعدة الذكية",
+    "telegram_remote_started": "بدء التحكم عبر تيليجرام",
+    "telegram_remote_stopped": "إيقاف التحكم عبر تيليجرام",
+    "telegram_remote_error": "خطأ في التحكم عبر تيليجرام",
+    "telegram_unauthorized_user": "محاولة تيليجرام من مستخدم غير مصرح",
+    "telegram_test": "اختبار اتصال تيليجرام",
     "facebook_browser_opened": "تم فتح متصفح فيسبوك",
     "facebook_manual_login_opened": "تم فتح تسجيل دخول فيسبوك اليدوي",
     "facebook_connection_checked": "تم التحقق من جلسة فيسبوك",
@@ -338,12 +355,14 @@ class MainWindow(QMainWindow):
         self.dashboard = QWidget()
         self.groups_tab = QWidget()
         self.campaigns_tab = QWidget()
+        self.smart_tab = QWidget()
         self.whatsapp_tab = QWidget()
         self.logs_tab = QWidget()
         self.settings_tab = QWidget()
         self.tabs.addTab(self.dashboard, tr.t("dashboard"))
         self.tabs.addTab(self.groups_tab, tr.t("facebook_groups"))
         self.tabs.addTab(self.campaigns_tab, tr.t("facebook_campaigns"))
+        self.tabs.addTab(self.smart_tab, tr.t("smart_agent"))
         self.tabs.addTab(self.whatsapp_tab, tr.t("whatsapp"))
         self.tabs.addTab(self.logs_tab, tr.t("audit_log"))
         self.tabs.addTab(self.settings_tab, tr.t("settings"))
@@ -351,6 +370,7 @@ class MainWindow(QMainWindow):
         self._build_dashboard()
         self._build_groups()
         self._build_campaigns()
+        self._build_smart()
         self._build_whatsapp()
         self._build_logs()
         self._build_settings()
@@ -393,6 +413,7 @@ class MainWindow(QMainWindow):
         self.fb_status_label = QLabel()
         self.queue_label = QLabel()
         self.next_label = QLabel()
+        self.smart_next_label = QLabel()
         self.wa_next_label = QLabel()
         grid.addWidget(QLabel(self.tr.t("agent") + ":"), 0, 0)
         grid.addWidget(self.status_label, 0, 1)
@@ -402,8 +423,10 @@ class MainWindow(QMainWindow):
         grid.addWidget(self.queue_label, 2, 1)
         grid.addWidget(QLabel(self.tr.t("next_campaign") + ":"), 3, 0)
         grid.addWidget(self.next_label, 3, 1)
-        grid.addWidget(QLabel(self.tr.t("next_wa_campaign") + ":"), 4, 0)
-        grid.addWidget(self.wa_next_label, 4, 1)
+        grid.addWidget(QLabel(self.tr.t("next_smart_rule") + ":"), 4, 0)
+        grid.addWidget(self.smart_next_label, 4, 1)
+        grid.addWidget(QLabel(self.tr.t("next_wa_campaign") + ":"), 5, 0)
+        grid.addWidget(self.wa_next_label, 5, 1)
         lay.addWidget(box)
         note = QLabel(self.tr.t("facebook_note"))
         note.setWordWrap(True)
@@ -425,7 +448,10 @@ class MainWindow(QMainWindow):
         self.groups_table.setHorizontalHeaderLabels([self.tr.t("id"), self.tr.t("group_name"), self.tr.t("url"), self.tr.t("tags"), self.tr.t("enabled")])
         self.groups_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         lay.addWidget(self.groups_table)
-        delete = QPushButton(self.tr.t("delete_group")); delete.clicked.connect(self.delete_group); lay.addWidget(delete)
+        buttons = QHBoxLayout()
+        discover = QPushButton(self.tr.t("discover_groups")); discover.clicked.connect(self.discover_groups)
+        delete = QPushButton(self.tr.t("delete_group")); delete.clicked.connect(self.delete_group)
+        buttons.addWidget(discover); buttons.addWidget(delete); buttons.addStretch(1); lay.addLayout(buttons)
 
     def _build_campaigns(self):
         lay = QVBoxLayout(self.campaigns_tab)
@@ -462,6 +488,56 @@ class MainWindow(QMainWindow):
         toggle = QPushButton(self.tr.t("toggle_selected")); toggle.clicked.connect(self.toggle_campaign)
         delete = QPushButton(self.tr.t("delete_selected")); delete.clicked.connect(self.delete_campaign)
         row.addWidget(run); row.addWidget(toggle); row.addWidget(delete); lay.addLayout(row)
+
+    def _build_smart(self):
+        root = QVBoxLayout(self.smart_tab)
+        note = QLabel(self.tr.t("smart_help")); note.setWordWrap(True); note.setStyleSheet("color:#5d6386;")
+        root.addWidget(note)
+
+        planner_box = QGroupBox(self.tr.t("smart_instruction"))
+        form = QFormLayout(planner_box)
+        self.smart_source = QLineEdit(str(self.db.get_setting("smart_default_source_page", "") or ""))
+        self.smart_source.setPlaceholderText("https://www.facebook.com/...")
+        self.smart_command = QTextEdit(); self.smart_command.setMaximumHeight(105); self.smart_command.setPlaceholderText(self.tr.t("smart_example"))
+        self.smart_preview = QTextEdit(); self.smart_preview.setReadOnly(True); self.smart_preview.setMaximumHeight(150)
+        form.addRow(self.tr.t("source_page"), self.smart_source)
+        form.addRow(self.tr.t("smart_command"), self.smart_command)
+        form.addRow(self.tr.t("smart_preview"), self.smart_preview)
+        btns = QHBoxLayout()
+        preview = QPushButton(self.tr.t("preview_plan")); preview.clicked.connect(self.preview_smart_rule)
+        approve = QPushButton(self.tr.t("approve_rule")); approve.clicked.connect(self.approve_smart_rule)
+        btns.addWidget(preview); btns.addWidget(approve); form.addRow(btns)
+        root.addWidget(planner_box)
+        self._pending_smart_plan = None
+
+        self.smart_rules_table = QTableWidget(0, 8)
+        self.smart_rules_table.setHorizontalHeaderLabels([
+            self.tr.t("id"), self.tr.t("rule_name"), self.tr.t("keyword"), self.tr.t("post_selector"),
+            self.tr.t("at"), self.tr.t("next_run"), self.tr.t("enabled"), self.tr.t("details")
+        ])
+        self.smart_rules_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.smart_rules_table.horizontalHeader().setStretchLastSection(True)
+        root.addWidget(self.smart_rules_table)
+        actions = QHBoxLayout()
+        run = QPushButton(self.tr.t("run_now")); run.clicked.connect(self.run_smart_rule_now)
+        toggle = QPushButton(self.tr.t("toggle_selected")); toggle.clicked.connect(self.toggle_smart_rule)
+        delete = QPushButton(self.tr.t("delete_selected")); delete.clicked.connect(self.delete_smart_rule)
+        actions.addWidget(run); actions.addWidget(toggle); actions.addWidget(delete); actions.addStretch(1); root.addLayout(actions)
+
+        tg = QGroupBox(self.tr.t("telegram_remote"))
+        tg_form = QFormLayout(tg)
+        self.telegram_enabled = QCheckBox(self.tr.t("telegram_enable")); self.telegram_enabled.setChecked(bool(self.db.get_setting("telegram_enabled", False)))
+        self.telegram_user_id = QLineEdit(str(self.db.get_setting("telegram_authorized_user_id", "") or "")); self.telegram_user_id.setPlaceholderText("123456789")
+        self.telegram_token = QLineEdit(); self.telegram_token.setEchoMode(QLineEdit.Password); self.telegram_token.setPlaceholderText(self.tr.t("telegram_token_placeholder"))
+        self.telegram_status = QLabel(); self.telegram_status.setWordWrap(True)
+        tg_form.addRow(self.telegram_enabled)
+        tg_form.addRow(self.tr.t("telegram_user_id"), self.telegram_user_id)
+        tg_form.addRow(self.tr.t("telegram_token"), self.telegram_token)
+        tgb = QHBoxLayout()
+        save = QPushButton(self.tr.t("save_telegram")); save.clicked.connect(self.save_telegram_settings)
+        test = QPushButton(self.tr.t("test_telegram")); test.clicked.connect(self.test_telegram)
+        tgb.addWidget(save); tgb.addWidget(test); tg_form.addRow(tgb); tg_form.addRow(self.telegram_status)
+        root.addWidget(tg)
 
     def _build_whatsapp(self):
         root = QVBoxLayout(self.whatsapp_tab)
@@ -659,6 +735,86 @@ class MainWindow(QMainWindow):
         if QMessageBox.question(self, self.tr.t("emergency_stop"), self.tr.t("emergency_question")) == QMessageBox.Yes:
             self.db.set_setting("paused", True); self.db.clear_pending(); self.db.audit("SECURITY", "emergency_stop"); self.refresh_all()
 
+    def discover_groups(self):
+        self.engine.command("discover_groups")
+        QMessageBox.information(self, self.tr.t("facebook_groups"), self.tr.t("discover_groups_started"))
+
+    def preview_smart_rule(self):
+        source = self.smart_source.text().strip()
+        self.db.set_setting("smart_default_source_page", source)
+        planner = SmartPlanner(self.tr.language)
+        try:
+            plans = planner.parse_many(
+                self.smart_command.toPlainText(),
+                default_source_page=source,
+                default_interval=int(self.db.get_setting("smart_default_interval_seconds", 60) or 60),
+                default_max_groups=int(self.db.get_setting("smart_default_max_groups", 100) or 100),
+                default_no_repeat_days=int(self.db.get_setting("smart_no_repeat_days", 14) or 14),
+            )
+        except SmartPlannerError as exc:
+            QMessageBox.warning(self, self.tr.t("smart_agent"), str(exc)); return
+        self._pending_smart_plan = plans
+        blocks = []
+        for i, plan in enumerate(plans, 1):
+            blocks.append((f"#{i}\n" if len(plans) > 1 else "") + plan.summary(self.tr.language))
+        self.smart_preview.setPlainText("\n\n--------------------\n\n".join(blocks))
+
+    def approve_smart_rule(self):
+        if self._pending_smart_plan is None:
+            self.preview_smart_rule()
+            if self._pending_smart_plan is None:
+                return
+        plans = self._pending_smart_plan if isinstance(self._pending_smart_plan, list) else [self._pending_smart_plan]
+        ids = [self.db.add_smart_rule(plan) for plan in plans]
+        self.smart_command.clear(); self.smart_preview.clear(); self._pending_smart_plan = None
+        label = ", ".join(str(x) for x in ids)
+        QMessageBox.information(self, self.tr.t("smart_agent"), self.tr.t("smart_rules_saved", ids=label, count=len(ids)))
+        self.refresh_smart_rules()
+
+    def run_smart_rule_now(self):
+        rid = self._selected_id(self.smart_rules_table)
+        if rid is not None:
+            if QMessageBox.question(self, self.tr.t("smart_agent"), self.tr.t("smart_run_confirm", id=rid)) == QMessageBox.Yes:
+                self.engine.command("run_smart_rule_now", rid)
+
+    def toggle_smart_rule(self):
+        rid = self._selected_id(self.smart_rules_table)
+        if rid is not None:
+            rule = self.db.get_smart_rule(rid)
+            if rule:
+                self.db.update_smart_rule_enabled(rid, not bool(rule["enabled"]))
+                self.refresh_smart_rules()
+
+    def delete_smart_rule(self):
+        rid = self._selected_id(self.smart_rules_table)
+        if rid is not None:
+            self.db.delete_smart_rule(rid); self.refresh_smart_rules()
+
+    def save_telegram_settings(self):
+        try:
+            user_id = self.telegram_user_id.text().strip()
+            enabled = self.telegram_enabled.isChecked()
+            token = self.telegram_token.text().strip()
+            if user_id and not user_id.isdigit():
+                QMessageBox.warning(self, self.tr.t("telegram_remote"), self.tr.t("telegram_user_numeric")); return
+            if token:
+                self.security.set_secret("telegram_bot_token", token)
+                self.telegram_token.clear()
+            if enabled and (not user_id or not self.security.get_secret("telegram_bot_token")):
+                QMessageBox.warning(self, self.tr.t("telegram_remote"), self.tr.t("telegram_required")); return
+            self.db.set_setting("telegram_authorized_user_id", user_id)
+            self.db.set_setting("telegram_enabled", enabled)
+            QMessageBox.information(self, self.tr.t("telegram_remote"), self.tr.t("telegram_saved"))
+        except Exception as exc:
+            QMessageBox.critical(self, self.tr.t("telegram_remote"), str(exc))
+
+    def test_telegram(self):
+        self.save_telegram_settings()
+        if not bool(self.db.get_setting("telegram_enabled", False)):
+            return
+        self.telegram_status.setText(self.tr.t("telegram_testing"))
+        self.engine.command("telegram_test")
+
     def add_group(self):
         if not self.g_name.text().strip() or not self.g_url.text().strip(): QMessageBox.warning(self, self.tr.t("facebook_groups"), self.tr.t("name_required")); return
         try:
@@ -794,14 +950,22 @@ class MainWindow(QMainWindow):
             if err:
                 fb_text += f" — {err[:180]}"
         self.fb_status_label.setText(fb_text)
-        fb_stats = self.db.queue_stats(); wa_stats = self.db.wa_queue_stats()
-        parts = [f"FB {k}: {v}" for k, v in sorted(fb_stats.items())] + [f"WA {k}: {v}" for k, v in sorted(wa_stats.items())]
+        fb_stats = self.db.queue_stats(); smart_stats = self.db.smart_queue_stats(); wa_stats = self.db.wa_queue_stats()
+        parts = ([f"FB {k}: {v}" for k, v in sorted(fb_stats.items())] +
+                 [f"SMART {k}: {v}" for k, v in sorted(smart_stats.items())] +
+                 [f"WA {k}: {v}" for k, v in sorted(wa_stats.items())])
         self.queue_label.setText(", ".join(parts) or self.tr.t("empty"))
         camps = [c for c in self.db.list_campaigns() if c["enabled"] and c["next_run_at"]]
         self.next_label.setText(min((c["next_run_at"] for c in camps), default="—"))
+        srules = [r for r in self.db.list_smart_rules() if r["enabled"] and r["next_run_at"]]
+        self.smart_next_label.setText(min((r["next_run_at"] for r in srules), default="—"))
         wcamps = [c for c in self.db.list_wa_campaigns() if c["enabled"] and c["next_run_at"]]
         self.wa_next_label.setText(min((c["next_run_at"] for c in wcamps), default="—"))
-        self.refresh_groups(); self.refresh_campaigns(); self.refresh_wa_contacts(); self.refresh_wa_campaigns(); self.refresh_logs()
+        self.refresh_groups(); self.refresh_campaigns(); self.refresh_smart_rules(); self.refresh_wa_contacts(); self.refresh_wa_campaigns(); self.refresh_logs()
+        if hasattr(self, "telegram_status"):
+            t = self.db.get_setting("telegram_test_status", {}) or {}
+            if isinstance(t, dict) and t.get("message"):
+                self.telegram_status.setText(str(t.get("message")))
 
     def refresh_groups(self):
         rows = self.db.list_groups(); self.groups_table.setRowCount(len(rows))
@@ -814,6 +978,16 @@ class MainWindow(QMainWindow):
         for r, c in enumerate(rows):
             vals = [c["id"], c["name"], c["source_page_url"], c["post_offset"], c["group_keyword"], c["max_groups"], c["interval_seconds"], c["cadence_days"], c["run_time"], (c["next_run_at"] or "") + ("" if c["enabled"] else " [OFF]")]
             for col, v in enumerate(vals): self.campaign_table.setItem(r, col, QTableWidgetItem(str(v)))
+
+    def refresh_smart_rules(self):
+        if not hasattr(self, "smart_rules_table"):
+            return
+        rows = self.db.list_smart_rules(); self.smart_rules_table.setRowCount(len(rows))
+        for r, rule in enumerate(rows):
+            mode = self.tr.t("rotation") if rule["post_mode"] == "rotation" else (self.tr.t("latest_post") if int(rule["post_offset"]) == 0 else f"-{rule['post_offset']}")
+            details = str(rule["command_text"] or "")[:180]
+            vals = [rule["id"], rule["name"], rule["group_keyword"], mode, rule["run_time"], rule["next_run_at"] or "", self.tr.t("yes") if rule["enabled"] else self.tr.t("no"), details]
+            for col, v in enumerate(vals): self.smart_rules_table.setItem(r, col, QTableWidgetItem(str(v)))
 
     def refresh_wa_contacts(self):
         rows = self.db.list_wa_contacts(); self.wa_contacts_table.setRowCount(len(rows))

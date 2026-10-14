@@ -4,6 +4,7 @@ import csv
 import math
 import os
 import sys
+import time
 
 from PySide6.QtCore import Qt, QEventLoop, QProcess, QTimer, QTime
 from PySide6.QtGui import QPixmap
@@ -36,6 +37,10 @@ EVENT_AR = {
     "group_post_done": "تم نشر منشور المجموعة",
     "group_post_failed": "فشل نشر منشور المجموعة",
     "facebook_browser_opened": "تم فتح متصفح فيسبوك",
+    "facebook_manual_login_opened": "تم فتح تسجيل دخول فيسبوك اليدوي",
+    "facebook_connection_checked": "تم التحقق من جلسة فيسبوك",
+    "facebook_profile_in_use": "ملف متصفح فيسبوك ما زال مستخدمًا",
+    "facebook_connection_check_failed": "فشل التحقق من اتصال فيسبوك",
     "facebook_browser_changed": "تم تغيير متصفح فيسبوك",
     "facebook_login_required": "يلزم تسجيل الدخول إلى فيسبوك",
     "facebook_checkpoint": "تحقق أمني من فيسبوك",
@@ -362,6 +367,8 @@ class MainWindow(QMainWindow):
         buttons = QHBoxLayout()
         self.login_btn = QPushButton(self.tr.t("open_facebook"))
         self.login_btn.clicked.connect(self.open_facebook_browser)
+        self.check_fb_btn = QPushButton(self.tr.t("check_facebook_connection"))
+        self.check_fb_btn.clicked.connect(self.check_facebook_connection)
         self.pause_btn = QPushButton()
         self.pause_btn.clicked.connect(self.toggle_pause)
         self.kill_btn = QPushButton(self.tr.t("emergency_stop"))
@@ -374,6 +381,7 @@ class MainWindow(QMainWindow):
             self.startup_check.setChecked(False)
         self.startup_check.toggled.connect(self.toggle_startup)
         buttons.addWidget(self.login_btn)
+        buttons.addWidget(self.check_fb_btn)
         buttons.addWidget(self.pause_btn)
         buttons.addWidget(self.kill_btn)
         buttons.addWidget(self.startup_check)
@@ -601,17 +609,31 @@ class MainWindow(QMainWindow):
         self.engine.command("set_facebook_browser", payload)
         self._refresh_browser_current_label()
         if open_after:
-            self.engine.command("open_login")
+            self._start_manual_facebook_login()
         else:
             QMessageBox.information(self, self.tr.t("facebook_browser"), self.tr.t("browser_saved"))
         return True
+
+    def _start_manual_facebook_login(self):
+        self.db.set_setting("facebook_connection_status", "manual_login")
+        self.db.set_setting("facebook_manual_login_started_at", time.time())
+        self.engine.command("open_login")
+        QMessageBox.information(
+            self,
+            self.tr.t("manual_login_title"),
+            self.tr.t("manual_login_instructions"),
+        )
 
     def open_facebook_browser(self):
         selected_before = bool(self.db.get_setting("facebook_browser_user_selected", False))
         if not selected_before:
             self.choose_facebook_browser(open_after=True)
             return
-        self.engine.command("open_login")
+        self._start_manual_facebook_login()
+
+    def check_facebook_connection(self):
+        self.db.set_setting("facebook_connection_status", "checking")
+        self.engine.command("check_facebook_connection")
 
     def _build_tray(self):
         self.tray = QSystemTrayIcon(self); self.tray.setToolTip(APP_TITLE); self.tray.setIcon(window_icon())
@@ -749,13 +771,25 @@ class MainWindow(QMainWindow):
             "verification_required": "facebook_verification_required",
             "browser_closed": "facebook_browser_closed",
             "browser_error": "facebook_browser_error",
+            "manual_login": "facebook_manual_login",
+            "checking": "facebook_checking",
+            "profile_in_use": "facebook_profile_in_use",
             "not_checked": "facebook_not_checked",
         }.get(str(fb_state), "facebook_not_checked")
         backend = self.db.get_setting("facebook_browser_backend", "") or ""
         fb_text = self.tr.t(fb_key)
-        if backend and fb_state in ("connected", "verification_required"):
+
+        if fb_state == "manual_login":
+            try:
+                started = float(self.db.get_setting("facebook_manual_login_started_at", 0) or 0)
+            except Exception:
+                started = 0
+            if started and time.time() - started > 45:
+                fb_text = self.tr.t("facebook_login_stalled")
+
+        if backend and fb_state in ("connected", "verification_required", "manual_login"):
             fb_text += f" — {backend}"
-        if fb_state == "browser_error":
+        if fb_state in ("browser_error", "profile_in_use"):
             err = str(self.db.get_setting("facebook_browser_last_error", "") or "").strip()
             if err:
                 fb_text += f" — {err[:180]}"

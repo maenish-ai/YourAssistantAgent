@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any
 
 from .db import Database
-from .facebook import CheckpointDetected, FacebookAutomation, FacebookConfig, FacebookError, LoginRequired
+from .facebook import CheckpointDetected, FacebookAutomation, FacebookConfig, FacebookError, LoginRequired, ManualLoginInProgress
 from .security import SecurityManager
 from .whatsapp import WhatsAppBusinessClient, WhatsAppError, WhatsAppNotConfigured
 
@@ -68,18 +68,37 @@ class AgentEngine(threading.Thread):
                 return
             if name == "open_login":
                 try:
-                    self.fb.open_login()
-                    self.db.set_setting("facebook_browser_backend", self.fb.browser_backend)
-                    self.db.set_setting("facebook_connection_status", self.fb.connection_status())
+                    backend = self.fb.open_manual_login()
+                    self.db.set_setting("facebook_browser_backend", backend)
+                    self.db.set_setting("facebook_connection_status", "manual_login")
+                    self.db.set_setting("facebook_manual_login_started_at", time.time())
                     self.db.set_setting("facebook_browser_last_error", "")
-                    self.db.audit("INFO", "facebook_browser_opened", self.fb.browser_backend)
+                    self.db.audit("INFO", "facebook_manual_login_opened", backend)
                 except Exception as exc:
                     self.db.set_setting("facebook_connection_status", "browser_error")
                     self.db.set_setting("facebook_browser_last_error", str(exc))
                     self.db.audit("ERROR", "facebook_browser_error", str(exc))
             elif name == "check_facebook_connection":
-                self.db.set_setting("facebook_connection_status", self.fb.connection_status())
-                self.db.set_setting("facebook_browser_backend", self.fb.browser_backend)
+                self.db.set_setting("facebook_connection_status", "checking")
+                self.db.set_setting("facebook_browser_last_error", "")
+                try:
+                    status = self.fb.verify_saved_session()
+                    self.db.set_setting("facebook_connection_status", status)
+                    self.db.set_setting("facebook_browser_backend", self.fb.browser_backend)
+                    self.db.set_setting("facebook_manual_login_started_at", 0)
+                    self.db.audit("INFO", "facebook_connection_checked", status)
+                except ManualLoginInProgress as exc:
+                    self.db.set_setting("facebook_connection_status", "profile_in_use")
+                    self.db.set_setting("facebook_browser_last_error", str(exc))
+                    self.db.audit("WARNING", "facebook_profile_in_use", str(exc))
+                except CheckpointDetected as exc:
+                    self.db.set_setting("facebook_connection_status", "verification_required")
+                    self.db.set_setting("facebook_browser_last_error", str(exc))
+                    self.db.audit("SECURITY", "facebook_checkpoint", str(exc))
+                except Exception as exc:
+                    self.db.set_setting("facebook_connection_status", "browser_error")
+                    self.db.set_setting("facebook_browser_last_error", str(exc))
+                    self.db.audit("ERROR", "facebook_connection_check_failed", str(exc))
             elif name == "set_facebook_browser":
                 data = payload or {}
                 choice = str(data.get("choice") or "auto")
@@ -119,6 +138,13 @@ class AgentEngine(threading.Thread):
         if now - self._last_fb_status_poll < 2.0:
             return
         self._last_fb_status_poll = now
+
+        # Do not overwrite a saved "connected" or manual-login state just
+        # because no Playwright window is currently open. The persistent
+        # profile is intentionally reused only when automation is needed.
+        if not self.fb.is_open():
+            return
+
         self.db.set_setting("facebook_connection_status", self.fb.connection_status())
         if self.fb.browser_backend:
             self.db.set_setting("facebook_browser_backend", self.fb.browser_backend)

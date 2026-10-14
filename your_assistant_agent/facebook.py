@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -29,6 +30,10 @@ class LoginRequired(FacebookError):
     pass
 
 
+class ManualLoginInProgress(LoginRequired):
+    """Raised when the manual login browser still owns the persistent profile."""
+
+
 class CheckpointDetected(FacebookError):
     pass
 
@@ -44,11 +49,19 @@ class FacebookConfig:
 
 class FacebookAutomation:
     """
-    Visible-browser automation only. Facebook credentials are entered only on
-    facebook.com. A dedicated persistent browser profile stores the session on
-    the user's own Windows account. No stealth, CAPTCHA bypass, proxy rotation,
-    or anti-detection features are used.
+    Facebook integration with two deliberately separate modes:
+
+    1) Manual login: opens the user's installed Chromium browser directly, with
+       the agent's dedicated persistent profile, without Playwright. Password,
+       2FA and any Facebook challenge stay fully manual.
+    2) Automation: after the saved session is verified, Playwright reuses the
+       same dedicated profile for scheduled work. Chromium sandbox is enabled.
+
+    No stealth, CAPTCHA solving/bypass, proxy rotation, or anti-detection
+    features are used.
     """
+
+    FACEBOOK_HOME = "https://www.facebook.com/"
 
     def __init__(self, config: FacebookConfig | None = None):
         self.config = config or FacebookConfig()
@@ -56,12 +69,13 @@ class FacebookAutomation:
         self.context = None
         self.page = None
         self.browser_backend = ""
+        self.manual_login_active = False
+        self.manual_login_backend = ""
 
     def _context_alive(self) -> bool:
         if self.context is None:
             return False
         try:
-            # Accessing pages raises if the user has closed the browser/context.
             _ = self.context.pages
             return True
         except Exception:
@@ -82,12 +96,25 @@ class FacebookAutomation:
                 pass
             self.pw = None
 
+    @staticmethod
+    def _profile_lock_error(exc: Exception) -> bool:
+        text = str(exc).casefold()
+        hints = (
+            "user data directory is already in use",
+            "processsingleton",
+            "profile appears to be in use",
+            "profile is in use",
+            "cannot create process singleton",
+        )
+        return any(hint in text for hint in hints)
+
     def _launch(self, executable_path: Path | None, backend_name: str):
         kwargs = dict(
             user_data_dir=str(self.config.profile_dir),
             headless=self.config.headless,
             viewport={"width": 1360, "height": 900},
             locale=self.config.locale,
+            chromium_sandbox=True,
             args=[
                 "--disable-notifications",
                 "--no-first-run",
@@ -97,7 +124,14 @@ class FacebookAutomation:
         if executable_path is not None:
             kwargs["executable_path"] = str(executable_path)
 
-        self.context = self.pw.chromium.launch_persistent_context(**kwargs)
+        try:
+            self.context = self.pw.chromium.launch_persistent_context(**kwargs)
+        except Exception as exc:
+            if self._profile_lock_error(exc):
+                raise ManualLoginInProgress(
+                    "Close the manual Facebook login browser first, then check the connection again."
+                ) from exc
+            raise
         self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
         self.browser_backend = backend_name
 
@@ -117,7 +151,77 @@ class FacebookAutomation:
         self._launch(executable, label)
         return True
 
+    def _resolve_manual_browser(self) -> tuple[Path, str]:
+        """Resolve a real installed browser for password/2FA entry.
+
+        The bundled Playwright Chromium is intentionally not used for manual
+        authentication when a normal installed Chromium browser is available.
+        """
+        choice = (self.config.browser_choice or "auto").strip()
+        if choice not in {"", "auto", "bundled"}:
+            executable = Path(choice)
+            if not executable.exists():
+                raise FacebookError(f"Selected browser is no longer installed: {executable}")
+            return executable, self.config.browser_label or executable.stem
+
+        candidates = [b for b in discover_installed_browsers() if b.support == "full"]
+        if not candidates:
+            candidates = [b for b in discover_installed_browsers() if b.support == "experimental"]
+        if not candidates:
+            raise FacebookError(
+                "Manual Facebook login needs an installed Chromium browser such as Google Chrome or Microsoft Edge."
+            )
+        browser = candidates[0]
+        return browser.executable, browser.name
+
+    def manual_login_command(self, executable: Path, url: str | None = None) -> list[str]:
+        """Build the direct browser command used for manual authentication.
+
+        Kept separate for testing: importantly, it never contains --no-sandbox
+        or Playwright/automation flags.
+        """
+        return [
+            str(executable),
+            f"--user-data-dir={self.config.profile_dir}",
+            "--profile-directory=Default",
+            "--new-window",
+            url or self.FACEBOOK_HOME,
+        ]
+
+    def open_manual_login(self) -> str:
+        """Open Facebook in a normal installed browser, without Playwright."""
+        # Release any Playwright handle to this profile before normal Chrome/Edge
+        # opens it. We intentionally do not kill the user's normal browser.
+        self.stop()
+        self.config.profile_dir.mkdir(parents=True, exist_ok=True)
+        executable, label = self._resolve_manual_browser()
+        command = self.manual_login_command(executable)
+        try:
+            creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
+            subprocess.Popen(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+                creationflags=creationflags,
+            )
+        except Exception as exc:
+            raise FacebookError(f"Could not open {label} for manual Facebook login: {exc}") from exc
+        self.manual_login_active = True
+        self.manual_login_backend = label
+        self.browser_backend = label
+        return label
+
+    # Backwards-compatible command name used by older engine/UI code.
+    def open_login(self):
+        return self.open_manual_login()
+
     def start(self):
+        if self.manual_login_active:
+            raise ManualLoginInProgress(
+                "Manual Facebook login is still marked active. Close that browser and check the connection first."
+            )
+
         if self._context_alive():
             try:
                 pages = self.context.pages
@@ -128,32 +232,31 @@ class FacebookAutomation:
             else:
                 return
 
-        # A browser window closed by the user leaves a stale Playwright object.
-        # Restart Playwright cleanly while keeping the same persistent profile.
         self._reset_playwright()
         self.config.profile_dir.mkdir(parents=True, exist_ok=True)
         self.pw = sync_playwright().start()
 
         launch_errors: list[str] = []
 
-        # An explicit browser selected by the user is tried first and is not
-        # silently replaced by another system browser. This keeps the UI choice
-        # predictable. Bundled Chromium remains available as an explicit option.
         if (self.config.browser_choice or "auto") not in {"", "auto"}:
             try:
                 if self._launch_selected_browser():
                     return
+            except ManualLoginInProgress:
+                self._reset_playwright()
+                raise
             except Exception as exc:
                 self._reset_playwright()
                 raise FacebookError(f"Could not start {self.config.browser_label or 'the selected browser'}: {exc}") from exc
 
-        # Automatic mode prefers fully supported installed Chromium browsers,
-        # then experimental Chromium-like browsers, and finally bundled Chromium.
         candidates = [b for b in discover_installed_browsers() if b.support != "unsupported"]
         for browser in candidates:
             try:
                 self._launch(browser.executable, browser.name)
                 return
+            except ManualLoginInProgress:
+                self._reset_playwright()
+                raise
             except Exception as exc:
                 launch_errors.append(f"{browser.name}: {exc}")
                 self.context = None
@@ -163,12 +266,16 @@ class FacebookAutomation:
             _configure_bundled_playwright_browser()
             self._launch(None, "Bundled Chromium")
             return
+        except ManualLoginInProgress:
+            self._reset_playwright()
+            raise
         except Exception as exc:
             launch_errors.append(f"Bundled Chromium: {exc}")
             self._reset_playwright()
             raise FacebookError("Could not start the dedicated Facebook browser. " + " | ".join(launch_errors[-3:]))
 
     def stop(self):
+        """Stop only the Playwright automation context; never kill manual browser."""
         try:
             if self._context_alive():
                 self.context.close()
@@ -177,13 +284,10 @@ class FacebookAutomation:
         finally:
             self._reset_playwright()
 
-    def open_login(self):
-        self.start()
-        self.page.goto("https://www.facebook.com/", wait_until="domcontentloaded", timeout=60000)
-        self.page.bring_to_front()
-
     def connection_status(self) -> str:
-        """Return a lightweight status without navigating away from the user's page."""
+        """Return status for an active automation context without navigation."""
+        if self.manual_login_active:
+            return "manual_login"
         if not self._context_alive():
             return "browser_closed"
 
@@ -205,11 +309,26 @@ class FacebookAutomation:
                 return "connected"
             return "not_connected"
         except Exception:
-            # If the user closes the browser during this check, the profile still
-            # remains on disk and will be reused next time.
             self.context = None
             self.page = None
             return "browser_closed"
+
+    def verify_saved_session(self) -> str:
+        """Verify the session saved by the manual browser, then close automation.
+
+        The user should first close the manual Chrome/Edge window. If it still
+        owns the profile, Playwright reports a profile lock and we return a clear
+        ManualLoginInProgress error rather than hanging.
+        """
+        self.manual_login_active = False
+        try:
+            self.start()
+            self.page.goto(self.FACEBOOK_HOME, wait_until="domcontentloaded", timeout=45000)
+            self._check_checkpoint()
+            cookies = self.context.cookies(["https://www.facebook.com", "https://facebook.com"])
+            return "connected" if any(c.get("name") == "c_user" and c.get("value") for c in cookies) else "not_connected"
+        finally:
+            self.stop()
 
     def _check_checkpoint(self):
         url = (self.page.url or "").lower()
@@ -227,15 +346,15 @@ class FacebookAutomation:
 
     def ensure_logged_in(self):
         self.start()
-        self.page.goto("https://www.facebook.com/", wait_until="domcontentloaded", timeout=60000)
+        self.page.goto(self.FACEBOOK_HOME, wait_until="domcontentloaded", timeout=60000)
         self._check_checkpoint()
         if self.connection_status() != "connected":
             try:
                 if self.page.locator("input[name='email']").count() or self.page.locator("input[name='pass']").count():
-                    raise LoginRequired("Facebook login is required in the dedicated browser.")
+                    raise LoginRequired("Facebook login is required. Use manual login from the Dashboard first.")
             except PlaywrightTimeoutError:
                 pass
-            raise LoginRequired("Facebook login is required in the dedicated browser.")
+            raise LoginRequired("Facebook login is required. Use manual login from the Dashboard first.")
 
     @staticmethod
     def _clean_facebook_url(url: str) -> str:

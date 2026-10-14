@@ -148,10 +148,10 @@ class TelegramRemote(threading.Thread):
         cmd = text.casefold().strip()
         if cmd in {"/start", "/help", "مساعدة", "مساعده"}:
             help_text = (
-                "الأوامر: /status الحالة، /rules القواعد، /run 3 تشغيل قاعدة، /pause إيقاف مؤقت، /resume استئناف، /stop إيقاف طارئ.\n"
+                "الأوامر: /status الحالة، /rules القواعد، /run 3 تشغيل قاعدة، /pause إيقاف مؤقت، /resume استئناف، /wake إرسال Magic Packet، /stop إيقاف طارئ.\n"
                 "أو اكتب أمر حملة طبيعي مثل: كل اثنين الساعة 8 مساء خذ آخر بوست وانشره على الجروبات اللي اسمها يحتوي الفحيص كل نص دقيقة."
                 if language == "ar" else
-                "Commands: /status, /rules, /run 3, /pause, /resume, /stop. Or type a natural-language campaign instruction."
+                "Commands: /status, /rules, /run 3, /pause, /resume, /wake, /stop. Or type a natural-language campaign instruction."
             )
             self.send_message(token, chat_id, help_text)
             return
@@ -174,6 +174,28 @@ class TelegramRemote(threading.Thread):
                 return
             self._stage(token, chat_id, "run_rule", {"rule_id": int(parts[1])}, f"تشغيل القاعدة #{parts[1]} الآن؟" if language == "ar" else f"Run rule #{parts[1]} now?")
             return
+        if cmd in {"/wake", "اصحي", "صحي الكمبيوتر", "إيقاظ الكمبيوتر"}:
+            mac = str(self.db.get_setting("wol_target_mac", "") or "")
+            if not mac:
+                self.send_message(token, chat_id, "لم يتم إعداد MAC Address لجهاز Wake-on-LAN." if language == "ar" else "Wake-on-LAN target MAC is not configured.")
+                return
+            self._stage(token, chat_id, "send_wol", {}, "إرسال Magic Packet للجهاز المحدد؟" if language == "ar" else "Send a Wake-on-LAN magic packet to the configured target?")
+            return
+        if cmd.startswith("/delete"):
+            parts = cmd.split()
+            if len(parts) != 2 or not parts[1].isdigit() or not self.db.get_smart_rule(int(parts[1])):
+                self.send_message(token, chat_id, "استخدم /delete ثم رقم القاعدة." if language == "ar" else "Use /delete RULE_ID.")
+                return
+            self._stage(token, chat_id, "delete_rule", {"rule_id": int(parts[1])}, f"حذف القاعدة #{parts[1]}؟" if language == "ar" else f"Delete rule #{parts[1]}?")
+            return
+        if cmd.startswith("/disable") or cmd.startswith("/enable"):
+            parts = cmd.split()
+            if len(parts) != 2 or not parts[1].isdigit() or not self.db.get_smart_rule(int(parts[1])):
+                self.send_message(token, chat_id, "استخدم /enable أو /disable ثم رقم القاعدة." if language == "ar" else "Use /enable or /disable RULE_ID.")
+                return
+            enabled = cmd.startswith("/enable")
+            self._stage(token, chat_id, "toggle_rule", {"rule_id": int(parts[1]), "enabled": enabled}, (f"{'تفعيل' if enabled else 'تعطيل'} القاعدة #{parts[1]}؟" if language == "ar" else f"{'Enable' if enabled else 'Disable'} rule #{parts[1]}?"))
+            return
         if cmd in {"/stop", "ايقاف طارئ", "إيقاف طارئ"}:
             self._stage(token, chat_id, "emergency_stop", {}, "تأكيد الإيقاف الطارئ وإلغاء العناصر المعلقة؟" if language == "ar" else "Confirm emergency stop and cancel pending items?")
             return
@@ -191,7 +213,9 @@ class TelegramRemote(threading.Thread):
             self.send_message(token, chat_id, str(exc)); return
         blocks = []
         for i, plan in enumerate(plans, 1):
-            blocks.append((f"#{i}\n" if len(plans) > 1 else "") + plan.summary(language))
+            groups = self.db.list_groups(enabled_only=True, keyword=plan.group_keyword or None, limit=plan.max_groups)
+            count_line = (f"\nالجروبات المطابقة الآن: {len(groups)}" if language == "ar" else f"\nMatching groups now: {len(groups)}")
+            blocks.append((f"#{i}\n" if len(plans) > 1 else "") + plan.summary(language) + count_line)
         summary = ("فهمت الأمر هكذا:\n\n" if language == "ar" else "I understood the instruction as:\n\n") + "\n\n---\n\n".join(blocks)
         self._stage(token, chat_id, "create_rule", {"plans": [p.to_dict() for p in plans]}, summary)
 
@@ -237,6 +261,15 @@ class TelegramRemote(threading.Thread):
         elif kind == "run_rule":
             self.command_cb("run_smart_rule_now", int(payload["rule_id"]))
             self.send_message(token, chat_id, "تم إرسال أمر التشغيل." if language == "ar" else "Run command queued.")
+        elif kind == "send_wol":
+            self.command_cb("send_wol")
+            self.send_message(token, chat_id, "تم إرسال أمر Wake-on-LAN. ملاحظة: إذا كان هذا البوت يعمل على نفس الكمبيوتر النائم فلن يستقبل الأمر أثناء النوم؛ يلزم Relay/جهاز دائم التشغيل للإيقاظ الفوري عن بعد." if language == "ar" else "Wake-on-LAN command queued. Note: a bot running on the same sleeping PC cannot receive Telegram while asleep; instant remote wake requires an always-on relay device/router.")
+        elif kind == "delete_rule":
+            rid = int(payload["rule_id"]); self.db.delete_smart_rule(rid)
+            self.send_message(token, chat_id, f"تم حذف القاعدة #{rid}." if language == "ar" else f"Rule #{rid} deleted.")
+        elif kind == "toggle_rule":
+            rid = int(payload["rule_id"]); enabled = bool(payload["enabled"]); self.db.update_smart_rule_enabled(rid, enabled)
+            self.send_message(token, chat_id, (f"تم {'تفعيل' if enabled else 'تعطيل'} القاعدة #{rid}." if language == "ar" else f"Rule #{rid} {'enabled' if enabled else 'disabled'}."))
         elif kind == "emergency_stop":
             self.command_cb("emergency_stop")
             self.send_message(token, chat_id, "تم تنفيذ الإيقاف الطارئ." if language == "ar" else "Emergency stop executed.")

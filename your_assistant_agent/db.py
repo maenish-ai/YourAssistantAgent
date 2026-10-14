@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS campaigns (
     message_prefix TEXT NOT NULL DEFAULT '',
     cadence_days INTEGER NOT NULL DEFAULT 3,
     run_time TEXT NOT NULL DEFAULT '20:00',
+    run_once_at TEXT NOT NULL DEFAULT '',
     next_run_at TEXT,
     enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -69,6 +70,7 @@ CREATE TABLE IF NOT EXISTS smart_rules (
     source_page_url TEXT NOT NULL,
     weekdays TEXT NOT NULL DEFAULT '[]',
     run_time TEXT NOT NULL DEFAULT '20:00',
+    run_once_at TEXT NOT NULL DEFAULT '',
     post_mode TEXT NOT NULL DEFAULT 'fixed',
     post_offset INTEGER NOT NULL DEFAULT 0,
     group_keyword TEXT NOT NULL DEFAULT '',
@@ -194,6 +196,9 @@ class Database:
     def init(self):
         with self.conn() as con:
             con.executescript(SCHEMA)
+            cols = {row[1] for row in con.execute("PRAGMA table_info(smart_rules)").fetchall()}
+            if "run_once_at" not in cols:
+                con.execute("ALTER TABLE smart_rules ADD COLUMN run_once_at TEXT NOT NULL DEFAULT ''")
             defaults = {
                 "paused": False,
                 "pin_hash": "",
@@ -211,6 +216,11 @@ class Database:
                 "smart_no_repeat_days": 14,
                 "telegram_enabled": False,
                 "telegram_authorized_user_id": "",
+                "auto_wake_for_smart_rules": False,
+                "wake_minutes_early": 2,
+                "wol_target_mac": "",
+                "wol_broadcast_ip": "255.255.255.255",
+                "wol_port": 9,
             }
             for k, v in defaults.items():
                 con.execute(
@@ -393,18 +403,19 @@ class Database:
             data = dict(plan)
         weekdays = sorted(set(int(d) for d in data.get("weekdays", []) if 0 <= int(d) <= 6))
         run_time = str(data.get("run_time") or "20:00")
-        next_run = calculate_next_run(weekdays, run_time)
+        run_once_at = str(data.get("run_once_at") or "").strip()
+        next_run = run_once_at or calculate_next_run(weekdays, run_time)
         with self.conn() as con:
             cur = con.execute(
                 """INSERT INTO smart_rules
-                   (name,command_text,source_page_url,weekdays,run_time,post_mode,post_offset,
+                   (name,command_text,source_page_url,weekdays,run_time,run_once_at,post_mode,post_offset,
                     group_keyword,max_groups,interval_seconds,no_repeat_days,share_mode,next_run_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     str(data.get("name") or "Smart rule").strip(),
                     str(data.get("command_text") or "").strip(),
                     str(data.get("source_page_url") or "").strip(),
-                    json.dumps(weekdays), run_time,
+                    json.dumps(weekdays), run_time, run_once_at,
                     "rotation" if data.get("post_mode") == "rotation" else "fixed",
                     max(0, int(data.get("post_offset", 0))),
                     str(data.get("group_keyword") or "").strip(),
@@ -418,6 +429,43 @@ class Database:
             rule_id = int(cur.lastrowid)
         self.audit("INFO", "smart_rule_added", f"{rule_id}: {data.get('name','')}")
         return rule_id
+
+    def update_smart_rule(self, rule_id: int, plan: SmartPlan | dict):
+        data = plan.to_dict() if isinstance(plan, SmartPlan) else dict(plan)
+        weekdays = sorted(set(int(d) for d in data.get("weekdays", []) if 0 <= int(d) <= 6))
+        run_time = str(data.get("run_time") or "20:00")
+        run_once_at = str(data.get("run_once_at") or "").strip()
+        next_run = run_once_at or calculate_next_run(weekdays, run_time)
+        with self.conn() as con:
+            con.execute(
+                """UPDATE smart_rules SET name=?,command_text=?,source_page_url=?,weekdays=?,run_time=?,run_once_at=?,
+                   post_mode=?,post_offset=?,group_keyword=?,max_groups=?,interval_seconds=?,no_repeat_days=?,
+                   share_mode=?,next_run_at=?,enabled=1 WHERE id=?""",
+                (
+                    str(data.get("name") or "Smart rule").strip(), str(data.get("command_text") or "").strip(),
+                    str(data.get("source_page_url") or "").strip(), json.dumps(weekdays), run_time, run_once_at,
+                    "rotation" if data.get("post_mode") == "rotation" else "fixed", max(0, int(data.get("post_offset", 0))),
+                    str(data.get("group_keyword") or "").strip(), max(1, min(500, int(data.get("max_groups", 100)))),
+                    max(30, int(data.get("interval_seconds", 60))), max(0, int(data.get("no_repeat_days", 14))),
+                    str(data.get("share_mode") or "native_share"), next_run, int(rule_id),
+                ),
+            )
+        self.audit("INFO", "smart_rule_updated", f"{rule_id}: {data.get('name','')}")
+
+    def cancel_smart_rule_pending(self, rule_id: int) -> int:
+        with self.conn() as con:
+            cur = con.execute(
+                "UPDATE smart_queue_items SET status='cancelled',completed_at=? WHERE rule_id=? AND status='pending'",
+                (utcnow_iso(), int(rule_id)),
+            )
+            return int(cur.rowcount or 0)
+
+    def next_smart_rule_time(self) -> str:
+        with self.conn() as con:
+            row = con.execute(
+                "SELECT MIN(next_run_at) AS t FROM smart_rules WHERE enabled=1 AND next_run_at IS NOT NULL"
+            ).fetchone()
+        return str(row["t"] or "") if row else ""
 
     def list_smart_rules(self):
         with self.conn() as con:
@@ -452,6 +500,10 @@ class Database:
     def bump_smart_rule(self, rule_id: int, advance_rotation: bool = False):
         rule = self.get_smart_rule(rule_id)
         if not rule:
+            return
+        if "run_once_at" in rule.keys() and str(rule["run_once_at"] or ""):
+            with self.conn() as con:
+                con.execute("UPDATE smart_rules SET enabled=0,next_run_at=NULL,last_run_at=? WHERE id=?", (utcnow_iso(), rule_id))
             return
         next_run = calculate_next_run(self.smart_rule_weekdays(rule), rule["run_time"])
         with self.conn() as con:

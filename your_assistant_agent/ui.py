@@ -512,9 +512,11 @@ class MainWindow(QMainWindow):
         btns = QHBoxLayout()
         preview = QPushButton(self.tr.t("preview_plan")); preview.clicked.connect(self.preview_smart_rule)
         approve = QPushButton(self.tr.t("approve_rule")); approve.clicked.connect(self.approve_smart_rule)
-        btns.addWidget(preview); btns.addWidget(approve); form.addRow(btns)
+        cancel_preview = QPushButton(self.tr.t("cancel_preview")); cancel_preview.clicked.connect(self.cancel_smart_preview)
+        btns.addWidget(preview); btns.addWidget(approve); btns.addWidget(cancel_preview); form.addRow(btns)
         root.addWidget(planner_box)
         self._pending_smart_plan = None
+        self._editing_smart_rule_id = None
 
         self.smart_rules_table = QTableWidget(0, 8)
         self.smart_rules_table.setHorizontalHeaderLabels([
@@ -526,9 +528,11 @@ class MainWindow(QMainWindow):
         root.addWidget(self.smart_rules_table)
         actions = QHBoxLayout()
         run = QPushButton(self.tr.t("run_now")); run.clicked.connect(self.run_smart_rule_now)
+        edit = QPushButton(self.tr.t("edit_selected")); edit.clicked.connect(self.edit_smart_rule)
         toggle = QPushButton(self.tr.t("toggle_selected")); toggle.clicked.connect(self.toggle_smart_rule)
+        cancel_pending = QPushButton(self.tr.t("cancel_pending")); cancel_pending.clicked.connect(self.cancel_smart_rule_pending)
         delete = QPushButton(self.tr.t("delete_selected")); delete.clicked.connect(self.delete_smart_rule)
-        actions.addWidget(run); actions.addWidget(toggle); actions.addWidget(delete); actions.addStretch(1); root.addLayout(actions)
+        actions.addWidget(run); actions.addWidget(edit); actions.addWidget(toggle); actions.addWidget(cancel_pending); actions.addWidget(delete); actions.addStretch(1); root.addLayout(actions)
 
         tg = QGroupBox(self.tr.t("telegram_remote"))
         tg_form = QFormLayout(tg)
@@ -663,6 +667,27 @@ class MainWindow(QMainWindow):
         apply = QPushButton(self.tr.t("apply_language")); apply.clicked.connect(self.apply_language)
         form.addRow(self.tr.t("language"), self.lang_combo); form.addRow(apply)
         lay.addWidget(lang_box)
+
+        wake_box = QGroupBox(self.tr.t("wake_settings"))
+        wake_form = QFormLayout(wake_box)
+        self.auto_wake_check = QCheckBox(self.tr.t("auto_wake_for_rules")); self.auto_wake_check.setChecked(bool(self.db.get_setting("auto_wake_for_smart_rules", False)))
+        self.wake_minutes = QSpinBox(); self.wake_minutes.setRange(0, 30); self.wake_minutes.setValue(int(self.db.get_setting("wake_minutes_early", 2) or 2))
+        self.wol_mac = QLineEdit(str(self.db.get_setting("wol_target_mac", "") or "")); self.wol_mac.setPlaceholderText("AA:BB:CC:DD:EE:FF")
+        self.wol_broadcast = QLineEdit(str(self.db.get_setting("wol_broadcast_ip", "255.255.255.255") or "255.255.255.255"))
+        self.wol_port = QSpinBox(); self.wol_port.setRange(1,65535); self.wol_port.setValue(int(self.db.get_setting("wol_port", 9) or 9))
+        wake_note = QLabel(self.tr.t("wake_note")); wake_note.setWordWrap(True); wake_note.setStyleSheet("color:#6b7280;")
+        wake_save = QPushButton(self.tr.t("save_wake_settings")); wake_save.clicked.connect(self.save_wake_settings)
+        wake_test = QPushButton(self.tr.t("test_wol")); wake_test.clicked.connect(self.test_wol)
+        wake_buttons = QHBoxLayout(); wake_buttons.addWidget(wake_save); wake_buttons.addWidget(wake_test)
+        wake_form.addRow(self.auto_wake_check)
+        wake_form.addRow(self.tr.t("wake_minutes_early"), self.wake_minutes)
+        wake_form.addRow(self.tr.t("wol_target_mac"), self.wol_mac)
+        wake_form.addRow(self.tr.t("wol_broadcast_ip"), self.wol_broadcast)
+        wake_form.addRow(self.tr.t("wol_port"), self.wol_port)
+        wake_form.addRow(wake_note)
+        wake_form.addRow(wake_buttons)
+        lay.addWidget(wake_box)
+
         sec = QGroupBox(self.tr.t("about_security")); s = QVBoxLayout(sec); text = QLabel(self.tr.t("security_text")); text.setWordWrap(True); s.addWidget(text); lay.addWidget(sec)
         lay.addStretch(1)
 
@@ -771,8 +796,20 @@ class MainWindow(QMainWindow):
         self._pending_smart_plan = plans
         blocks = []
         for i, plan in enumerate(plans, 1):
-            blocks.append((f"#{i}\n" if len(plans) > 1 else "") + plan.summary(self.tr.language))
+            groups = self.db.list_groups(enabled_only=True, keyword=plan.group_keyword or None, limit=plan.max_groups)
+            names = ", ".join(str(g["name"]) for g in groups[:8])
+            if self.tr.language == "ar":
+                match_info = f"\nعدد الجروبات المطابقة الآن: {len(groups)}" + (f"\nأمثلة: {names}" if names else "")
+            else:
+                match_info = f"\nMatching groups now: {len(groups)}" + (f"\nExamples: {names}" if names else "")
+            blocks.append((f"#{i}\n" if len(plans) > 1 else "") + plan.summary(self.tr.language) + match_info)
         self.smart_preview.setPlainText("\n\n--------------------\n\n".join(blocks))
+
+    def cancel_smart_preview(self):
+        self._pending_smart_plan = None
+        self._editing_smart_rule_id = None
+        self.smart_command.clear()
+        self.smart_preview.clear()
 
     def approve_smart_rule(self):
         if self._pending_smart_plan is None:
@@ -780,8 +817,14 @@ class MainWindow(QMainWindow):
             if self._pending_smart_plan is None:
                 return
         plans = self._pending_smart_plan if isinstance(self._pending_smart_plan, list) else [self._pending_smart_plan]
-        ids = [self.db.add_smart_rule(plan) for plan in plans]
-        self.smart_command.clear(); self.smart_preview.clear(); self._pending_smart_plan = None
+        if self._editing_smart_rule_id is not None:
+            if len(plans) != 1:
+                QMessageBox.warning(self, self.tr.t("smart_agent"), self.tr.t("edit_single_rule_only")); return
+            self.db.update_smart_rule(self._editing_smart_rule_id, plans[0])
+            ids = [self._editing_smart_rule_id]
+        else:
+            ids = [self.db.add_smart_rule(plan) for plan in plans]
+        self.smart_command.clear(); self.smart_preview.clear(); self._pending_smart_plan = None; self._editing_smart_rule_id = None
         label = ", ".join(str(x) for x in ids)
         QMessageBox.information(self, self.tr.t("smart_agent"), self.tr.t("smart_rules_saved", ids=label, count=len(ids)))
         self.refresh_smart_rules()
@@ -800,10 +843,31 @@ class MainWindow(QMainWindow):
                 self.db.update_smart_rule_enabled(rid, not bool(rule["enabled"]))
                 self.refresh_smart_rules()
 
+    def edit_smart_rule(self):
+        rid = self._selected_id(self.smart_rules_table)
+        if rid is None:
+            return
+        rule = self.db.get_smart_rule(rid)
+        if not rule:
+            return
+        self._editing_smart_rule_id = rid
+        self._pending_smart_plan = None
+        self.smart_source.setText(str(rule["source_page_url"] or ""))
+        self.smart_command.setPlainText(str(rule["command_text"] or ""))
+        self.smart_preview.setPlainText(self.tr.t("editing_rule", id=rid))
+
+    def cancel_smart_rule_pending(self):
+        rid = self._selected_id(self.smart_rules_table)
+        if rid is None:
+            return
+        count = self.db.cancel_smart_rule_pending(rid)
+        QMessageBox.information(self, self.tr.t("smart_agent"), self.tr.t("pending_cancelled", count=count))
+
     def delete_smart_rule(self):
         rid = self._selected_id(self.smart_rules_table)
         if rid is not None:
-            self.db.delete_smart_rule(rid); self.refresh_smart_rules()
+            if QMessageBox.question(self, self.tr.t("smart_agent"), self.tr.t("delete_rule_confirm", id=rid)) == QMessageBox.Yes:
+                self.db.delete_smart_rule(rid); self.refresh_smart_rules()
 
     def save_telegram_settings(self):
         try:
@@ -919,6 +983,22 @@ class MainWindow(QMainWindow):
             if self.wa_token.text().strip(): self.security.set_secret("wa_access_token", self.wa_token.text().strip()); self.wa_token.clear()
             QMessageBox.information(self, self.tr.t("whatsapp"), self.tr.t("wa_saved"))
         except Exception as exc: QMessageBox.critical(self, self.tr.t("whatsapp"), str(exc))
+
+    def save_wake_settings(self):
+        self.db.set_setting("auto_wake_for_smart_rules", self.auto_wake_check.isChecked())
+        self.db.set_setting("wake_minutes_early", self.wake_minutes.value())
+        self.db.set_setting("wol_target_mac", self.wol_mac.text().strip())
+        self.db.set_setting("wol_broadcast_ip", self.wol_broadcast.text().strip() or "255.255.255.255")
+        self.db.set_setting("wol_port", self.wol_port.value())
+        self.engine.command("refresh_wake_schedule")
+        QMessageBox.information(self, self.tr.t("wake_settings"), self.tr.t("wake_saved"))
+
+    def test_wol(self):
+        self.save_wake_settings()
+        if not self.wol_mac.text().strip():
+            QMessageBox.warning(self, self.tr.t("wake_settings"), self.tr.t("wol_mac_required")); return
+        self.engine.command("send_wol")
+        QMessageBox.information(self, self.tr.t("wake_settings"), self.tr.t("wol_sent"))
 
     def apply_language(self):
         lang = self.lang_combo.currentData() or "en"

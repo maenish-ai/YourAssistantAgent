@@ -11,6 +11,7 @@ from .facebook import CheckpointDetected, FacebookAutomation, FacebookConfig, Fa
 from .security import SecurityManager
 from .telegram_remote import TelegramRemote
 from .whatsapp import WhatsAppBusinessClient, WhatsAppError, WhatsAppNotConfigured
+from .wake_support import schedule_windows_wake, send_magic_packet
 
 
 class AgentEngine(threading.Thread):
@@ -32,6 +33,8 @@ class AgentEngine(threading.Thread):
         self.wa = WhatsAppBusinessClient(db, security)
         self.telegram = TelegramRemote(db, security, self.command)
         self._last_fb_status_poll = 0.0
+        self._last_wake_refresh = 0.0
+        self._last_wake_target = ""
 
     def command(self, name: str, payload=None):
         self.commands.put((name, payload))
@@ -48,6 +51,7 @@ class AgentEngine(threading.Thread):
             try:
                 self._handle_commands()
                 self._poll_facebook_status()
+                self._refresh_auto_wake_schedule()
                 if not self.db.get_setting("paused", False):
                     self._schedule_due_smart_rules()
                     self._schedule_due_facebook_campaigns()
@@ -167,6 +171,20 @@ class AgentEngine(threading.Thread):
                         self._create_whatsapp_campaign_queue(camp)
                 except Exception as exc:
                     self.db.audit("ERROR", "wa_manual_campaign_error", str(exc))
+            elif name == "refresh_wake_schedule":
+                self._last_wake_target = ""
+                self._refresh_auto_wake_schedule(force=True)
+            elif name == "send_wol":
+                try:
+                    mac = str(self.db.get_setting("wol_target_mac", "") or "")
+                    broadcast = str(self.db.get_setting("wol_broadcast_ip", "255.255.255.255") or "255.255.255.255")
+                    port = int(self.db.get_setting("wol_port", 9) or 9)
+                    send_magic_packet(mac, broadcast, port)
+                    self.db.set_setting("wol_last_result", {"ok": True, "message": f"Magic packet sent to {mac}"})
+                    self.db.audit("INFO", "wol_packet_sent", f"{mac} via {broadcast}:{port}")
+                except Exception as exc:
+                    self.db.set_setting("wol_last_result", {"ok": False, "message": str(exc)})
+                    self.db.audit("ERROR", "wol_packet_failed", str(exc))
             elif name == "telegram_test":
                 ok, message = self.telegram.send_test()
                 self.db.set_setting("telegram_test_status", {"ok": ok, "message": message, "ts": time.time()})
@@ -182,6 +200,28 @@ class AgentEngine(threading.Thread):
         self.db.set_setting("facebook_connection_status", self.fb.connection_status())
         if self.fb.browser_backend:
             self.db.set_setting("facebook_browser_backend", self.fb.browser_backend)
+
+    def _refresh_auto_wake_schedule(self, force: bool = False):
+        now = time.time()
+        if not force and now - self._last_wake_refresh < 30:
+            return
+        self._last_wake_refresh = now
+        if not bool(self.db.get_setting("auto_wake_for_smart_rules", False)):
+            return
+        target_iso = self.db.next_smart_rule_time()
+        if not target_iso or (target_iso == self._last_wake_target and not force):
+            return
+        try:
+            target = datetime.fromisoformat(target_iso)
+            minutes = int(self.db.get_setting("wake_minutes_early", 2) or 2)
+            ok, message = schedule_windows_wake(target, minutes_early=minutes)
+            self.db.set_setting("wake_schedule_status", {"ok": ok, "message": message, "target": target_iso})
+            self.db.audit("INFO" if ok else "WARNING", "wake_schedule_updated", f"{target_iso}: {message}")
+            if ok:
+                self._last_wake_target = target_iso
+        except Exception as exc:
+            self.db.set_setting("wake_schedule_status", {"ok": False, "message": str(exc), "target": target_iso})
+            self.db.audit("ERROR", "wake_schedule_failed", str(exc))
 
     def _discover_groups(self):
         self.db.set_setting("facebook_group_discovery_result", {

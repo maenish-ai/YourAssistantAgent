@@ -30,6 +30,7 @@ class SmartPlan:
     source_page_url: str
     weekdays: list[int] = field(default_factory=list)  # [] means every day
     run_time: str = "20:00"
+    run_once_at: str = ""  # ISO local datetime for one-time instructions
     post_mode: str = "fixed"  # fixed | rotation
     post_offset: int = 0
     group_keyword: str = ""
@@ -46,7 +47,13 @@ class SmartPlan:
 
     def summary(self, language: str = "ar") -> str:
         ar = language == "ar"
-        if self.weekdays:
+        if self.run_once_at:
+            try:
+                once = datetime.fromisoformat(self.run_once_at)
+                days = once.strftime("%Y-%m-%d")
+            except Exception:
+                days = self.run_once_at
+        elif self.weekdays:
             names = DAY_NAMES_AR if ar else DAY_NAMES_EN
             days = "، ".join(names[d] for d in self.weekdays)
         else:
@@ -63,7 +70,7 @@ class SmartPlan:
         if ar:
             return (
                 f"المصدر: {self.source_page_url}\n"
-                f"الموعد: {days} الساعة {self.run_time}\n"
+                f"الموعد: {'مرة واحدة ' if self.run_once_at else ''}{days} الساعة {self.run_time}\n"
                 f"البوست: {post}\n"
                 f"الجروبات: الاسم/الوسم يحتوي «{keyword}»\n"
                 f"الحد الأقصى: {self.max_groups} — الفاصل: {self.interval_seconds} ثانية\n"
@@ -71,7 +78,7 @@ class SmartPlan:
             )
         return (
             f"Source: {self.source_page_url}\n"
-            f"Schedule: {days} at {self.run_time}\n"
+            f"Schedule: {'Once ' if self.run_once_at else ''}{days} at {self.run_time}\n"
             f"Post: {post}\n"
             f"Groups: name/tag contains '{keyword}'\n"
             f"Maximum: {self.max_groups} — interval: {self.interval_seconds}s\n"
@@ -141,6 +148,23 @@ class SmartPlanner:
         return default
 
     @staticmethod
+    def _parse_once_at(text: str, run_time: str) -> str:
+        t = text.casefold()
+        offset = None
+        if re.search(r"(?:^|\s)(?:اليوم|today)(?:\s|$)", t):
+            offset = 0
+        elif re.search(r"(?:^|\s)(?:غدا|غداً|بكره|بكرة|tomorrow)(?:\s|$)", t):
+            offset = 1
+        if offset is None:
+            return ""
+        hour, minute = [int(x) for x in run_time.split(":", 1)]
+        target = datetime.now() + timedelta(days=offset)
+        target = target.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if offset == 0 and target <= datetime.now():
+            raise SmartPlannerError("وقت اليوم المحدد مضى بالفعل." if any(ch >= "\u0600" and ch <= "\u06ff" for ch in text) else "The requested time today has already passed.")
+        return target.isoformat()
+
+    @staticmethod
     def _parse_interval(text: str, default: int = 60) -> int:
         if re.search(r"كل\s*(?:نص|نصف)\s*(?:دقيقة|دقيقه)", text, re.I):
             return 30
@@ -193,8 +217,10 @@ class SmartPlanner:
         if quoted:
             return self._clean_keyword(quoted.group(1))
         patterns = [
-            r"(?:تحتوي\s+(?:اسمها\s+)?على|اسمها\s+فيه|اسمها\s+يحتوي|فيها(?:\s+كلمة)?|باسم|وسم)\s+([^،,.;؛]+)",
-            r"(?:groups?\s+(?:containing|with)|group\s+name\s+contains)\s+([^,.;]+)",
+            r"(?:التي\s+)?(?:جزء\s+من\s+)?اسمها\s+(?:يكون|يحتوي(?:\s+على)?|فيه)\s+([^،,.;؛]+)",
+            r"(?:تحتوي\s+(?:اسمها\s+)?على|اسمها\s+فيه|اسمها\s+يحتوي(?:\s+على)?|فيها(?:\s+كلمة)?|باسم|وسم)\s+([^،,.;؛]+)",
+            r"(?:جزء\s+من\s+اسمها)\s+(?:يكون\s+)?([^،,.;؛]+)",
+            r"(?:groups?\s+(?:containing|with)|group\s+name\s+(?:contains|has))\s+([^,.;]+)",
         ]
         for pat in patterns:
             m = re.search(pat, text, re.I)
@@ -258,6 +284,7 @@ class SmartPlanner:
         mode, offset = self._parse_post(text)
         weekdays = self._parse_weekdays(text)
         run_time = self._parse_time(text)
+        run_once_at = self._parse_once_at(text, run_time)
         keyword = self._parse_group_keyword(text)
         interval = self._parse_interval(text, default_interval)
         max_groups = self._parse_max_groups(text, default_max_groups)
@@ -269,6 +296,7 @@ class SmartPlanner:
             source_page_url=source,
             weekdays=weekdays,
             run_time=run_time,
+            run_once_at=run_once_at,
             post_mode=mode,
             post_offset=offset,
             group_keyword=keyword,

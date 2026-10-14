@@ -1,19 +1,9 @@
-Your Assistant Agent v0.7.0 — Smart Agent
+Your Assistant Agent v1.2.0 — FULL PROJECT FOR GITHUB
 
-هذه الملفات جاهزة للرفع فوق مستودع v0.6.4 الحالي.
+1) ارفع محتويات هذا المجلد إلى مستودع GitHub (وليس ملف ZIP كملف واحد داخل المستودع).
+2) لا ترفع ملفات GGUF أو llama.cpp يدويًا؛ GitHub Actions ينزلها تلقائيًا ويتحقق من SHA256.
+3) افتح Actions وانتظر Workflow: Build Your Assistant Agent for Windows.
+4) بعد النجاح نزّل Artifact باسم YourAssistantAgent-Windows-Setup.
+5) ثبّت Setup؛ النسخة الناتجة تحتوي Local AI المجاني داخلها.
 
-1) فك ضغط Patch v0.7.0.
-2) انسخ محتوياته إلى جذر مشروع GitHub الحالي مع Replace.
-3) تأكد أن المجلد your_assistant_agent وinstaller وtests في أماكنها الصحيحة.
-4) Commit ثم Push.
-5) افتح GitHub > Actions.
-6) Workflow يشغّل الاختبارات ثم يبني Windows Setup فقط.
-
-بعد التثبيت:
-- تحقق من Facebook Connected.
-- اكتشف الجروبات أو أضف جروب اختبار.
-- افتح تبويب «الوكيل الذكي».
-- ضع رابط صفحة المصدر.
-- اكتب الأمر، Preview، ثم Approve.
-
-Telegram Remote اختياري ويحتاج Bot Token من @BotFather وTelegram User ID الخاص بك.
+Dual Local AI هو الافتراضي ولا يحتاج Token: Auto / Qwen General / RightNow Arabic. موديل واحد فقط يعمل في الذاكرة في كل لحظة.

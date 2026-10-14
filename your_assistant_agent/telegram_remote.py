@@ -226,14 +226,30 @@ class TelegramRemote(threading.Thread):
             q = interpretation.question or ("محتاج أوضح نقطة قبل التنفيذ." if language == "ar" else "I need one clarification before executing.")
             history = self.smart_history.setdefault(str(chat_id), [])
             history.append(f"User: {text}\nAgent clarification: {q}")
-            self.smart_history[str(chat_id)] = history[-6:]
+            self.smart_history[str(chat_id)] = history[-12:]
             self.send_message(token, chat_id, q)
+            return
+        if interpretation.intent != "campaign":
+            if interpretation.intent == "status":
+                reply = self._status_text(language)
+            elif interpretation.intent == "rules":
+                reply = self._rules_text(language)
+            else:
+                reply = interpretation.reply or interpretation.understanding or (
+                    "أنا معك. احكيلي المهمة بطريقتك وأنا بفهمها وبسألك إذا في نقطة ناقصة."
+                    if language == "ar" else
+                    "I'm with you. Describe the task naturally and I'll ask only if something important is missing."
+                )
+            history = self.smart_history.setdefault(str(chat_id), [])
+            history.append(f"User: {text}\nAgent: {reply}")
+            self.smart_history[str(chat_id)] = history[-12:]
+            self.send_message(token, chat_id, reply)
             return
         plans = interpretation.plans
         history = self.smart_history.setdefault(str(chat_id), [])
         understood = interpretation.understanding or " | ".join(p.summary(language) for p in plans[:2])
         history.append(f"User: {text}\nAgent understanding: {understood}")
-        self.smart_history[str(chat_id)] = history[-6:]
+        self.smart_history[str(chat_id)] = history[-12:]
         if len(plans) == 1:
             self.smart_context[str(chat_id)] = plans[0].to_dict()
         else:

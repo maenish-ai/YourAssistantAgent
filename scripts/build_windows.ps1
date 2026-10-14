@@ -1,6 +1,7 @@
 param(
     [switch]$SkipBrowserInstall,
-    [switch]$SkipTests
+    [switch]$SkipTests,
+    [switch]$SkipLocalAI
 )
 
 $ErrorActionPreference = "Stop"
@@ -39,7 +40,12 @@ if (-not $SkipBrowserInstall) {
 
 Write-Host "Checking required application modules..."
 $env:PYTHONPATH = $ProjectRoot
-& $Python -c "import your_assistant_agent.github_deploy; import your_assistant_agent.ui; print('Required modules OK')"
+& $Python -c "import your_assistant_agent.github_deploy; import your_assistant_agent.local_ai_runtime; import your_assistant_agent.ui; print('Required modules OK')"
+
+if (-not $SkipLocalAI) {
+    Write-Host "Preparing bundled Dual Local AI (llama.cpp + Qwen3-0.6B + RightNow Arabic 0.5B)..."
+    & (Join-Path $PSScriptRoot "prepare_local_ai.ps1")
+}
 
 Write-Host "Building Windows application..."
 if (Test-Path "build") { Remove-Item "build" -Recurse -Force }

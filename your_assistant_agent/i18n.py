@@ -553,6 +553,55 @@ STRINGS["ar"].update({
 })
 
 
+# v1.2 Dual Local AI / provider-agnostic employee brain.
+STRINGS["en"].update({
+    "ai_brain_enable": "Use the smart employee brain",
+    "ai_provider": "AI provider",
+    "ai_provider_local": "Free Local AI — included, private, no token",
+    "ai_provider_external": "External OpenAI-compatible AI — optional",
+    "ai_local_profile": "Bundled local brain",
+    "ai_local_profile_auto": "Auto — Arabic model for Arabic, Qwen for other text",
+    "ai_local_profile_general": "General — Qwen3-0.6B",
+    "ai_local_profile_arabic": "Arabic — RightNow Arabic 0.5B Turbo",
+    "ai_local_model": "Custom local GGUF model (optional, overrides bundled choice)",
+    "ai_local_model_placeholder": "Leave blank to use Auto / bundled models",
+    "ai_endpoint": "External chat-completions endpoint",
+    "ai_model": "External model name",
+    "ai_external_model_placeholder": "Only required when External AI is selected",
+    "ai_api_key": "External API token",
+    "ai_key_placeholder": "Optional for Local AI; paste a token only for an external provider",
+    "ai_brain_note": "Dual Local Brain is included with the Windows build: Auto uses RightNow-Arabic-0.5B-Turbo for Arabic messages and Qwen3-0.6B for other text. llama.cpp keeps only one model loaded at a time to protect 4 GB RAM laptops. No subscription or API token is required. You can also force either bundled model or use a custom GGUF / external provider.",
+    "ai_external_required": "For External AI, enter the model name and API token. Or choose the included free Local AI.",
+    "ai_saved": "Smart brain settings saved.",
+    "ai_testing": "Starting/testing the smart brain. The first Local AI start can take a few seconds...",
+    "ai_test_ok": "The smart brain is ready.",
+    "ai_general_reply_default": "Tell me what you want in normal language. I will ask only when an important detail is missing.",
+})
+STRINGS["ar"].update({
+    "ai_brain_enable": "تشغيل عقل الموظف الذكي",
+    "ai_provider": "مصدر الذكاء",
+    "ai_provider_local": "AI محلي مجاني — مدمج وخاص ولا يحتاج Token",
+    "ai_provider_external": "AI خارجي متوافق مع OpenAI — اختياري",
+    "ai_local_profile": "العقل المحلي المدمج",
+    "ai_local_profile_auto": "تلقائي — العربي للمحادثة العربية وQwen لباقي النصوص",
+    "ai_local_profile_general": "عام — Qwen3-0.6B",
+    "ai_local_profile_arabic": "عربي — RightNow Arabic 0.5B Turbo",
+    "ai_local_model": "ملف GGUF محلي مخصص (اختياري ويتجاوز الاختيار المدمج)",
+    "ai_local_model_placeholder": "اتركه فارغًا لاستخدام Auto / الموديلات المدمجة",
+    "ai_endpoint": "رابط Chat Completions الخارجي",
+    "ai_model": "اسم النموذج الخارجي",
+    "ai_external_model_placeholder": "مطلوب فقط إذا اخترت AI خارجي",
+    "ai_api_key": "Token / API Key خارجي",
+    "ai_key_placeholder": "غير مطلوب للـAI المحلي؛ أدخله فقط إذا اخترت مزودًا خارجيًا",
+    "ai_brain_note": "Dual Local Brain مدمج مع نسخة ويندوز: وضع Auto يستخدم RightNow-Arabic-0.5B-Turbo للرسائل العربية وQwen3-0.6B لباقي النصوص. llama.cpp يشغّل موديلًا واحدًا فقط في كل لحظة حتى لا يضغط أجهزة 4GB RAM. لا يحتاج اشتراكًا أو Token، ويمكنك تثبيت أحد الموديلين أو اختيار GGUF مخصص أو مزود خارجي.",
+    "ai_external_required": "إذا اخترت AI خارجي أدخل اسم النموذج والـToken، أو اختر AI المحلي المجاني المدمج.",
+    "ai_saved": "تم حفظ إعدادات العقل الذكي.",
+    "ai_testing": "جارٍ تشغيل/اختبار العقل الذكي. أول تشغيل للـAI المحلي قد يأخذ عدة ثوانٍ...",
+    "ai_test_ok": "العقل الذكي جاهز.",
+    "ai_general_reply_default": "احكيلي اللي بدك إياه بطريقتك العادية، وأنا بسألك فقط إذا في تفصيل مهم ناقص.",
+})
+
+
 @dataclass
 class Translator:
     language: str = "en"

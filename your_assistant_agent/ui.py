@@ -27,6 +27,7 @@ from .smart_agent import SmartPlanner, SmartPlannerError
 from .agent_brain import AgentBrain, AgentBrainError
 from .startup import is_enabled as startup_is_enabled, migrate_legacy_startup, set_enabled as startup_set_enabled
 from .text_utils import is_valid_international_phone
+from .theme import apply_modern_theme
 
 APP_TITLE = "Your Assistant Agent"
 
@@ -385,6 +386,9 @@ class MainWindow(QMainWindow):
         self._build_logs()
         self._build_settings()
         self._build_tray()
+        for table in self.findChildren(QTableWidget):
+            table.setAlternatingRowColors(True)
+            table.setShowGrid(False)
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh_all)
@@ -526,7 +530,8 @@ class MainWindow(QMainWindow):
         self._pending_smart_plan = None
         self._editing_smart_rule_id = None
         self._smart_context_plan = None
-        self._smart_dialog_history = []
+        saved_history = self.db.get_setting("smart_dialog_history", []) or []
+        self._smart_dialog_history = list(saved_history)[-12:] if isinstance(saved_history, list) else []
 
         self.smart_rules_table = QTableWidget(0, 8)
         self.smart_rules_table.setHorizontalHeaderLabels([
@@ -547,12 +552,31 @@ class MainWindow(QMainWindow):
         ai_box = QGroupBox(self.tr.t("ai_brain"))
         ai_form = QFormLayout(ai_box)
         self.smart_ai_enabled = QCheckBox(self.tr.t("ai_brain_enable"))
-        self.smart_ai_enabled.setChecked(bool(self.db.get_setting("smart_ai_enabled", False)))
-        self.smart_ai_model = QLineEdit(str(self.db.get_setting("smart_ai_model", "gpt-6-luna") or "gpt-6-luna"))
+        self.smart_ai_enabled.setChecked(bool(self.db.get_setting("agent_ai_enabled", True)))
+        self.smart_ai_provider = QComboBox()
+        self.smart_ai_provider.addItem(self.tr.t("ai_provider_local"), "local")
+        self.smart_ai_provider.addItem(self.tr.t("ai_provider_external"), "external")
+        provider = str(self.db.get_setting("agent_ai_provider", "local") or "local")
+        idx = self.smart_ai_provider.findData(provider); self.smart_ai_provider.setCurrentIndex(max(0, idx))
+        self.local_ai_profile = QComboBox()
+        self.local_ai_profile.addItem(self.tr.t("ai_local_profile_auto"), "auto")
+        self.local_ai_profile.addItem(self.tr.t("ai_local_profile_general"), "general")
+        self.local_ai_profile.addItem(self.tr.t("ai_local_profile_arabic"), "arabic")
+        local_profile = str(self.db.get_setting("local_ai_profile", "auto") or "auto")
+        local_idx = self.local_ai_profile.findData(local_profile); self.local_ai_profile.setCurrentIndex(max(0, local_idx))
+        self.smart_ai_endpoint = QLineEdit(str(self.db.get_setting("external_ai_endpoint", "https://api.openai.com/v1/chat/completions") or ""))
+        self.smart_ai_model = QLineEdit(str(self.db.get_setting("external_ai_model", "") or ""))
+        self.smart_ai_model.setPlaceholderText(self.tr.t("ai_external_model_placeholder"))
         self.smart_ai_key = QLineEdit(); self.smart_ai_key.setEchoMode(QLineEdit.Password); self.smart_ai_key.setPlaceholderText(self.tr.t("ai_key_placeholder"))
+        self.local_ai_model_path = QLineEdit(str(self.db.get_setting("local_ai_model_path", "") or ""))
+        self.local_ai_model_path.setPlaceholderText(self.tr.t("ai_local_model_placeholder"))
         ai_note = QLabel(self.tr.t("ai_brain_note")); ai_note.setWordWrap(True); ai_note.setStyleSheet("color:#6b7280;")
         self.smart_ai_status = QLabel(); self.smart_ai_status.setWordWrap(True)
         ai_form.addRow(self.smart_ai_enabled)
+        ai_form.addRow(self.tr.t("ai_provider"), self.smart_ai_provider)
+        ai_form.addRow(self.tr.t("ai_local_profile"), self.local_ai_profile)
+        ai_form.addRow(self.tr.t("ai_local_model"), self.local_ai_model_path)
+        ai_form.addRow(self.tr.t("ai_endpoint"), self.smart_ai_endpoint)
         ai_form.addRow(self.tr.t("ai_model"), self.smart_ai_model)
         ai_form.addRow(self.tr.t("ai_api_key"), self.smart_ai_key)
         ai_form.addRow(ai_note)
@@ -601,7 +625,7 @@ class MainWindow(QMainWindow):
         self.gh_token = QLineEdit(); self.gh_token.setEchoMode(QLineEdit.Password); self.gh_token.setPlaceholderText(self.tr.t("github_token_placeholder"))
         self.gh_test_command = QLineEdit(str(self.db.get_setting("github_test_command", "python -m pytest -q") or "python -m pytest -q"))
         self.gh_build_command = QLineEdit(str(self.db.get_setting("github_build_command", "") or ""))
-        self.gh_commit_message = QLineEdit(str(self.db.get_setting("github_commit_message", "Your Assistant Agent v1.0.0") or "Your Assistant Agent v1.0.0"))
+        self.gh_commit_message = QLineEdit(str(self.db.get_setting("github_commit_message", "Your Assistant Agent v1.1.0") or "Your Assistant Agent v1.1.0"))
         form.addRow(self.tr.t("github_remote"), self.gh_remote)
         form.addRow(self.tr.t("github_repo_slug"), self.gh_repo_slug)
         form.addRow(self.tr.t("github_token"), self.gh_token)
@@ -894,14 +918,25 @@ class MainWindow(QMainWindow):
             self._pending_smart_plan = None
             question = interpretation.question or self.tr.t("ai_clarification_default")
             self._smart_dialog_history.append(f"User: {command_text}\nAgent clarification: {question}")
-            self._smart_dialog_history = self._smart_dialog_history[-6:]
+            self._smart_dialog_history = self._smart_dialog_history[-12:]
+            self.db.set_setting("smart_dialog_history", self._smart_dialog_history)
             self.smart_preview.setPlainText(self.tr.t("ai_needs_clarification", question=question))
+            return
+
+        if interpretation.intent != "campaign":
+            self._pending_smart_plan = None
+            reply = interpretation.reply or interpretation.understanding or self.tr.t("ai_general_reply_default")
+            self._smart_dialog_history.append(f"User: {command_text}\nAgent: {reply}")
+            self._smart_dialog_history = self._smart_dialog_history[-12:]
+            self.db.set_setting("smart_dialog_history", self._smart_dialog_history)
+            self.smart_preview.setPlainText(reply)
             return
 
         plans = interpretation.plans
         understood = interpretation.understanding or " | ".join(p.summary(self.tr.language) for p in plans[:2])
         self._smart_dialog_history.append(f"User: {command_text}\nAgent understanding: {understood}")
-        self._smart_dialog_history = self._smart_dialog_history[-6:]
+        self._smart_dialog_history = self._smart_dialog_history[-12:]
+        self.db.set_setting("smart_dialog_history", self._smart_dialog_history)
         self._pending_smart_plan = plans
         self._smart_context_plan = plans[0] if len(plans) == 1 else None
         blocks = []
@@ -931,8 +966,14 @@ class MainWindow(QMainWindow):
         header = ""
         if interpretation.understanding:
             header += self.tr.t("ai_understanding", text=interpretation.understanding) + "\n\n"
-        header += self.tr.t("ai_engine_used", engine=("AI Brain" if interpretation.source == "ai" else self.tr.t("local_safe_parser")))
-        if interpretation.source == "ai":
+        engine_name = {
+            "local_ai": self.tr.t("ai_provider_local"),
+            "external_ai": self.tr.t("ai_provider_external"),
+            "parser": self.tr.t("local_safe_parser"),
+            "ai": self.tr.t("ai_provider_external"),
+        }.get(interpretation.source, interpretation.source)
+        header += self.tr.t("ai_engine_used", engine=engine_name)
+        if interpretation.source in {"local_ai", "external_ai"}:
             header += f" — {int(round(interpretation.confidence * 100))}%"
         if interpretation.understanding or interpretation.source:
             header += "\n\n"
@@ -943,6 +984,7 @@ class MainWindow(QMainWindow):
         self._editing_smart_rule_id = None
         self._smart_context_plan = None
         self._smart_dialog_history = []
+        self.db.set_setting("smart_dialog_history", [])
         self.smart_command.clear()
         self.smart_preview.clear()
 
@@ -960,6 +1002,7 @@ class MainWindow(QMainWindow):
         else:
             ids = [self.db.add_smart_rule(plan) for plan in plans]
         self.smart_command.clear(); self.smart_preview.clear(); self._pending_smart_plan = None; self._editing_smart_rule_id = None; self._smart_context_plan = None; self._smart_dialog_history = []
+        self.db.set_setting("smart_dialog_history", [])
         label = ", ".join(str(x) for x in ids)
         QMessageBox.information(self, self.tr.t("smart_agent"), self.tr.t("smart_rules_saved", ids=label, count=len(ids)))
         self.refresh_smart_rules()
@@ -1074,7 +1117,7 @@ class MainWindow(QMainWindow):
             prompt = self.tr.t("github_apply_confirm", count=inspection.count)
             if QMessageBox.question(self, self.tr.t("github_deployment"), prompt) != QMessageBox.Yes:
                 return
-            result = self.github_deployer.apply_patch(repo, patch, branch_prefix="agent-update-v1.0.0")
+            result = self.github_deployer.apply_patch(repo, patch, branch_prefix="agent-update-v1.1.0")
             self._github_applied_paths = list(result.files)
             self._github_checks_ok = False
             self.gh_output.setPlainText(
@@ -1161,16 +1204,25 @@ class MainWindow(QMainWindow):
     def save_ai_brain_settings(self):
         try:
             enabled = self.smart_ai_enabled.isChecked()
-            model = self.smart_ai_model.text().strip() or "gpt-6-luna"
+            provider = str(self.smart_ai_provider.currentData() or "local")
+            endpoint = self.smart_ai_endpoint.text().strip() or "https://api.openai.com/v1/chat/completions"
+            model = self.smart_ai_model.text().strip()
+            local_profile = str(self.local_ai_profile.currentData() or "auto")
+            custom_local_model = self.local_ai_model_path.text().strip()
             key = self.smart_ai_key.text().strip()
             if key:
-                self.security.set_secret("openai_api_key", key)
+                self.security.set_secret("external_ai_api_key", key)
                 self.smart_ai_key.clear()
-            if enabled and not self.security.get_secret("openai_api_key"):
-                QMessageBox.warning(self, self.tr.t("ai_brain"), self.tr.t("ai_key_required"))
+            saved_external_key = self.security.get_secret("external_ai_api_key") or self.security.get_secret("openai_api_key")
+            if enabled and provider == "external" and (not model or not saved_external_key):
+                QMessageBox.warning(self, self.tr.t("ai_brain"), self.tr.t("ai_external_required"))
                 return False
-            self.db.set_setting("smart_ai_enabled", enabled)
-            self.db.set_setting("smart_ai_model", model)
+            self.db.set_setting("agent_ai_enabled", enabled)
+            self.db.set_setting("agent_ai_provider", provider)
+            self.db.set_setting("local_ai_profile", local_profile)
+            self.db.set_setting("external_ai_endpoint", endpoint)
+            self.db.set_setting("external_ai_model", model)
+            self.db.set_setting("local_ai_model_path", custom_local_model)
             self.smart_ai_status.setText(self.tr.t("ai_saved"))
             return True
         except Exception as exc:
@@ -1480,6 +1532,7 @@ def run_app():
     app = QApplication(sys.argv)
     app.setApplicationName(APP_TITLE)
     app.setWindowIcon(window_icon())
+    apply_modern_theme(app)
     migrate_legacy_startup()
 
     db = Database()

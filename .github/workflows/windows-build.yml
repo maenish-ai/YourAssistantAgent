@@ -10,7 +10,7 @@ jobs:
   build-windows:
     name: Build Windows Setup
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
 
     steps:
       - name: Checkout repository
@@ -43,7 +43,28 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: |
-          .\.venv\Scripts\python.exe -c "import your_assistant_agent.github_deploy; import your_assistant_agent.ui; print('Required modules OK')"
+          .\.venv\Scripts\python.exe -c "import your_assistant_agent.github_deploy; import your_assistant_agent.local_ai_runtime; import your_assistant_agent.ui; print('Required modules OK')"
+
+      - name: Cache bundled Local AI assets
+        uses: actions/cache@v4
+        with:
+          path: assets/local_ai
+          key: local-ai-dual-qwen3-0.6b-rightnow-arabic-0.5b-llama-b11429-v2
+
+      - name: Prepare free bundled Local AI
+        shell: pwsh
+        run: ./scripts/prepare_local_ai.ps1
+
+      - name: Verify Local AI bundle
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "assets\local_ai\runtime\llama-server.exe")) { throw "llama-server.exe missing" }
+          if (-not (Test-Path "assets\local_ai\models\Qwen3-0.6B-Q4_0.gguf")) { throw "General Local AI model missing" }
+          if (-not (Test-Path "assets\local_ai\models\RightNow-Arabic-0.5B-Turbo-q4_k_m.gguf")) { throw "Arabic Local AI model missing" }
+          $generalSize = (Get-Item "assets\local_ai\models\Qwen3-0.6B-Q4_0.gguf").Length
+          $arabicSize = (Get-Item "assets\local_ai\models\RightNow-Arabic-0.5B-Turbo-q4_k_m.gguf").Length
+          if ($generalSize -lt 400MB) { throw "General Local AI model is unexpectedly small" }
+          if ($arabicSize -lt 390MB) { throw "Arabic Local AI model is unexpectedly small" }
 
       - name: Install Playwright Chromium fallback into app assets
         shell: pwsh

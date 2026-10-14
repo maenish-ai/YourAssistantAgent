@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "runtime": {
+    "name": "llama.cpp",
+    "tag": "b11429",
+    "asset": "llama-b11429-bin-win-cpu-x64.zip",
+    "sha256": "1283323272b04cd07905816a597a0da810918102de958f4ff6f7bbaa70ed2efe"
+  },
+  "models": [
+    {
+      "profile": "general",
+      "name": "Qwen3-0.6B Q4_0",
+      "file": "Qwen3-0.6B-Q4_0.gguf",
+      "sha256": "da2572f16c06133561ce56accaa822216f2391ef4d37fba427801cd6736417d4"
+    },
+    {
+      "profile": "arabic",
+      "name": "RightNow-Arabic-0.5B-Turbo Q4_K_M",
+      "file": "RightNow-Arabic-0.5B-Turbo-q4_k_m.gguf",
+      "sha256": "03a58f3cb23af68dbe4247ac2f3f67fdeb8bc3df8bb7e41e0ac0049f8b5211a1"
+    }
+  ]
+}

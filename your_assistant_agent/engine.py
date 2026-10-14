@@ -20,8 +20,14 @@ class AgentEngine(threading.Thread):
         self.stop_event = threading.Event()
         self.commands: queue.Queue[tuple[str, Any]] = queue.Queue()
         language = db.get_setting("language", "en") or "en"
-        locale = "ar-JO" if language == "ar" else "en-US"
-        self.fb = FacebookAutomation(FacebookConfig(locale=locale))
+        self.facebook_locale = "ar-JO" if language == "ar" else "en-US"
+        browser_choice = str(db.get_setting("facebook_browser_choice", "auto") or "auto")
+        browser_label = str(db.get_setting("facebook_browser_label", "") or "")
+        self.fb = FacebookAutomation(FacebookConfig(
+            locale=self.facebook_locale,
+            browser_choice=browser_choice,
+            browser_label=browser_label,
+        ))
         self.wa = WhatsAppBusinessClient(db, security)
         self._last_fb_status_poll = 0.0
 
@@ -65,12 +71,34 @@ class AgentEngine(threading.Thread):
                     self.fb.open_login()
                     self.db.set_setting("facebook_browser_backend", self.fb.browser_backend)
                     self.db.set_setting("facebook_connection_status", self.fb.connection_status())
+                    self.db.set_setting("facebook_browser_last_error", "")
                     self.db.audit("INFO", "facebook_browser_opened", self.fb.browser_backend)
                 except Exception as exc:
+                    self.db.set_setting("facebook_connection_status", "browser_error")
+                    self.db.set_setting("facebook_browser_last_error", str(exc))
                     self.db.audit("ERROR", "facebook_browser_error", str(exc))
             elif name == "check_facebook_connection":
                 self.db.set_setting("facebook_connection_status", self.fb.connection_status())
                 self.db.set_setting("facebook_browser_backend", self.fb.browser_backend)
+            elif name == "set_facebook_browser":
+                data = payload or {}
+                choice = str(data.get("choice") or "auto")
+                label = str(data.get("label") or "")
+                try:
+                    self.fb.stop()
+                except Exception:
+                    pass
+                self.db.set_setting("facebook_browser_choice", choice)
+                self.db.set_setting("facebook_browser_label", label)
+                self.db.set_setting("facebook_browser_backend", "")
+                self.db.set_setting("facebook_connection_status", "not_checked")
+                self.db.set_setting("facebook_browser_user_selected", True)
+                self.fb = FacebookAutomation(FacebookConfig(
+                    locale=self.facebook_locale,
+                    browser_choice=choice,
+                    browser_label=label,
+                ))
+                self.db.audit("INFO", "facebook_browser_changed", label or choice)
             elif name == "run_campaign_now":
                 try:
                     camp = self.db.get_campaign(int(payload))

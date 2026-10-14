@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from .branding import pixmap, window_icon
+from .browser_discovery import discover_installed_browsers
 from .db import Database
 from .engine import AgentEngine
 from .i18n import LANGUAGES, Translator
@@ -35,6 +36,7 @@ EVENT_AR = {
     "group_post_done": "تم نشر منشور المجموعة",
     "group_post_failed": "فشل نشر منشور المجموعة",
     "facebook_browser_opened": "تم فتح متصفح فيسبوك",
+    "facebook_browser_changed": "تم تغيير متصفح فيسبوك",
     "facebook_login_required": "يلزم تسجيل الدخول إلى فيسبوك",
     "facebook_checkpoint": "تحقق أمني من فيسبوك",
     "wa_contact_added": "إضافة جهة اتصال واتساب",
@@ -206,6 +208,113 @@ class PinDialog(QDialog):
         self.accept()
 
 
+class BrowserChoiceDialog(QDialog):
+    def __init__(self, tr: Translator, current_choice: str = "auto", parent=None):
+        super().__init__(parent)
+        self.tr = tr
+        self.current_choice = current_choice or "auto"
+        self.options: list[dict] = []
+        self.setWindowTitle(tr.t("facebook_browser"))
+        self.setWindowIcon(window_icon())
+        self.setModal(True)
+        self.setMinimumWidth(650)
+        self.setLayoutDirection(Qt.RightToLeft if tr.rtl else Qt.LeftToRight)
+
+        root = QVBoxLayout(self)
+        title = QLabel(tr.t("choose_browser"))
+        title.setWordWrap(True)
+        title.setStyleSheet("font-size:17px;font-weight:800;color:#20285c;")
+        root.addWidget(title)
+
+        note = QLabel(tr.t("browser_first_time"))
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#6b7280;")
+        root.addWidget(note)
+
+        self.combo = QComboBox()
+        self.combo.currentIndexChanged.connect(self._update_details)
+        root.addWidget(self.combo)
+
+        self.details = QLabel()
+        self.details.setWordWrap(True)
+        self.details.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.details.setStyleSheet("padding:10px;background:#f7f7fb;border:1px solid #e5e7eb;border-radius:6px;color:#4b5563;")
+        root.addWidget(self.details)
+
+        row = QHBoxLayout()
+        refresh = QPushButton(tr.t("browser_refresh"))
+        refresh.clicked.connect(self.reload)
+        row.addWidget(refresh)
+        row.addStretch(1)
+        cancel = QPushButton(tr.t("cancel")); cancel.clicked.connect(self.reject)
+        use = QPushButton(tr.t("browser_apply")); use.clicked.connect(self._accept_choice)
+        row.addWidget(cancel); row.addWidget(use)
+        root.addLayout(row)
+
+        self.reload()
+
+    def _support_text(self, support: str) -> str:
+        return self.tr.t({
+            "full": "browser_support_full",
+            "experimental": "browser_support_experimental",
+            "unsupported": "browser_support_unsupported",
+        }.get(support, "browser_support_experimental"))
+
+    def reload(self):
+        previous = self.current_choice
+        if self.combo.currentIndex() >= 0 and self.options:
+            previous = self.options[self.combo.currentIndex()].get("choice", previous)
+
+        self.combo.blockSignals(True)
+        self.combo.clear()
+        self.options = []
+
+        self._add_option(self.tr.t("browser_auto"), "auto", self.tr.t("browser_auto"), "full", "")
+        for browser in discover_installed_browsers():
+            support = browser.support
+            visible = f"{browser.name} — {self._support_text(support)}"
+            self._add_option(visible, browser.key, browser.name, support, str(browser.executable))
+        self._add_option(self.tr.t("browser_bundled"), "bundled", self.tr.t("browser_bundled"), "full", "")
+
+        idx = next((i for i, opt in enumerate(self.options) if opt["choice"].casefold() == str(previous).casefold()), 0)
+        self.combo.setCurrentIndex(idx)
+        self.combo.blockSignals(False)
+        self._update_details()
+
+    def _add_option(self, visible: str, choice: str, label: str, support: str, path: str):
+        self.options.append({"choice": choice, "label": label, "support": support, "path": path})
+        self.combo.addItem(visible)
+
+    def _update_details(self):
+        if self.combo.currentIndex() < 0 or not self.options:
+            self.details.clear(); return
+        opt = self.options[self.combo.currentIndex()]
+        lines = [f"{self.tr.t('browser_current')}: {opt['label']}", self._support_text(opt["support"])]
+        if opt["path"]:
+            lines.append(f"{self.tr.t('browser_path')}: {opt['path']}")
+        self.details.setText("\n".join(lines))
+
+    def _accept_choice(self):
+        if self.combo.currentIndex() < 0:
+            QMessageBox.warning(self, self.tr.t("facebook_browser"), self.tr.t("browser_select_first"))
+            return
+        opt = self.options[self.combo.currentIndex()]
+        if opt["support"] == "unsupported":
+            QMessageBox.warning(self, self.tr.t("facebook_browser"), self.tr.t("browser_unsupported_warning"))
+            return
+        if opt["support"] == "experimental":
+            answer = QMessageBox.question(self, self.tr.t("facebook_browser"), self.tr.t("browser_experimental_warning"))
+            if answer != QMessageBox.Yes:
+                return
+        self.accept()
+
+    @property
+    def selection(self) -> dict:
+        if self.combo.currentIndex() < 0 or not self.options:
+            return {"choice": "auto", "label": self.tr.t("browser_auto"), "support": "full"}
+        return dict(self.options[self.combo.currentIndex()])
+
+
 class MainWindow(QMainWindow):
     def __init__(self, db: Database, engine: AgentEngine, security: SecurityManager, tr: Translator):
         super().__init__()
@@ -252,7 +361,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(BrandBanner(self.tr, self.tr.t("dashboard_subtitle")))
         buttons = QHBoxLayout()
         self.login_btn = QPushButton(self.tr.t("open_facebook"))
-        self.login_btn.clicked.connect(lambda: self.engine.command("open_login"))
+        self.login_btn.clicked.connect(self.open_facebook_browser)
         self.pause_btn = QPushButton()
         self.pause_btn.clicked.connect(self.toggle_pause)
         self.kill_btn = QPushButton(self.tr.t("emergency_stop"))
@@ -442,6 +551,18 @@ class MainWindow(QMainWindow):
 
     def _build_settings(self):
         lay = QVBoxLayout(self.settings_tab)
+
+        browser_box = QGroupBox(self.tr.t("facebook_browser"))
+        browser_layout = QVBoxLayout(browser_box)
+        self.browser_current_label = QLabel()
+        self.browser_current_label.setWordWrap(True)
+        browser_layout.addWidget(self.browser_current_label)
+        choose_browser = QPushButton(self.tr.t("browser_apply"))
+        choose_browser.clicked.connect(lambda: self.choose_facebook_browser(open_after=False))
+        browser_layout.addWidget(choose_browser)
+        lay.addWidget(browser_box)
+        self._refresh_browser_current_label()
+
         lang_box = QGroupBox(self.tr.t("language"))
         form = QFormLayout(lang_box)
         self.lang_combo = QComboBox()
@@ -454,6 +575,43 @@ class MainWindow(QMainWindow):
         lay.addWidget(lang_box)
         sec = QGroupBox(self.tr.t("about_security")); s = QVBoxLayout(sec); text = QLabel(self.tr.t("security_text")); text.setWordWrap(True); s.addWidget(text); lay.addWidget(sec)
         lay.addStretch(1)
+
+    def _refresh_browser_current_label(self):
+        if not hasattr(self, "browser_current_label"):
+            return
+        choice = str(self.db.get_setting("facebook_browser_choice", "auto") or "auto")
+        label = str(self.db.get_setting("facebook_browser_label", "") or "")
+        if not label:
+            label = self.tr.t("browser_auto") if choice == "auto" else self.tr.t("browser_bundled") if choice == "bundled" else choice
+        self.browser_current_label.setText(f"{self.tr.t('browser_current')}: {label}")
+
+    def choose_facebook_browser(self, open_after: bool = False) -> bool:
+        current = str(self.db.get_setting("facebook_browser_choice", "auto") or "auto")
+        dlg = BrowserChoiceDialog(self.tr, current, self)
+        if dlg.exec() != QDialog.Accepted:
+            return False
+        selected = dlg.selection
+        payload = {"choice": selected["choice"], "label": selected["label"]}
+        # Save immediately so the UI reflects the choice; the engine receives
+        # the same values and safely restarts only its dedicated browser context.
+        self.db.set_setting("facebook_browser_choice", payload["choice"])
+        self.db.set_setting("facebook_browser_label", payload["label"])
+        self.db.set_setting("facebook_browser_user_selected", True)
+        self.db.set_setting("facebook_connection_status", "not_checked")
+        self.engine.command("set_facebook_browser", payload)
+        self._refresh_browser_current_label()
+        if open_after:
+            self.engine.command("open_login")
+        else:
+            QMessageBox.information(self, self.tr.t("facebook_browser"), self.tr.t("browser_saved"))
+        return True
+
+    def open_facebook_browser(self):
+        selected_before = bool(self.db.get_setting("facebook_browser_user_selected", False))
+        if not selected_before:
+            self.choose_facebook_browser(open_after=True)
+            return
+        self.engine.command("open_login")
 
     def _build_tray(self):
         self.tray = QSystemTrayIcon(self); self.tray.setToolTip(APP_TITLE); self.tray.setIcon(window_icon())
@@ -590,12 +748,17 @@ class MainWindow(QMainWindow):
             "not_connected": "facebook_not_connected",
             "verification_required": "facebook_verification_required",
             "browser_closed": "facebook_browser_closed",
+            "browser_error": "facebook_browser_error",
             "not_checked": "facebook_not_checked",
         }.get(str(fb_state), "facebook_not_checked")
         backend = self.db.get_setting("facebook_browser_backend", "") or ""
         fb_text = self.tr.t(fb_key)
         if backend and fb_state in ("connected", "verification_required"):
             fb_text += f" — {backend}"
+        if fb_state == "browser_error":
+            err = str(self.db.get_setting("facebook_browser_last_error", "") or "").strip()
+            if err:
+                fb_text += f" — {err[:180]}"
         self.fb_status_label.setText(fb_text)
         fb_stats = self.db.queue_stats(); wa_stats = self.db.wa_queue_stats()
         parts = [f"FB {k}: {v}" for k, v in sorted(fb_stats.items())] + [f"WA {k}: {v}" for k, v in sorted(wa_stats.items())]

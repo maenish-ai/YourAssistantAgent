@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -12,6 +11,7 @@ from playwright.sync_api import sync_playwright
 
 from .paths import browser_profile_dir
 from .branding import asset_path
+from .browser_discovery import discover_installed_browsers
 
 
 def _configure_bundled_playwright_browser() -> None:
@@ -19,38 +19,6 @@ def _configure_bundled_playwright_browser() -> None:
     bundled = asset_path("playwright-browsers")
     if bundled.exists():
         os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(bundled)
-
-
-def _system_browser_candidates() -> list[tuple[str, Path]]:
-    """Return installed Chrome/Edge executables in preferred order on Windows."""
-    if os.name != "nt":
-        return []
-
-    paths: list[tuple[str, Path]] = []
-    env = os.environ
-    raw = [
-        ("Google Chrome", Path(env.get("PROGRAMFILES", "")) / "Google/Chrome/Application/chrome.exe"),
-        ("Google Chrome", Path(env.get("PROGRAMFILES(X86)", "")) / "Google/Chrome/Application/chrome.exe"),
-        ("Google Chrome", Path(env.get("LOCALAPPDATA", "")) / "Google/Chrome/Application/chrome.exe"),
-        ("Microsoft Edge", Path(env.get("PROGRAMFILES(X86)", "")) / "Microsoft/Edge/Application/msedge.exe"),
-        ("Microsoft Edge", Path(env.get("PROGRAMFILES", "")) / "Microsoft/Edge/Application/msedge.exe"),
-        ("Microsoft Edge", Path(env.get("LOCALAPPDATA", "")) / "Microsoft/Edge/Application/msedge.exe"),
-    ]
-
-    seen: set[str] = set()
-    for name, path in raw:
-        text = str(path)
-        if text and path.exists() and text.lower() not in seen:
-            seen.add(text.lower())
-            paths.append((name, path))
-
-    # Also honor browser executables available on PATH.
-    for exe, name in (("chrome.exe", "Google Chrome"), ("msedge.exe", "Microsoft Edge")):
-        found = shutil.which(exe)
-        if found and found.lower() not in seen:
-            seen.add(found.lower())
-            paths.append((name, Path(found)))
-    return paths
 
 
 class FacebookError(RuntimeError):
@@ -70,6 +38,8 @@ class FacebookConfig:
     profile_dir: Path = browser_profile_dir()
     headless: bool = False
     locale: str = "en-US"
+    browser_choice: str = "auto"
+    browser_label: str = ""
 
 
 class FacebookAutomation:
@@ -131,6 +101,22 @@ class FacebookAutomation:
         self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
         self.browser_backend = backend_name
 
+    def _launch_selected_browser(self) -> bool:
+        choice = (self.config.browser_choice or "auto").strip()
+        if choice in {"", "auto"}:
+            return False
+        if choice == "bundled":
+            _configure_bundled_playwright_browser()
+            self._launch(None, self.config.browser_label or "Bundled Chromium")
+            return True
+
+        executable = Path(choice)
+        if not executable.exists():
+            raise FacebookError(f"Selected browser is no longer installed: {executable}")
+        label = self.config.browser_label or executable.stem
+        self._launch(executable, label)
+        return True
+
     def start(self):
         if self._context_alive():
             try:
@@ -149,16 +135,30 @@ class FacebookAutomation:
         self.pw = sync_playwright().start()
 
         launch_errors: list[str] = []
-        for name, executable in _system_browser_candidates():
+
+        # An explicit browser selected by the user is tried first and is not
+        # silently replaced by another system browser. This keeps the UI choice
+        # predictable. Bundled Chromium remains available as an explicit option.
+        if (self.config.browser_choice or "auto") not in {"", "auto"}:
             try:
-                self._launch(executable, name)
+                if self._launch_selected_browser():
+                    return
+            except Exception as exc:
+                self._reset_playwright()
+                raise FacebookError(f"Could not start {self.config.browser_label or 'the selected browser'}: {exc}") from exc
+
+        # Automatic mode prefers fully supported installed Chromium browsers,
+        # then experimental Chromium-like browsers, and finally bundled Chromium.
+        candidates = [b for b in discover_installed_browsers() if b.support != "unsupported"]
+        for browser in candidates:
+            try:
+                self._launch(browser.executable, browser.name)
                 return
             except Exception as exc:
-                launch_errors.append(f"{name}: {exc}")
+                launch_errors.append(f"{browser.name}: {exc}")
                 self.context = None
                 self.page = None
 
-        # Fallback keeps the app usable when Chrome/Edge is unavailable.
         try:
             _configure_bundled_playwright_browser()
             self._launch(None, "Bundled Chromium")

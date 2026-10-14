@@ -20,9 +20,11 @@ from .branding import pixmap, window_icon
 from .browser_discovery import discover_installed_browsers
 from .db import Database
 from .engine import AgentEngine
+from .github_deploy import GitHubDeployer, GitHubDeployError
 from .i18n import LANGUAGES, Translator
 from .security import SecurityManager
 from .smart_agent import SmartPlanner, SmartPlannerError
+from .agent_brain import AgentBrain, AgentBrainError
 from .startup import is_enabled as startup_is_enabled, migrate_legacy_startup, set_enabled as startup_set_enabled
 from .text_utils import is_valid_international_phone
 
@@ -48,6 +50,9 @@ EVENT_AR = {
     "smart_rule_queued": "إضافة قاعدة ذكية إلى الطابور",
     "smart_rule_no_groups": "لا توجد مجموعات مطابقة للقاعدة الذكية",
     "smart_group_share_done": "تمت المشاركة الذكية في المجموعة",
+    "smart_group_share_published": "تم نشر المشاركة في المجموعة",
+    "smart_group_share_submitted": "تم إرسال المشاركة إلى المجموعة",
+    "smart_group_share_pending_approval": "تم إرسال المشاركة وهي بانتظار موافقة الأدمن",
     "smart_group_share_failed": "فشلت المشاركة الذكية في المجموعة",
     "smart_rule_all_deduped": "تم تخطي التكرار في القاعدة الذكية",
     "telegram_remote_started": "بدء التحكم عبر تيليجرام",
@@ -358,6 +363,7 @@ class MainWindow(QMainWindow):
         self.groups_tab = QWidget()
         self.campaigns_tab = QWidget()
         self.smart_tab = QWidget()
+        self.github_tab = QWidget()
         self.whatsapp_tab = QWidget()
         self.logs_tab = QWidget()
         self.settings_tab = QWidget()
@@ -365,6 +371,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.groups_tab, tr.t("facebook_groups"))
         self.tabs.addTab(self.campaigns_tab, tr.t("facebook_campaigns"))
         self.tabs.addTab(self.smart_tab, tr.t("smart_agent"))
+        self.tabs.addTab(self.github_tab, tr.t("github_deployment"))
         self.tabs.addTab(self.whatsapp_tab, tr.t("whatsapp"))
         self.tabs.addTab(self.logs_tab, tr.t("audit_log"))
         self.tabs.addTab(self.settings_tab, tr.t("settings"))
@@ -373,6 +380,7 @@ class MainWindow(QMainWindow):
         self._build_groups()
         self._build_campaigns()
         self._build_smart()
+        self._build_github()
         self._build_whatsapp()
         self._build_logs()
         self._build_settings()
@@ -517,6 +525,8 @@ class MainWindow(QMainWindow):
         root.addWidget(planner_box)
         self._pending_smart_plan = None
         self._editing_smart_rule_id = None
+        self._smart_context_plan = None
+        self._smart_dialog_history = []
 
         self.smart_rules_table = QTableWidget(0, 8)
         self.smart_rules_table.setHorizontalHeaderLabels([
@@ -534,6 +544,25 @@ class MainWindow(QMainWindow):
         delete = QPushButton(self.tr.t("delete_selected")); delete.clicked.connect(self.delete_smart_rule)
         actions.addWidget(run); actions.addWidget(edit); actions.addWidget(toggle); actions.addWidget(cancel_pending); actions.addWidget(delete); actions.addStretch(1); root.addLayout(actions)
 
+        ai_box = QGroupBox(self.tr.t("ai_brain"))
+        ai_form = QFormLayout(ai_box)
+        self.smart_ai_enabled = QCheckBox(self.tr.t("ai_brain_enable"))
+        self.smart_ai_enabled.setChecked(bool(self.db.get_setting("smart_ai_enabled", False)))
+        self.smart_ai_model = QLineEdit(str(self.db.get_setting("smart_ai_model", "gpt-6-luna") or "gpt-6-luna"))
+        self.smart_ai_key = QLineEdit(); self.smart_ai_key.setEchoMode(QLineEdit.Password); self.smart_ai_key.setPlaceholderText(self.tr.t("ai_key_placeholder"))
+        ai_note = QLabel(self.tr.t("ai_brain_note")); ai_note.setWordWrap(True); ai_note.setStyleSheet("color:#6b7280;")
+        self.smart_ai_status = QLabel(); self.smart_ai_status.setWordWrap(True)
+        ai_form.addRow(self.smart_ai_enabled)
+        ai_form.addRow(self.tr.t("ai_model"), self.smart_ai_model)
+        ai_form.addRow(self.tr.t("ai_api_key"), self.smart_ai_key)
+        ai_form.addRow(ai_note)
+        ai_buttons = QHBoxLayout()
+        ai_save = QPushButton(self.tr.t("save_ai_brain")); ai_save.clicked.connect(self.save_ai_brain_settings)
+        ai_test = QPushButton(self.tr.t("test_ai_brain")); ai_test.clicked.connect(self.test_ai_brain)
+        ai_buttons.addWidget(ai_save); ai_buttons.addWidget(ai_test); ai_buttons.addStretch(1)
+        ai_form.addRow(ai_buttons); ai_form.addRow(self.smart_ai_status)
+        root.addWidget(ai_box)
+
         tg = QGroupBox(self.tr.t("telegram_remote"))
         tg_form = QFormLayout(tg)
         self.telegram_enabled = QCheckBox(self.tr.t("telegram_enable")); self.telegram_enabled.setChecked(bool(self.db.get_setting("telegram_enabled", False)))
@@ -548,6 +577,59 @@ class MainWindow(QMainWindow):
         test = QPushButton(self.tr.t("test_telegram")); test.clicked.connect(self.test_telegram)
         tgb.addWidget(save); tgb.addWidget(test); tg_form.addRow(tgb); tg_form.addRow(self.telegram_status)
         root.addWidget(tg)
+
+    def _build_github(self):
+        root = QVBoxLayout(self.github_tab)
+        note = QLabel(self.tr.t("github_help")); note.setWordWrap(True); note.setStyleSheet("color:#5d6386;")
+        root.addWidget(note)
+
+        box = QGroupBox(self.tr.t("github_deployment"))
+        form = QFormLayout(box)
+
+        self.gh_repo_path = QLineEdit(str(self.db.get_setting("github_repo_path", "") or ""))
+        repo_row = QHBoxLayout(); repo_row.addWidget(self.gh_repo_path, 1)
+        repo_browse = QPushButton(self.tr.t("browse")); repo_browse.clicked.connect(self.browse_github_repo); repo_row.addWidget(repo_browse)
+        form.addRow(self.tr.t("github_repo_folder"), repo_row)
+
+        self.gh_patch_path = QLineEdit(str(self.db.get_setting("github_patch_path", "") or ""))
+        patch_row = QHBoxLayout(); patch_row.addWidget(self.gh_patch_path, 1)
+        patch_browse = QPushButton(self.tr.t("browse")); patch_browse.clicked.connect(self.browse_github_patch); patch_row.addWidget(patch_browse)
+        form.addRow(self.tr.t("github_patch_zip"), patch_row)
+
+        self.gh_remote = QLineEdit(str(self.db.get_setting("github_remote", "origin") or "origin"))
+        self.gh_repo_slug = QLineEdit(str(self.db.get_setting("github_repo_slug", "") or "")); self.gh_repo_slug.setPlaceholderText("owner/repository")
+        self.gh_token = QLineEdit(); self.gh_token.setEchoMode(QLineEdit.Password); self.gh_token.setPlaceholderText(self.tr.t("github_token_placeholder"))
+        self.gh_test_command = QLineEdit(str(self.db.get_setting("github_test_command", "python -m pytest -q") or "python -m pytest -q"))
+        self.gh_build_command = QLineEdit(str(self.db.get_setting("github_build_command", "") or ""))
+        self.gh_commit_message = QLineEdit(str(self.db.get_setting("github_commit_message", "Your Assistant Agent v1.0.0") or "Your Assistant Agent v1.0.0"))
+        form.addRow(self.tr.t("github_remote"), self.gh_remote)
+        form.addRow(self.tr.t("github_repo_slug"), self.gh_repo_slug)
+        form.addRow(self.tr.t("github_token"), self.gh_token)
+        form.addRow(self.tr.t("github_test_command"), self.gh_test_command)
+        form.addRow(self.tr.t("github_build_command"), self.gh_build_command)
+        form.addRow(self.tr.t("github_commit_message"), self.gh_commit_message)
+        root.addWidget(box)
+
+        actions = QHBoxLayout()
+        inspect = QPushButton(self.tr.t("github_inspect")); inspect.clicked.connect(self.github_inspect_patch)
+        apply_btn = QPushButton(self.tr.t("github_apply")); apply_btn.clicked.connect(self.github_apply_patch)
+        test = QPushButton(self.tr.t("github_run_checks")); test.clicked.connect(self.github_run_checks)
+        push = QPushButton(self.tr.t("github_commit_push")); push.clicked.connect(self.github_commit_push)
+        actions.addWidget(inspect); actions.addWidget(apply_btn); actions.addWidget(test); actions.addWidget(push)
+        root.addLayout(actions)
+
+        actions2 = QHBoxLayout()
+        status = QPushButton(self.tr.t("github_actions_status")); status.clicked.connect(self.github_check_actions)
+        discard = QPushButton(self.tr.t("github_discard")); discard.clicked.connect(self.github_discard_patch)
+        actions2.addWidget(status); actions2.addWidget(discard); actions2.addStretch(1)
+        root.addLayout(actions2)
+
+        self.gh_output = QTextEdit(); self.gh_output.setReadOnly(True)
+        root.addWidget(self.gh_output, 1)
+
+        self.github_deployer = GitHubDeployer()
+        self._github_applied_paths = []
+        self._github_checks_ok = False
 
     def _build_whatsapp(self):
         root = QVBoxLayout(self.whatsapp_tab)
@@ -783,31 +865,84 @@ class MainWindow(QMainWindow):
         source = self.smart_source.text().strip()
         self.db.set_setting("smart_default_source_page", source)
         planner = SmartPlanner(self.tr.language)
+        command_text = self.smart_command.toPlainText().strip()
+        stored_context = self._smart_context_plan
+        fallback_context = stored_context if planner.is_followup(command_text) else None
+        brain = AgentBrain(self.db, self.security, self.tr.language)
         try:
-            plans = planner.parse_many(
-                self.smart_command.toPlainText(),
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            interpretation = brain.interpret_with_fallback(
+                command_text,
                 default_source_page=source,
                 default_interval=int(self.db.get_setting("smart_default_interval_seconds", 60) or 60),
                 default_max_groups=int(self.db.get_setting("smart_default_max_groups", 100) or 100),
                 default_no_repeat_days=int(self.db.get_setting("smart_no_repeat_days", 14) or 14),
+                context_plan=stored_context if brain.is_configured() else fallback_context,
+                conversation_context="\n".join(self._smart_dialog_history[-6:]),
             )
-        except SmartPlannerError as exc:
+        except (SmartPlannerError, AgentBrainError) as exc:
+            self._pending_smart_plan = None
+            self.smart_preview.clear()
             QMessageBox.warning(self, self.tr.t("smart_agent"), str(exc)); return
+        finally:
+            try:
+                QApplication.restoreOverrideCursor()
+            except Exception:
+                pass
+
+        if interpretation.needs_clarification:
+            self._pending_smart_plan = None
+            question = interpretation.question or self.tr.t("ai_clarification_default")
+            self._smart_dialog_history.append(f"User: {command_text}\nAgent clarification: {question}")
+            self._smart_dialog_history = self._smart_dialog_history[-6:]
+            self.smart_preview.setPlainText(self.tr.t("ai_needs_clarification", question=question))
+            return
+
+        plans = interpretation.plans
+        understood = interpretation.understanding or " | ".join(p.summary(self.tr.language) for p in plans[:2])
+        self._smart_dialog_history.append(f"User: {command_text}\nAgent understanding: {understood}")
+        self._smart_dialog_history = self._smart_dialog_history[-6:]
         self._pending_smart_plan = plans
+        self._smart_context_plan = plans[0] if len(plans) == 1 else None
         blocks = []
         for i, plan in enumerate(plans, 1):
-            groups = self.db.list_groups(enabled_only=True, keyword=plan.group_keyword or None, limit=plan.max_groups)
-            names = ", ".join(str(g["name"]) for g in groups[:8])
+            total_matches = self.db.count_groups(enabled_only=True, keyword=plan.group_keyword or None)
+            examples = self.db.list_groups(enabled_only=True, keyword=plan.group_keyword or None, limit=8)
+            names = ", ".join(str(g["name"]) for g in examples)
+            execution_count = min(total_matches, int(plan.max_groups))
             if self.tr.language == "ar":
-                match_info = f"\nعدد الجروبات المطابقة الآن: {len(groups)}" + (f"\nأمثلة: {names}" if names else "")
+                target = f"«{plan.group_keyword}»" if plan.group_keyword else "كل الجروبات المحفوظة"
+                match_info = (
+                    f"\nالهدف الذي فهمه الوكيل: {target}"
+                    f"\nالعدد الحقيقي المطابق الآن: {total_matches}"
+                    f"\nسيتم التنفيذ على: {execution_count} وفق الحد الأقصى"
+                    + (f"\nأمثلة: {names}" if names else "")
+                )
             else:
-                match_info = f"\nMatching groups now: {len(groups)}" + (f"\nExamples: {names}" if names else "")
+                target = f"'{plan.group_keyword}'" if plan.group_keyword else "all saved groups"
+                match_info = (
+                    f"\nUnderstood target: {target}"
+                    f"\nReal matching count now: {total_matches}"
+                    f"\nWill execute on: {execution_count} after the maximum limit"
+                    + (f"\nExamples: {names}" if names else "")
+                )
             blocks.append((f"#{i}\n" if len(plans) > 1 else "") + plan.summary(self.tr.language) + match_info)
-        self.smart_preview.setPlainText("\n\n--------------------\n\n".join(blocks))
+
+        header = ""
+        if interpretation.understanding:
+            header += self.tr.t("ai_understanding", text=interpretation.understanding) + "\n\n"
+        header += self.tr.t("ai_engine_used", engine=("AI Brain" if interpretation.source == "ai" else self.tr.t("local_safe_parser")))
+        if interpretation.source == "ai":
+            header += f" — {int(round(interpretation.confidence * 100))}%"
+        if interpretation.understanding or interpretation.source:
+            header += "\n\n"
+        self.smart_preview.setPlainText(header + "\n\n--------------------\n\n".join(blocks))
 
     def cancel_smart_preview(self):
         self._pending_smart_plan = None
         self._editing_smart_rule_id = None
+        self._smart_context_plan = None
+        self._smart_dialog_history = []
         self.smart_command.clear()
         self.smart_preview.clear()
 
@@ -824,7 +959,7 @@ class MainWindow(QMainWindow):
             ids = [self._editing_smart_rule_id]
         else:
             ids = [self.db.add_smart_rule(plan) for plan in plans]
-        self.smart_command.clear(); self.smart_preview.clear(); self._pending_smart_plan = None; self._editing_smart_rule_id = None
+        self.smart_command.clear(); self.smart_preview.clear(); self._pending_smart_plan = None; self._editing_smart_rule_id = None; self._smart_context_plan = None; self._smart_dialog_history = []
         label = ", ".join(str(x) for x in ids)
         QMessageBox.information(self, self.tr.t("smart_agent"), self.tr.t("smart_rules_saved", ids=label, count=len(ids)))
         self.refresh_smart_rules()
@@ -852,6 +987,7 @@ class MainWindow(QMainWindow):
             return
         self._editing_smart_rule_id = rid
         self._pending_smart_plan = None
+        self._smart_context_plan = dict(rule)
         self.smart_source.setText(str(rule["source_page_url"] or ""))
         self.smart_command.setPlainText(str(rule["command_text"] or ""))
         self.smart_preview.setPlainText(self.tr.t("editing_rule", id=rid))
@@ -868,6 +1004,196 @@ class MainWindow(QMainWindow):
         if rid is not None:
             if QMessageBox.question(self, self.tr.t("smart_agent"), self.tr.t("delete_rule_confirm", id=rid)) == QMessageBox.Yes:
                 self.db.delete_smart_rule(rid); self.refresh_smart_rules()
+
+    def _github_save_settings(self):
+        repo = self.gh_repo_path.text().strip()
+        patch = self.gh_patch_path.text().strip()
+        remote = self.gh_remote.text().strip() or "origin"
+        slug = self.gh_repo_slug.text().strip()
+        self.db.set_setting("github_repo_path", repo)
+        self.db.set_setting("github_patch_path", patch)
+        self.db.set_setting("github_remote", remote)
+        self.db.set_setting("github_repo_slug", slug)
+        self.db.set_setting("github_test_command", self.gh_test_command.text().strip())
+        self.db.set_setting("github_build_command", self.gh_build_command.text().strip())
+        self.db.set_setting("github_commit_message", self.gh_commit_message.text().strip())
+        token = self.gh_token.text().strip()
+        if token:
+            self.security.set_secret("github_token", token)
+            self.gh_token.clear()
+        return repo, patch, remote, slug
+
+    def browse_github_repo(self):
+        folder = QFileDialog.getExistingDirectory(self, self.tr.t("github_repo_folder"), self.gh_repo_path.text().strip() or "")
+        if folder:
+            self.gh_repo_path.setText(folder)
+            self._github_checks_ok = False
+
+    def browse_github_patch(self):
+        path, _ = QFileDialog.getOpenFileName(self, self.tr.t("github_patch_zip"), self.gh_patch_path.text().strip() or "", "ZIP (*.zip)")
+        if path:
+            self.gh_patch_path.setText(path)
+            self._github_checks_ok = False
+
+    def github_inspect_patch(self):
+        try:
+            repo, patch, remote, slug = self._github_save_settings()
+            root = self.github_deployer.validate_repo(repo)
+            inspection = self.github_deployer.inspect_patch(patch)
+            branch = self.github_deployer.current_branch(root)
+            remote_url = ""
+            try:
+                remote_url = self.github_deployer.remote_url(root, remote)
+            except Exception:
+                pass
+            if not slug and remote_url:
+                slug = self.github_deployer.infer_repo_slug(remote_url)
+                if slug:
+                    self.gh_repo_slug.setText(slug); self.db.set_setting("github_repo_slug", slug)
+            preview = "\n".join(inspection.files[:80])
+            if inspection.count > 80:
+                preview += f"\n... +{inspection.count - 80}"
+            if self.tr.language == "ar":
+                text = (
+                    f"المستودع: {root}\nالفرع الحالي: {branch}\nRemote: {remote_url or remote}\n"
+                    f"عدد ملفات الـPatch: {inspection.count}\nالحجم بعد الفك: {inspection.total_bytes} bytes\n\n{preview}"
+                )
+            else:
+                text = (
+                    f"Repository: {root}\nCurrent branch: {branch}\nRemote: {remote_url or remote}\n"
+                    f"Patch files: {inspection.count}\nUncompressed size: {inspection.total_bytes} bytes\n\n{preview}"
+                )
+            self.gh_output.setPlainText(text)
+        except Exception as exc:
+            QMessageBox.critical(self, self.tr.t("github_deployment"), str(exc))
+
+    def github_apply_patch(self):
+        try:
+            repo, patch, remote, slug = self._github_save_settings()
+            inspection = self.github_deployer.inspect_patch(patch)
+            prompt = self.tr.t("github_apply_confirm", count=inspection.count)
+            if QMessageBox.question(self, self.tr.t("github_deployment"), prompt) != QMessageBox.Yes:
+                return
+            result = self.github_deployer.apply_patch(repo, patch, branch_prefix="agent-update-v1.0.0")
+            self._github_applied_paths = list(result.files)
+            self._github_checks_ok = False
+            self.gh_output.setPlainText(
+                self.tr.t("github_applied", branch=result.branch) + "\n\n" + result.status
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, self.tr.t("github_deployment"), str(exc))
+
+    def github_run_checks(self):
+        try:
+            repo, patch, remote, slug = self._github_save_settings()
+            results = self.github_deployer.run_checks(
+                repo,
+                test_command=self.gh_test_command.text().strip(),
+                build_command=self.gh_build_command.text().strip(),
+            )
+            if not results:
+                self._github_checks_ok = True
+                self.gh_output.append("\n" + self.tr.t("github_no_checks"))
+                return
+            self._github_checks_ok = all(r.ok for r in results)
+            for r in results:
+                header = f"$ {r.command}\nexit={r.returncode}"
+                body = (r.stdout + ("\n" + r.stderr if r.stderr else ""))[-12000:]
+                self.gh_output.append("\n\n" + header + "\n" + body)
+            QMessageBox.information(
+                self, self.tr.t("github_deployment"),
+                self.tr.t("github_checks_passed") if self._github_checks_ok else self.tr.t("github_checks_failed")
+            )
+        except Exception as exc:
+            self._github_checks_ok = False
+            QMessageBox.critical(self, self.tr.t("github_deployment"), str(exc))
+
+    def github_commit_push(self):
+        if not self._github_checks_ok:
+            QMessageBox.warning(self, self.tr.t("github_deployment"), self.tr.t("github_run_checks_first")); return
+        try:
+            repo, patch, remote, slug = self._github_save_settings()
+            if QMessageBox.question(self, self.tr.t("github_deployment"), self.tr.t("github_push_confirm")) != QMessageBox.Yes:
+                return
+            commit, output = self.github_deployer.commit_and_push(
+                repo, self.gh_commit_message.text().strip(), remote=remote
+            )
+            self.gh_output.append("\n\n" + self.tr.t("github_pushed", commit=commit[:12]) + "\n" + output)
+            self._github_applied_paths = []
+            self._github_checks_ok = False
+        except Exception as exc:
+            QMessageBox.critical(self, self.tr.t("github_deployment"), str(exc))
+
+    def github_check_actions(self):
+        try:
+            repo, patch, remote, slug = self._github_save_settings()
+            if not slug:
+                remote_url = self.github_deployer.remote_url(repo, remote)
+                slug = self.github_deployer.infer_repo_slug(remote_url)
+                if slug:
+                    self.gh_repo_slug.setText(slug); self.db.set_setting("github_repo_slug", slug)
+            token = self.security.get_secret("github_token") or ""
+            run = self.github_deployer.latest_action_run(slug, token)
+            if not run:
+                self.gh_output.append("\n" + self.tr.t("github_no_action_runs")); return
+            text = self.tr.t(
+                "github_action_result", name=run.get("name") or "—", status=run.get("status") or "—",
+                conclusion=run.get("conclusion") or "—", branch=run.get("branch") or "—", url=run.get("html_url") or "—"
+            )
+            self.gh_output.append("\n\n" + text)
+        except Exception as exc:
+            QMessageBox.critical(self, self.tr.t("github_deployment"), str(exc))
+
+    def github_discard_patch(self):
+        if not self._github_applied_paths:
+            QMessageBox.information(self, self.tr.t("github_deployment"), self.tr.t("github_nothing_to_discard")); return
+        if QMessageBox.question(self, self.tr.t("github_deployment"), self.tr.t("github_discard_confirm")) != QMessageBox.Yes:
+            return
+        try:
+            repo = self.gh_repo_path.text().strip()
+            self.github_deployer.discard_paths(repo, self._github_applied_paths)
+            self._github_applied_paths = []
+            self._github_checks_ok = False
+            self.gh_output.append("\n" + self.tr.t("github_discarded"))
+        except Exception as exc:
+            QMessageBox.critical(self, self.tr.t("github_deployment"), str(exc))
+
+    def save_ai_brain_settings(self):
+        try:
+            enabled = self.smart_ai_enabled.isChecked()
+            model = self.smart_ai_model.text().strip() or "gpt-6-luna"
+            key = self.smart_ai_key.text().strip()
+            if key:
+                self.security.set_secret("openai_api_key", key)
+                self.smart_ai_key.clear()
+            if enabled and not self.security.get_secret("openai_api_key"):
+                QMessageBox.warning(self, self.tr.t("ai_brain"), self.tr.t("ai_key_required"))
+                return False
+            self.db.set_setting("smart_ai_enabled", enabled)
+            self.db.set_setting("smart_ai_model", model)
+            self.smart_ai_status.setText(self.tr.t("ai_saved"))
+            return True
+        except Exception as exc:
+            QMessageBox.critical(self, self.tr.t("ai_brain"), str(exc))
+            return False
+
+    def test_ai_brain(self):
+        if not self.save_ai_brain_settings():
+            return
+        self.smart_ai_status.setText(self.tr.t("ai_testing"))
+        QApplication.processEvents()
+        brain = AgentBrain(self.db, self.security, self.tr.language)
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            ok, message = brain.test_connection()
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.db.set_setting("smart_ai_last_status", {"ok": bool(ok), "message": str(message), "ts": time.time()})
+        self.smart_ai_status.setText(("✅ " if ok else "⚠️ ") + str(message))
+        if ok:
+            QMessageBox.information(self, self.tr.t("ai_brain"), self.tr.t("ai_test_ok"))
+        else:
+            QMessageBox.warning(self, self.tr.t("ai_brain"), str(message))
 
     def save_telegram_settings(self):
         try:
@@ -1046,8 +1372,13 @@ class MainWindow(QMainWindow):
                 fb_text += f" — {err[:180]}"
         self.fb_status_label.setText(fb_text)
         fb_stats = self.db.queue_stats(); smart_stats = self.db.smart_queue_stats(); wa_stats = self.db.wa_queue_stats()
+        smart_status_labels = {
+            "pending": "مجدول", "published": "منشور", "submitted": "تم الإرسال",
+            "pending_approval": "بانتظار موافقة الأدمن", "failed": "فشل",
+            "blocked": "يتطلب تدخل", "cancelled": "ملغي", "skipped": "تم تخطيه", "done": "مكتمل",
+        } if self.tr.language == "ar" else {}
         parts = ([f"FB {k}: {v}" for k, v in sorted(fb_stats.items())] +
-                 [f"SMART {k}: {v}" for k, v in sorted(smart_stats.items())] +
+                 [f"SMART {smart_status_labels.get(k, k)}: {v}" for k, v in sorted(smart_stats.items())] +
                  [f"WA {k}: {v}" for k, v in sorted(wa_stats.items())])
         self.queue_label.setText(", ".join(parts) or self.tr.t("empty"))
         camps = [c for c in self.db.list_campaigns() if c["enabled"] and c["next_run_at"]]

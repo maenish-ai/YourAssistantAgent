@@ -13,6 +13,7 @@ from playwright.sync_api import sync_playwright
 from .paths import browser_profile_dir
 from .branding import asset_path
 from .browser_discovery import discover_installed_browsers
+from .share_outcome import classify_share_result_text
 
 
 def _configure_bundled_playwright_browser() -> None:
@@ -592,7 +593,30 @@ class FacebookAutomation:
 
         return groups
 
-    def share_post_to_group(self, group_name: str, group_url: str, post_url: str):
+    @staticmethod
+    def classify_share_result_text(text: str) -> str:
+        return classify_share_result_text(text)
+
+    def _share_feedback_text(self) -> str:
+        chunks = []
+        for selector in ("[role='alert']", "[role='status']", "[role='dialog']"):
+            try:
+                loc = self.page.locator(selector)
+                count = min(loc.count(), 12)
+                for i in range(count):
+                    item = loc.nth(i)
+                    try:
+                        if item.is_visible(timeout=250):
+                            txt = item.inner_text(timeout=700).strip()
+                            if txt:
+                                chunks.append(txt)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        return "\n".join(chunks)[-12000:]
+
+    def share_post_to_group(self, group_name: str, group_url: str, post_url: str) -> str:
         """Use Facebook's own Share -> Share to a group flow from the signed-in profile.
 
         This intentionally fails closed if Facebook does not offer native group
@@ -727,6 +751,12 @@ class FacebookAutomation:
         final_button.click(timeout=5000)
         self.page.wait_for_timeout(2200)
         self._check_checkpoint()
+
+        # Facebook groups may require admin/moderator approval. That is a valid
+        # submission state, not a failed automation attempt. Capture the visible
+        # post-submit feedback and return a semantic outcome to the engine.
+        feedback = self._share_feedback_text()
+        return self.classify_share_result_text(feedback)
 
     def test_group_access(self, group_url: str) -> bool:
         self.start()

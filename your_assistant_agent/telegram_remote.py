@@ -10,6 +10,7 @@ import requests
 from .db import Database
 from .security import SecurityManager
 from .smart_agent import SmartPlanner, SmartPlannerError
+from .agent_brain import AgentBrain, AgentBrainError
 
 
 class TelegramRemote(threading.Thread):
@@ -27,6 +28,8 @@ class TelegramRemote(threading.Thread):
         self.stop_event = threading.Event()
         self.offset = 0
         self.pending: dict[str, dict] = {}
+        self.smart_context: dict[str, dict] = {}
+        self.smart_history: dict[str, list[str]] = {}
         self.session = requests.Session()
         self._last_config_error = ""
 
@@ -201,22 +204,55 @@ class TelegramRemote(threading.Thread):
             return
 
         planner = SmartPlanner(language)
+        # Keep conversational context so phrases like "خليها الساعة 9" can be
+        # understood as edits to the previous preview. AI decides whether it is
+        # actually a follow-up; the local parser remains conservative.
+        stored_context = self.smart_context.get(str(chat_id))
+        fallback_context = stored_context if planner.is_followup(text) else None
+        brain = AgentBrain(self.db, self.security, language)
         try:
-            plans = planner.parse_many(
+            interpretation = brain.interpret_with_fallback(
                 text,
                 default_source_page=str(self.db.get_setting("smart_default_source_page", "") or ""),
                 default_interval=int(self.db.get_setting("smart_default_interval_seconds", 60) or 60),
                 default_max_groups=int(self.db.get_setting("smart_default_max_groups", 100) or 100),
                 default_no_repeat_days=int(self.db.get_setting("smart_no_repeat_days", 14) or 14),
+                context_plan=stored_context if brain.is_configured() else fallback_context,
+                conversation_context="\n".join(self.smart_history.get(str(chat_id), [])[-6:]),
             )
-        except SmartPlannerError as exc:
+        except (SmartPlannerError, AgentBrainError) as exc:
             self.send_message(token, chat_id, str(exc)); return
+        if interpretation.needs_clarification:
+            q = interpretation.question or ("محتاج أوضح نقطة قبل التنفيذ." if language == "ar" else "I need one clarification before executing.")
+            history = self.smart_history.setdefault(str(chat_id), [])
+            history.append(f"User: {text}\nAgent clarification: {q}")
+            self.smart_history[str(chat_id)] = history[-6:]
+            self.send_message(token, chat_id, q)
+            return
+        plans = interpretation.plans
+        history = self.smart_history.setdefault(str(chat_id), [])
+        understood = interpretation.understanding or " | ".join(p.summary(language) for p in plans[:2])
+        history.append(f"User: {text}\nAgent understanding: {understood}")
+        self.smart_history[str(chat_id)] = history[-6:]
+        if len(plans) == 1:
+            self.smart_context[str(chat_id)] = plans[0].to_dict()
+        else:
+            self.smart_context.pop(str(chat_id), None)
         blocks = []
         for i, plan in enumerate(plans, 1):
-            groups = self.db.list_groups(enabled_only=True, keyword=plan.group_keyword or None, limit=plan.max_groups)
-            count_line = (f"\nالجروبات المطابقة الآن: {len(groups)}" if language == "ar" else f"\nMatching groups now: {len(groups)}")
+            total = self.db.count_groups(enabled_only=True, keyword=plan.group_keyword or None)
+            execution = min(total, int(plan.max_groups))
+            target = plan.group_keyword or ("كل الجروبات المحفوظة" if language == "ar" else "all saved groups")
+            count_line = (
+                f"\nالهدف: {target}\nالعدد الحقيقي المطابق: {total}\nسيتم التنفيذ على: {execution}"
+                if language == "ar" else
+                f"\nTarget: {target}\nReal matching count: {total}\nWill execute on: {execution}"
+            )
             blocks.append((f"#{i}\n" if len(plans) > 1 else "") + plan.summary(language) + count_line)
-        summary = ("فهمت الأمر هكذا:\n\n" if language == "ar" else "I understood the instruction as:\n\n") + "\n\n---\n\n".join(blocks)
+        prefix = ("فهمت الأمر هكذا:\n\n" if language == "ar" else "I understood the instruction as:\n\n")
+        if interpretation.understanding:
+            prefix += interpretation.understanding + "\n\n"
+        summary = prefix + "\n\n---\n\n".join(blocks)
         self._stage(token, chat_id, "create_rule", {"plans": [p.to_dict() for p in plans]}, summary)
 
     def _stage(self, token: str, chat_id: int, kind: str, data: dict, text: str):
@@ -247,6 +283,9 @@ class TelegramRemote(threading.Thread):
             return
         language = str(self.db.get_setting("language", "ar") or "ar")
         if action == "cancel":
+            if item.get("kind") == "create_rule":
+                self.smart_context.pop(str(chat_id), None)
+                self.smart_history.pop(str(chat_id), None)
             self.send_message(token, chat_id, "تم الإلغاء." if language == "ar" else "Cancelled.")
             return
         if action != "approve":
@@ -256,6 +295,8 @@ class TelegramRemote(threading.Thread):
         if kind == "create_rule":
             plans = payload.get("plans") or ([payload["plan"]] if payload.get("plan") else [])
             ids = [self.db.add_smart_rule(plan) for plan in plans]
+            self.smart_context.pop(str(chat_id), None)
+            self.smart_history.pop(str(chat_id), None)
             label = ", ".join(str(x) for x in ids)
             self.send_message(token, chat_id, f"تم اعتماد القواعد الذكية: {label}." if language == "ar" else f"Smart rules approved: {label}.")
         elif kind == "run_rule":

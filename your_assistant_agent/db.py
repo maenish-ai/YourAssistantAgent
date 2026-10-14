@@ -214,6 +214,9 @@ class Database:
                 "smart_default_interval_seconds": 60,
                 "smart_default_max_groups": 100,
                 "smart_no_repeat_days": 14,
+                "smart_ai_enabled": False,
+                "smart_ai_model": "gpt-6-luna",
+                "smart_ai_last_status": {},
                 "telegram_enabled": False,
                 "telegram_authorized_user_id": "",
                 "auto_wake_for_smart_rules": False,
@@ -285,6 +288,10 @@ class Database:
         if limit:
             rows = rows[: int(limit)]
         return rows
+
+    def count_groups(self, enabled_only=False, keyword: str | None = None) -> int:
+        """Return the real number of matching saved groups without execution limits."""
+        return len(self.list_groups(enabled_only=enabled_only, keyword=keyword, limit=None))
 
     # Facebook campaigns
     def add_campaign(
@@ -549,7 +556,7 @@ class Database:
             ).fetchone()
 
     def mark_smart_queue(self, item_id: int, status: str, error: str = ""):
-        completed = utcnow_iso() if status in {"done", "failed", "blocked", "cancelled", "skipped"} else None
+        completed = utcnow_iso() if status in {"done", "published", "submitted", "pending_approval", "failed", "blocked", "cancelled", "skipped"} else None
         with self.conn() as con:
             con.execute(
                 "UPDATE smart_queue_items SET status=?,attempts=attempts+1,last_error=?,completed_at=? WHERE id=?",
@@ -564,7 +571,9 @@ class Database:
         with self.conn() as con:
             row = con.execute(
                 """SELECT 1 FROM share_history
-                   WHERE group_id=? AND post_url=? AND status='done' AND shared_at>=?
+                   WHERE group_id=? AND post_url=?
+                     AND status IN ('done','published','submitted','pending_approval')
+                     AND shared_at>=?
                    LIMIT 1""",
                 (group_id, post_url, threshold),
             ).fetchone()

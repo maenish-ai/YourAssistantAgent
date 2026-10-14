@@ -397,16 +397,24 @@ class AgentEngine(threading.Thread):
         try:
             self.fb.ensure_logged_in()
             if (item["share_mode"] or "native_share") == "native_share":
-                self.fb.share_post_to_group(
+                outcome = self.fb.share_post_to_group(
                     group_name=item["group_name"],
                     group_url=item["group_url"],
                     post_url=item["post_url"],
                 )
             else:
                 self.fb.post_link_to_group(item["group_url"], item["post_url"], "")
-            self.db.mark_smart_queue(item["id"], "done")
-            self.db.record_share(item["rule_id"], item["group_id"], item["post_url"], "done")
-            self.db.audit("INFO", "smart_group_share_done", f"{item['rule_name']}: {item['group_name']}")
+                outcome = "submitted"
+
+            outcome = outcome if outcome in {"published", "submitted", "pending_approval"} else "submitted"
+            self.db.mark_smart_queue(item["id"], outcome)
+            self.db.record_share(item["rule_id"], item["group_id"], item["post_url"], outcome)
+            if outcome == "pending_approval":
+                self.db.audit("INFO", "smart_group_share_pending_approval", f"{item['rule_name']}: {item['group_name']}")
+            elif outcome == "published":
+                self.db.audit("INFO", "smart_group_share_published", f"{item['rule_name']}: {item['group_name']}")
+            else:
+                self.db.audit("INFO", "smart_group_share_submitted", f"{item['rule_name']}: {item['group_name']}")
         except LoginRequired as exc:
             self.db.mark_smart_queue(item["id"], "failed", str(exc))
             self.db.record_share(item["rule_id"], item["group_id"], item["post_url"], "failed", str(exc))

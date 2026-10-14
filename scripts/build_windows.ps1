@@ -37,6 +37,10 @@ if (-not $SkipBrowserInstall) {
     & $Python -m playwright install chromium
 }
 
+Write-Host "Checking required application modules..."
+$env:PYTHONPATH = $ProjectRoot
+& $Python -c "import your_assistant_agent.github_deploy; import your_assistant_agent.ui; print('Required modules OK')"
+
 Write-Host "Building Windows application..."
 if (Test-Path "build") { Remove-Item "build" -Recurse -Force }
 if (Test-Path "dist") { Remove-Item "dist" -Recurse -Force }

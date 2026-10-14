@@ -1,0 +1,13 @@
+Your Assistant Agent v1.0.1 - Startup Hotfix
+
+سبب الخطأ:
+واجهة v1.0.0 تستورد your_assistant_agent.github_deploy لكن الملف لم يصل إلى المشروع/البناء الذي تم رفعه، لذلك التطبيق توقف عند التشغيل برسالة ModuleNotFoundError.
+
+الإصلاح:
+- إضافة github_deploy.py داخل الحزمة.
+- رفع الإصدار إلى 1.0.1.
+- إضافة اختبار يمنع بناء نسخة إذا كان الموديول مفقوداً.
+- إضافة Preflight في GitHub Actions وفي build_windows.ps1 للتحقق من الموديولات المطلوبة قبل PyInstaller.
+
+طريقة الاستخدام:
+فك ZIP فوق مشروع v1.0.0 الحالي، Replace، ثم Commit + Push.

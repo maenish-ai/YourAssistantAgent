@@ -38,6 +38,13 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
         run: .\.venv\Scripts\python.exe -m pytest -q
 
+      - name: Preflight required application modules
+        shell: pwsh
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          .\.venv\Scripts\python.exe -c "import your_assistant_agent.github_deploy; import your_assistant_agent.ui; print('Required modules OK')"
+
       - name: Install Playwright Chromium fallback into app assets
         shell: pwsh
         run: |

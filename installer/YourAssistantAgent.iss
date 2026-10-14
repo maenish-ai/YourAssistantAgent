@@ -1,5 +1,5 @@
 #define MyAppName "Your Assistant Agent"
-#define MyAppVersion "0.7.0"
+#define MyAppVersion "0.7.1"
 #define MyAppPublisher "Your Assistant Agent"
 #define MyAppExeName "YourAssistantAgent.exe"
 

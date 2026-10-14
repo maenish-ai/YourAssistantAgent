@@ -184,22 +184,49 @@ class AgentEngine(threading.Thread):
             self.db.set_setting("facebook_browser_backend", self.fb.browser_backend)
 
     def _discover_groups(self):
-        self.db.audit("INFO", "groups_discovery_started")
+        self.db.set_setting("facebook_group_discovery_result", {
+            "status": "running", "count": 0, "ts": time.time(), "error": ""
+        })
+        self.db.audit("INFO", "groups_discovery_started", self.fb.browser_backend or "")
         try:
             groups = self.fb.discover_joined_groups(limit=300)
             count = self.db.upsert_discovered_groups(groups)
-            self.db.set_setting("facebook_group_discovery_result", {"count": count, "ts": time.time(), "error": ""})
-            self.db.audit("INFO", "groups_discovery_done", str(count))
-        except LoginRequired:
-            self.db.set_setting("facebook_group_discovery_result", {"count": 0, "ts": time.time(), "error": "login_required"})
+            status = "done" if count else "empty"
+            self.db.set_setting("facebook_group_discovery_result", {
+                "status": status, "count": count, "ts": time.time(), "error": ""
+            })
+            if count:
+                self.db.audit("INFO", "groups_discovery_done", str(count))
+            else:
+                self.db.audit("WARNING", "groups_discovery_empty", "0")
+        except ManualLoginInProgress as exc:
+            self.db.set_setting("facebook_group_discovery_result", {
+                "status": "profile_in_use", "count": 0, "ts": time.time(), "error": str(exc)
+            })
+            self.db.audit("WARNING", "groups_discovery_failed", str(exc))
+        except LoginRequired as exc:
+            self.db.set_setting("facebook_group_discovery_result", {
+                "status": "login_required", "count": 0, "ts": time.time(), "error": str(exc)
+            })
             self.db.audit("WARNING", "facebook_login_required", "group_discovery")
         except CheckpointDetected as exc:
             self.db.set_setting("paused", True)
-            self.db.set_setting("facebook_group_discovery_result", {"count": 0, "ts": time.time(), "error": str(exc)})
+            self.db.set_setting("facebook_group_discovery_result", {
+                "status": "checkpoint", "count": 0, "ts": time.time(), "error": str(exc)
+            })
             self.db.audit("SECURITY", "facebook_checkpoint", str(exc))
         except Exception as exc:
-            self.db.set_setting("facebook_group_discovery_result", {"count": 0, "ts": time.time(), "error": str(exc)})
+            self.db.set_setting("facebook_group_discovery_result", {
+                "status": "error", "count": 0, "ts": time.time(), "error": str(exc)
+            })
             self.db.audit("ERROR", "groups_discovery_failed", str(exc))
+        finally:
+            # Discovery is a finite operation. Close only the agent's automation
+            # context afterwards so the dedicated profile is released cleanly.
+            try:
+                self.fb.stop()
+            except Exception:
+                pass
 
     def _schedule_due_smart_rules(self):
         now = datetime.now().replace(microsecond=0).isoformat()

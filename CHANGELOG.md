@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.1
+- Fixed Facebook group discovery so the Discover button records queued/running/completed/failed states.
+- Discovery now scans Facebook **Groups you've joined / Your groups** first, then falls back to the Groups feed.
+- Improved group-link parsing for current Facebook desktop layouts.
+- Added a visible discovery status in the Facebook Groups tab and a clear zero-groups result.
+- Discovery closes only the agent automation browser context when finished, releasing the dedicated profile cleanly.
+
 ## 0.7.0
 - Added Smart Agent natural-language Facebook campaign rules.
 - Added daily/weekday scheduling, post rotation, post offsets, and no-repeat history.

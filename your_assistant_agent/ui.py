@@ -37,8 +37,10 @@ EVENT_AR = {
     "campaign_no_groups": "لا توجد مجموعات مطابقة",
     "group_post_done": "تم نشر منشور المجموعة",
     "group_post_failed": "فشل نشر منشور المجموعة",
+    "groups_discovery_queued": "تم إرسال طلب اكتشاف مجموعات فيسبوك",
     "groups_discovery_started": "بدء اكتشاف مجموعات فيسبوك",
     "groups_discovery_done": "اكتمل اكتشاف مجموعات فيسبوك",
+    "groups_discovery_empty": "لم يتم العثور على مجموعات فيسبوك",
     "groups_discovery_failed": "فشل اكتشاف مجموعات فيسبوك",
     "groups_discovered": "تم حفظ مجموعات فيسبوك المكتشفة",
     "smart_rule_added": "إضافة قاعدة ذكية",
@@ -448,10 +450,14 @@ class MainWindow(QMainWindow):
         self.groups_table.setHorizontalHeaderLabels([self.tr.t("id"), self.tr.t("group_name"), self.tr.t("url"), self.tr.t("tags"), self.tr.t("enabled")])
         self.groups_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         lay.addWidget(self.groups_table)
+        self.group_discovery_status = QLabel("")
+        self.group_discovery_status.setWordWrap(True)
+        self.group_discovery_status.setStyleSheet("color:#4b5563;")
+        lay.addWidget(self.group_discovery_status)
         buttons = QHBoxLayout()
-        discover = QPushButton(self.tr.t("discover_groups")); discover.clicked.connect(self.discover_groups)
+        self.discover_btn = QPushButton(self.tr.t("discover_groups")); self.discover_btn.clicked.connect(self.discover_groups)
         delete = QPushButton(self.tr.t("delete_group")); delete.clicked.connect(self.delete_group)
-        buttons.addWidget(discover); buttons.addWidget(delete); buttons.addStretch(1); lay.addLayout(buttons)
+        buttons.addWidget(self.discover_btn); buttons.addWidget(delete); buttons.addStretch(1); lay.addLayout(buttons)
 
     def _build_campaigns(self):
         lay = QVBoxLayout(self.campaigns_tab)
@@ -736,8 +742,17 @@ class MainWindow(QMainWindow):
             self.db.set_setting("paused", True); self.db.clear_pending(); self.db.audit("SECURITY", "emergency_stop"); self.refresh_all()
 
     def discover_groups(self):
+        # Record the click immediately in the UI thread. This makes it obvious in
+        # Audit Log whether the command was queued even before the worker starts.
+        self.db.set_setting("facebook_group_discovery_result", {
+            "status": "queued", "count": 0, "ts": time.time(), "error": ""
+        })
+        self.db.audit("INFO", "groups_discovery_queued")
+        if hasattr(self, "group_discovery_status"):
+            self.group_discovery_status.setText(self.tr.t("discover_groups_queued"))
+        if hasattr(self, "discover_btn"):
+            self.discover_btn.setEnabled(False)
         self.engine.command("discover_groups")
-        QMessageBox.information(self, self.tr.t("facebook_groups"), self.tr.t("discover_groups_started"))
 
     def preview_smart_rule(self):
         source = self.smart_source.text().strip()
@@ -972,6 +987,35 @@ class MainWindow(QMainWindow):
         for r, g in enumerate(rows):
             vals = [g["id"], g["name"], g["url"], g["tags"], self.tr.t("yes") if g["enabled"] else self.tr.t("no")]
             for c, v in enumerate(vals): self.groups_table.setItem(r, c, QTableWidgetItem(str(v)))
+
+        result = self.db.get_setting("facebook_group_discovery_result", {}) or {}
+        if not isinstance(result, dict):
+            result = {}
+        status = str(result.get("status") or "")
+        count = int(result.get("count") or 0)
+        error = str(result.get("error") or "").strip()
+        if hasattr(self, "discover_btn"):
+            self.discover_btn.setEnabled(status not in {"queued", "running"})
+        if hasattr(self, "group_discovery_status"):
+            if status == "queued":
+                text = self.tr.t("discover_groups_queued")
+            elif status == "running":
+                text = self.tr.t("discover_groups_running")
+            elif status == "done":
+                text = self.tr.t("discover_groups_done").format(count=count)
+            elif status == "empty":
+                text = self.tr.t("discover_groups_empty")
+            elif status == "profile_in_use":
+                text = self.tr.t("discover_groups_profile_in_use")
+            elif status == "login_required":
+                text = self.tr.t("discover_groups_login_required")
+            elif status == "checkpoint":
+                text = self.tr.t("discover_groups_checkpoint")
+            elif status == "error":
+                text = self.tr.t("discover_groups_error").format(error=error[:220] or "Unknown error")
+            else:
+                text = ""
+            self.group_discovery_status.setText(text)
 
     def refresh_campaigns(self):
         rows = self.db.list_campaigns(); self.campaign_table.setRowCount(len(rows))

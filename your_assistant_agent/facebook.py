@@ -477,58 +477,119 @@ class FacebookAutomation:
         self.page.wait_for_timeout(2500)
         self._check_checkpoint()
 
-    def discover_joined_groups(self, limit: int = 200) -> list[dict]:
-        """Discover groups visible to the signed-in profile.
+    @staticmethod
+    def _normalize_group_candidate(href: str, text: str = "", aria: str = "", title: str = "") -> dict | None:
+        """Normalize one Facebook group link discovered in the normal Groups UI."""
+        href = str(href or "").strip()
+        if not href:
+            return None
+        if href.startswith("/"):
+            href = "https://www.facebook.com" + href
+        try:
+            parsed = urlsplit(href)
+        except Exception:
+            return None
+        host = (parsed.netloc or "").casefold()
+        if host not in {"facebook.com", "www.facebook.com", "m.facebook.com"}:
+            return None
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) < 2 or parts[0].casefold() != "groups":
+            return None
+        slug = parts[1].strip()
+        reserved = {
+            "feed", "discover", "create", "joins", "for_you", "notifications",
+            "gaming", "category", "search", "membership", "requests",
+        }
+        if not slug or slug.casefold() in reserved:
+            return None
 
-        Facebook does not expose a stable public API for enumerating a person's
-        joined groups for this desktop workflow, so this reads the normal Groups
-        UI. It never attempts to bypass a checkpoint or access a private group the
-        profile cannot already see.
+        raw_name = str(text or aria or title or "").strip()
+        # Facebook group cards often include metadata on later lines. The first
+        # meaningful line is normally the group name and is much more stable.
+        lines = [re.sub(r"\s+", " ", x).strip() for x in raw_name.splitlines() if x.strip()]
+        name = lines[0] if lines else ""
+        generic = {
+            "groups", "your groups", "groups you've joined", "groups you’ve joined",
+            "المجموعات", "مجموعاتك", "المجموعات التي انضممت إليها",
+            "see all", "عرض الكل", "view all",
+        }
+        if not name or name.casefold() in generic:
+            return None
+        return {
+            "name": name[:180],
+            "url": f"https://www.facebook.com/groups/{slug}",
+            "tags": "",
+        }
+
+    def discover_joined_groups(self, limit: int = 200) -> list[dict]:
+        """Discover groups visible to the signed-in profile from Facebook's normal UI.
+
+        The primary page is Groups you've joined (/groups/joins/). A Groups feed
+        fallback is also scanned because Facebook rolls out different desktop
+        layouts. No private data is fetched outside what the signed-in profile can
+        already see and no checkpoint is bypassed.
         """
         self.ensure_logged_in()
-        self.page.goto("https://www.facebook.com/groups/feed/", wait_until="domcontentloaded", timeout=60000)
-        self._check_checkpoint()
-        self.page.wait_for_timeout(2500)
+        limit = max(1, int(limit))
         groups: list[dict] = []
         seen: set[str] = set()
-        reserved = {"feed", "discover", "create", "joins", "for_you", "notifications"}
+        targets = (
+            "https://www.facebook.com/groups/joins/",
+            "https://www.facebook.com/groups/feed/",
+        )
 
-        for _ in range(10):
-            anchors = self.page.locator("a[href*='/groups/']")
-            try:
-                count = min(anchors.count(), 1500)
-            except Exception:
-                count = 0
-            for i in range(count):
-                try:
-                    a = anchors.nth(i)
-                    href = str(a.get_attribute("href") or "")
-                    text = (a.inner_text(timeout=500) or "").strip()
-                except Exception:
-                    continue
-                if not href or not text:
-                    continue
-                if href.startswith("/"):
-                    href = "https://www.facebook.com" + href
-                if "facebook.com/groups/" not in href:
-                    continue
-                path = urlsplit(href).path.strip("/")
-                parts = path.split("/")
-                if len(parts) < 2 or parts[0] != "groups" or parts[1].casefold() in reserved:
-                    continue
-                clean = f"https://www.facebook.com/groups/{parts[1]}"
-                if clean in seen:
-                    continue
-                # Avoid generic navigation labels that sometimes wrap group links.
-                if text.casefold() in {"groups", "your groups", "المجموعات", "مجموعاتك"}:
-                    continue
-                seen.add(clean)
-                groups.append({"name": re.sub(r"\s+", " ", text)[:180], "url": clean, "tags": ""})
-                if len(groups) >= max(1, int(limit)):
-                    return groups
-            self.page.mouse.wheel(0, 1600)
-            self.page.wait_for_timeout(1000)
+        for target in targets:
+            self.page.goto(target, wait_until="domcontentloaded", timeout=60000)
             self._check_checkpoint()
+            self.page.wait_for_timeout(2200)
+            stagnant_rounds = 0
+
+            for _ in range(18):
+                try:
+                    anchors = self.page.locator("a[href*='/groups/']").evaluate_all(
+                        """els => els.map(a => ({
+                            href: a.href || a.getAttribute('href') || '',
+                            text: (a.innerText || a.textContent || '').trim(),
+                            aria: a.getAttribute('aria-label') || '',
+                            title: a.getAttribute('title') || ''
+                        }))"""
+                    )
+                except Exception:
+                    anchors = []
+
+                before = len(groups)
+                for item in anchors or []:
+                    if not isinstance(item, dict):
+                        continue
+                    candidate = self._normalize_group_candidate(
+                        item.get("href", ""),
+                        item.get("text", ""),
+                        item.get("aria", ""),
+                        item.get("title", ""),
+                    )
+                    if not candidate or candidate["url"] in seen:
+                        continue
+                    seen.add(candidate["url"])
+                    groups.append(candidate)
+                    if len(groups) >= limit:
+                        return groups
+
+                if len(groups) == before:
+                    stagnant_rounds += 1
+                else:
+                    stagnant_rounds = 0
+
+                # Infinite-scroll layouts need a few scrolls even after one empty
+                # round. Three consecutive empty rounds means this page is spent.
+                if stagnant_rounds >= 3:
+                    break
+                try:
+                    self.page.mouse.wheel(0, 1900)
+                except Exception:
+                    pass
+                self.page.wait_for_timeout(900)
+                self._check_checkpoint()
+
         return groups
 
     def share_post_to_group(self, group_name: str, group_url: str, post_url: str):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from datetime import datetime
 from typing import Any
 
@@ -22,6 +23,7 @@ class AgentEngine(threading.Thread):
         locale = "ar-JO" if language == "ar" else "en-US"
         self.fb = FacebookAutomation(FacebookConfig(locale=locale))
         self.wa = WhatsAppBusinessClient(db, security)
+        self._last_fb_status_poll = 0.0
 
     def command(self, name: str, payload=None):
         self.commands.put((name, payload))
@@ -35,6 +37,7 @@ class AgentEngine(threading.Thread):
         while not self.stop_event.is_set():
             try:
                 self._handle_commands()
+                self._poll_facebook_status()
                 if not self.db.get_setting("paused", False):
                     self._schedule_due_facebook_campaigns()
                     self._schedule_due_whatsapp_campaigns()
@@ -60,9 +63,14 @@ class AgentEngine(threading.Thread):
             if name == "open_login":
                 try:
                     self.fb.open_login()
-                    self.db.audit("INFO", "facebook_browser_opened")
+                    self.db.set_setting("facebook_browser_backend", self.fb.browser_backend)
+                    self.db.set_setting("facebook_connection_status", self.fb.connection_status())
+                    self.db.audit("INFO", "facebook_browser_opened", self.fb.browser_backend)
                 except Exception as exc:
                     self.db.audit("ERROR", "facebook_browser_error", str(exc))
+            elif name == "check_facebook_connection":
+                self.db.set_setting("facebook_connection_status", self.fb.connection_status())
+                self.db.set_setting("facebook_browser_backend", self.fb.browser_backend)
             elif name == "run_campaign_now":
                 try:
                     camp = self.db.get_campaign(int(payload))
@@ -77,6 +85,15 @@ class AgentEngine(threading.Thread):
                         self._create_whatsapp_campaign_queue(camp)
                 except Exception as exc:
                     self.db.audit("ERROR", "wa_manual_campaign_error", str(exc))
+
+    def _poll_facebook_status(self):
+        now = time.monotonic()
+        if now - self._last_fb_status_poll < 2.0:
+            return
+        self._last_fb_status_poll = now
+        self.db.set_setting("facebook_connection_status", self.fb.connection_status())
+        if self.fb.browser_backend:
+            self.db.set_setting("facebook_browser_backend", self.fb.browser_backend)
 
     def _schedule_due_facebook_campaigns(self):
         now = datetime.now().replace(microsecond=0).isoformat()

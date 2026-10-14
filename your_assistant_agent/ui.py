@@ -273,17 +273,20 @@ class MainWindow(QMainWindow):
         box = QGroupBox(self.tr.t("status"))
         grid = QGridLayout(box)
         self.status_label = QLabel()
+        self.fb_status_label = QLabel()
         self.queue_label = QLabel()
         self.next_label = QLabel()
         self.wa_next_label = QLabel()
         grid.addWidget(QLabel(self.tr.t("agent") + ":"), 0, 0)
         grid.addWidget(self.status_label, 0, 1)
-        grid.addWidget(QLabel(self.tr.t("queue") + ":"), 1, 0)
-        grid.addWidget(self.queue_label, 1, 1)
-        grid.addWidget(QLabel(self.tr.t("next_campaign") + ":"), 2, 0)
-        grid.addWidget(self.next_label, 2, 1)
-        grid.addWidget(QLabel(self.tr.t("next_wa_campaign") + ":"), 3, 0)
-        grid.addWidget(self.wa_next_label, 3, 1)
+        grid.addWidget(QLabel(self.tr.t("facebook_connection") + ":"), 1, 0)
+        grid.addWidget(self.fb_status_label, 1, 1)
+        grid.addWidget(QLabel(self.tr.t("queue") + ":"), 2, 0)
+        grid.addWidget(self.queue_label, 2, 1)
+        grid.addWidget(QLabel(self.tr.t("next_campaign") + ":"), 3, 0)
+        grid.addWidget(self.next_label, 3, 1)
+        grid.addWidget(QLabel(self.tr.t("next_wa_campaign") + ":"), 4, 0)
+        grid.addWidget(self.wa_next_label, 4, 1)
         lay.addWidget(box)
         note = QLabel(self.tr.t("facebook_note"))
         note.setWordWrap(True)
@@ -581,6 +584,19 @@ class MainWindow(QMainWindow):
 
     def refresh_all(self):
         paused = bool(self.db.get_setting("paused", False)); self.status_label.setText(self.tr.t("paused") if paused else self.tr.t("running")); self.pause_btn.setText(self.tr.t("resume_agent") if paused else self.tr.t("pause_agent"))
+        fb_state = self.db.get_setting("facebook_connection_status", "not_checked") or "not_checked"
+        fb_key = {
+            "connected": "facebook_connected",
+            "not_connected": "facebook_not_connected",
+            "verification_required": "facebook_verification_required",
+            "browser_closed": "facebook_browser_closed",
+            "not_checked": "facebook_not_checked",
+        }.get(str(fb_state), "facebook_not_checked")
+        backend = self.db.get_setting("facebook_browser_backend", "") or ""
+        fb_text = self.tr.t(fb_key)
+        if backend and fb_state in ("connected", "verification_required"):
+            fb_text += f" — {backend}"
+        self.fb_status_label.setText(fb_text)
         fb_stats = self.db.queue_stats(); wa_stats = self.db.wa_queue_stats()
         parts = [f"FB {k}: {v}" for k, v in sorted(fb_stats.items())] + [f"WA {k}: {v}" for k, v in sorted(wa_stats.items())]
         self.queue_label.setText(", ".join(parts) or self.tr.t("empty"))

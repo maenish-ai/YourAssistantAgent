@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   build-windows:
-    name: Build Windows app
+    name: Build Windows Setup
     runs-on: windows-latest
     timeout-minutes: 60
 
@@ -38,7 +38,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
         run: .\.venv\Scripts\python.exe -m pytest -q
 
-      - name: Install Playwright Chromium into app assets
+      - name: Install Playwright Chromium fallback into app assets
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path "assets\playwright-browsers" | Out-Null
@@ -65,15 +65,6 @@ jobs:
             throw "YourAssistantAgent.exe was not created."
           }
 
-      - name: Create portable ZIP
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path "release" | Out-Null
-          Compress-Archive `
-            -Path "dist\YourAssistantAgent\*" `
-            -DestinationPath "release\YourAssistantAgent-Windows-Portable.zip" `
-            -CompressionLevel Optimal
-
       - name: Install Inno Setup
         shell: pwsh
         run: choco install innosetup --no-progress -y
@@ -89,14 +80,6 @@ jobs:
             throw "Inno Setup compiler was not found."
           }
           & $iscc "installer\YourAssistantAgent.iss"
-
-      - name: Upload portable Windows build
-        uses: actions/upload-artifact@v4
-        with:
-          name: YourAssistantAgent-Windows-Portable
-          path: release/YourAssistantAgent-Windows-Portable.zip
-          if-no-files-found: error
-          retention-days: 30
 
       - name: Upload Windows installer
         uses: actions/upload-artifact@v4

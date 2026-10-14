@@ -62,12 +62,6 @@ if (-not (Test-Path (Join-Path $DistDir "YourAssistantAgent.exe"))) {
 $OutputDir = Join-Path $ProjectRoot "release"
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 
-$PortableZip = Join-Path $OutputDir "YourAssistantAgent-Windows-Portable.zip"
-if (Test-Path $PortableZip) { Remove-Item $PortableZip -Force }
-Compress-Archive -Path "$DistDir\*" -DestinationPath $PortableZip -CompressionLevel Optimal
-
-Write-Host "Portable package: $PortableZip" -ForegroundColor Green
-
 # Optional Inno Setup installer if ISCC exists.
 $IsccCandidates = @(
     "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
@@ -80,7 +74,7 @@ if ($Iscc) {
     & $Iscc "installer\YourAssistantAgent.iss"
     Write-Host "Installer build completed." -ForegroundColor Green
 } else {
-    Write-Host "Inno Setup not found. Portable package is still complete." -ForegroundColor Yellow
+    throw "Inno Setup was not found, so the Setup EXE could not be created."
 }
 
 Write-Host "=== Build complete ===" -ForegroundColor Cyan

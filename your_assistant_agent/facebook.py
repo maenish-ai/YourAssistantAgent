@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import re
-import time
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -14,12 +14,43 @@ from .paths import browser_profile_dir
 from .branding import asset_path
 
 
-
 def _configure_bundled_playwright_browser() -> None:
     """Use the Chromium copy bundled into the packaged Windows app when present."""
     bundled = asset_path("playwright-browsers")
     if bundled.exists():
         os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(bundled)
+
+
+def _system_browser_candidates() -> list[tuple[str, Path]]:
+    """Return installed Chrome/Edge executables in preferred order on Windows."""
+    if os.name != "nt":
+        return []
+
+    paths: list[tuple[str, Path]] = []
+    env = os.environ
+    raw = [
+        ("Google Chrome", Path(env.get("PROGRAMFILES", "")) / "Google/Chrome/Application/chrome.exe"),
+        ("Google Chrome", Path(env.get("PROGRAMFILES(X86)", "")) / "Google/Chrome/Application/chrome.exe"),
+        ("Google Chrome", Path(env.get("LOCALAPPDATA", "")) / "Google/Chrome/Application/chrome.exe"),
+        ("Microsoft Edge", Path(env.get("PROGRAMFILES(X86)", "")) / "Microsoft/Edge/Application/msedge.exe"),
+        ("Microsoft Edge", Path(env.get("PROGRAMFILES", "")) / "Microsoft/Edge/Application/msedge.exe"),
+        ("Microsoft Edge", Path(env.get("LOCALAPPDATA", "")) / "Microsoft/Edge/Application/msedge.exe"),
+    ]
+
+    seen: set[str] = set()
+    for name, path in raw:
+        text = str(path)
+        if text and path.exists() and text.lower() not in seen:
+            seen.add(text.lower())
+            paths.append((name, path))
+
+    # Also honor browser executables available on PATH.
+    for exe, name in (("chrome.exe", "Google Chrome"), ("msedge.exe", "Microsoft Edge")):
+        found = shutil.which(exe)
+        if found and found.lower() not in seen:
+            seen.add(found.lower())
+            paths.append((name, Path(found)))
+    return paths
 
 
 class FacebookError(RuntimeError):
@@ -43,7 +74,9 @@ class FacebookConfig:
 
 class FacebookAutomation:
     """
-    Visible-browser automation only. No stealth, CAPTCHA bypass, proxy rotation,
+    Visible-browser automation only. Facebook credentials are entered only on
+    facebook.com. A dedicated persistent browser profile stores the session on
+    the user's own Windows account. No stealth, CAPTCHA bypass, proxy rotation,
     or anti-detection features are used.
     """
 
@@ -52,36 +85,131 @@ class FacebookAutomation:
         self.pw = None
         self.context = None
         self.page = None
+        self.browser_backend = ""
 
-    def start(self):
-        if self.context:
-            return
-        _configure_bundled_playwright_browser()
-        self.pw = sync_playwright().start()
-        self.context = self.pw.chromium.launch_persistent_context(
+    def _context_alive(self) -> bool:
+        if self.context is None:
+            return False
+        try:
+            # Accessing pages raises if the user has closed the browser/context.
+            _ = self.context.pages
+            return True
+        except Exception:
+            self.context = None
+            self.page = None
+            return False
+
+    def is_open(self) -> bool:
+        return self._context_alive()
+
+    def _reset_playwright(self) -> None:
+        self.context = None
+        self.page = None
+        if self.pw is not None:
+            try:
+                self.pw.stop()
+            except Exception:
+                pass
+            self.pw = None
+
+    def _launch(self, executable_path: Path | None, backend_name: str):
+        kwargs = dict(
             user_data_dir=str(self.config.profile_dir),
             headless=self.config.headless,
             viewport={"width": 1360, "height": 900},
             locale=self.config.locale,
-            args=["--disable-notifications"],
+            args=[
+                "--disable-notifications",
+                "--no-first-run",
+                "--no-default-browser-check",
+            ],
         )
+        if executable_path is not None:
+            kwargs["executable_path"] = str(executable_path)
+
+        self.context = self.pw.chromium.launch_persistent_context(**kwargs)
         self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
+        self.browser_backend = backend_name
+
+    def start(self):
+        if self._context_alive():
+            try:
+                pages = self.context.pages
+                self.page = pages[0] if pages else self.context.new_page()
+            except Exception:
+                self.context = None
+                self.page = None
+            else:
+                return
+
+        # A browser window closed by the user leaves a stale Playwright object.
+        # Restart Playwright cleanly while keeping the same persistent profile.
+        self._reset_playwright()
+        self.config.profile_dir.mkdir(parents=True, exist_ok=True)
+        self.pw = sync_playwright().start()
+
+        launch_errors: list[str] = []
+        for name, executable in _system_browser_candidates():
+            try:
+                self._launch(executable, name)
+                return
+            except Exception as exc:
+                launch_errors.append(f"{name}: {exc}")
+                self.context = None
+                self.page = None
+
+        # Fallback keeps the app usable when Chrome/Edge is unavailable.
+        try:
+            _configure_bundled_playwright_browser()
+            self._launch(None, "Bundled Chromium")
+            return
+        except Exception as exc:
+            launch_errors.append(f"Bundled Chromium: {exc}")
+            self._reset_playwright()
+            raise FacebookError("Could not start the dedicated Facebook browser. " + " | ".join(launch_errors[-3:]))
 
     def stop(self):
         try:
-            if self.context:
+            if self._context_alive():
                 self.context.close()
+        except Exception:
+            pass
         finally:
-            self.context = None
-            self.page = None
-            if self.pw:
-                self.pw.stop()
-                self.pw = None
+            self._reset_playwright()
 
     def open_login(self):
         self.start()
         self.page.goto("https://www.facebook.com/", wait_until="domcontentloaded", timeout=60000)
         self.page.bring_to_front()
+
+    def connection_status(self) -> str:
+        """Return a lightweight status without navigating away from the user's page."""
+        if not self._context_alive():
+            return "browser_closed"
+
+        try:
+            pages = self.context.pages
+            urls = [(p.url or "").lower() for p in pages]
+            verification_fragments = (
+                "checkpoint",
+                "two_step_verification",
+                "two-factor",
+                "confirm_identity",
+                "security_check",
+            )
+            if any(any(fragment in url for fragment in verification_fragments) for url in urls):
+                return "verification_required"
+
+            cookies = self.context.cookies(["https://www.facebook.com", "https://facebook.com"])
+            if any(c.get("name") == "c_user" and c.get("value") for c in cookies):
+                return "connected"
+            return "not_connected"
+        except Exception:
+            # If the user closes the browser during this check, the profile still
+            # remains on disk and will be reused next time.
+            self.context = None
+            self.page = None
+            return "browser_closed"
 
     def _check_checkpoint(self):
         url = (self.page.url or "").lower()
@@ -92,7 +220,7 @@ class FacebookAutomation:
             pass
         checkpoint_words = [
             "checkpoint", "security check", "confirm your identity", "two-factor authentication",
-            "التحقق من الأمان", "تأكيد هويتك", "المصادقة الثنائية", "تحقق من هويتك",
+            "two_step_verification", "التحقق من الأمان", "تأكيد هويتك", "المصادقة الثنائية", "تحقق من هويتك",
         ]
         if any(x in url or x in body for x in checkpoint_words):
             raise CheckpointDetected("Facebook requested a security/checkpoint step; manual action is required.")
@@ -101,11 +229,13 @@ class FacebookAutomation:
         self.start()
         self.page.goto("https://www.facebook.com/", wait_until="domcontentloaded", timeout=60000)
         self._check_checkpoint()
-        try:
-            if self.page.locator("input[name='email']").count() or self.page.locator("input[name='pass']").count():
-                raise LoginRequired("Facebook login is required in the dedicated browser.")
-        except PlaywrightTimeoutError:
-            pass
+        if self.connection_status() != "connected":
+            try:
+                if self.page.locator("input[name='email']").count() or self.page.locator("input[name='pass']").count():
+                    raise LoginRequired("Facebook login is required in the dedicated browser.")
+            except PlaywrightTimeoutError:
+                pass
+            raise LoginRequired("Facebook login is required in the dedicated browser.")
 
     @staticmethod
     def _clean_facebook_url(url: str) -> str:
@@ -120,7 +250,6 @@ class FacebookAutomation:
         urls: list[str] = []
         seen = set()
 
-        # Scan anchors repeatedly while gently scrolling. This avoids depending on a single CSS class.
         for _ in range(4):
             hrefs = self.page.locator("a[href]").evaluate_all("els => els.map(e => e.href)")
             for href in hrefs:
@@ -144,7 +273,6 @@ class FacebookAutomation:
         self._check_checkpoint()
         self.page.wait_for_timeout(2500)
 
-        # Open group composer. Facebook labels change frequently, so try multiple semantic patterns.
         patterns = [
             r"Write something", r"Create (?:a )?post", r"What's on your mind",
             r"اكتب شيئ", r"إنشاء منشور", r"بم تفكر", r"ما الذي تفكر",
@@ -165,7 +293,6 @@ class FacebookAutomation:
                 break
 
         if not opened:
-            # Fallback: click a visible role=button containing common composer text.
             for pat in patterns:
                 try:
                     loc = self.page.locator("[role='button']").filter(has_text=re.compile(pat, re.I)).first
@@ -182,7 +309,6 @@ class FacebookAutomation:
         self.page.wait_for_timeout(1200)
         text = f"{message_prefix.strip()}\n{post_url}".strip()
 
-        # Composer is usually an editable textbox/dialog textbox.
         candidates = [
             self.page.locator("[role='dialog'] [role='textbox'][contenteditable='true']"),
             self.page.locator("[role='textbox'][contenteditable='true']"),

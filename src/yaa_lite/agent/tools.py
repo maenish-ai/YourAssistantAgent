@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from ..storage.db import ChatDB
 from .facebook_service import FacebookService
 from .legacy_smart import SmartPlan
-
 from .smol_contract import Tool as _SmolTool
 
-# The project vendors the small Apache-2.0 tool-contract layer rather than the
-# whole framework so low-memory startup remains predictable.
+if TYPE_CHECKING:
+    from ..backup.service import BackupService
+
 SMOLAGENTS_AVAILABLE = True
 
 
@@ -51,7 +51,7 @@ class DiscoverFacebookGroupsTool(_SmolTool):
 
 class FacebookStatusTool(_SmolTool):
     name = "facebook_status"
-    description = "Return the current cached Facebook connection status without opening a browser."
+    description = "Return the current cached Facebook connection status without publishing anything."
     inputs = {}
     output_type = "string"
 
@@ -61,6 +61,72 @@ class FacebookStatusTool(_SmolTool):
 
     def forward(self) -> str:
         return self.service.status_text()
+
+
+class AppStatusTool(_SmolTool):
+    name = "app_status"
+    description = "Return a compact status summary for the assistant, Facebook, saved groups, tasks and backup."
+    inputs = {}
+    output_type = "string"
+
+    def __init__(self, db: ChatDB, facebook: FacebookService, backup: BackupService | None):
+        self.db = db
+        self.facebook = facebook
+        self.backup = backup
+        super().__init__()
+
+    def forward(self) -> str:
+        backup_text = "unavailable"
+        if self.backup is not None:
+            try:
+                st = self.backup.status()
+                backup_text = f"{'connected' if st.connected else 'not_connected'}; last_backup={st.last_backup or 'none'}"
+            except Exception as exc:
+                backup_text = f"error:{type(exc).__name__}"
+        return (
+            f"Hammer=ready_or_lazy; Facebook={self.facebook.status_text()}; "
+            f"groups={self.db.count_groups()}; tasks={len(self.db.list_rules(500))}; backup={backup_text}"
+        )
+
+
+class ListTasksTool(_SmolTool):
+    name = "list_tasks"
+    description = "List saved scheduled tasks."
+    inputs = {}
+    output_type = "string"
+
+    def __init__(self, db: ChatDB):
+        self.db = db
+        super().__init__()
+
+    def forward(self) -> str:
+        rules = self.db.list_rules(30)
+        if not rules:
+            return "No saved tasks"
+        return "\n".join(
+            f"#{r['id']} {r['name']} | {'active' if int(r.get('enabled', 1)) else 'paused'} | next={r.get('next_run_at') or '-'}"
+            for r in rules
+        )
+
+
+class BackupStatusTool(_SmolTool):
+    name = "backup_status"
+    description = "Return encrypted local backup and Google Drive sync status."
+    inputs = {}
+    output_type = "string"
+
+    def __init__(self, backup: BackupService | None):
+        self.backup = backup
+        super().__init__()
+
+    def forward(self) -> str:
+        if self.backup is None:
+            return "Backup service unavailable"
+        st = self.backup.status()
+        return (
+            f"drive={'connected' if st.connected else 'not_connected'}; account={st.account or '-'}; "
+            f"last_backup={st.last_backup or '-'}; last_sync={st.last_sync or '-'}"
+        )
 
 
 class SaveFacebookRuleTool(_SmolTool):
@@ -136,13 +202,16 @@ class RunFacebookRuleNowTool(_SmolTool):
 
 
 class ToolRegistry:
-    """Allow-listed tools. No arbitrary code execution is exposed to the LLM."""
+    """Allow-listed application tools. No arbitrary code execution is exposed."""
 
-    def __init__(self, db: ChatDB, facebook: FacebookService):
+    def __init__(self, db: ChatDB, facebook: FacebookService, backup: BackupService | None = None):
         tools = [
             CountFacebookGroupsTool(db),
             DiscoverFacebookGroupsTool(facebook),
             FacebookStatusTool(facebook),
+            AppStatusTool(db, facebook, backup),
+            ListTasksTool(db),
+            BackupStatusTool(backup),
             SaveFacebookRuleTool(facebook),
             RunFacebookRuleNowTool(facebook),
         ]

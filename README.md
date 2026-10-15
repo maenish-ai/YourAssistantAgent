@@ -1,46 +1,68 @@
-# Your Assistant Agent v1.7.0
+# Your Assistant Agent v2.0.0 — Hammer OS Foundation
 
-A lightweight Windows desktop assistant with a ChatGPT-like chat screen and a local Smart Agent.
+A lightweight Windows desktop assistant built around **one local AI brain: Hammer 2.1 0.5B**. The desktop app is the interface, state store, permission boundary and tool host; Hammer handles all conversation and decides when an allow-listed application tool should be used.
 
-## What is new in v1.7
+## Core v2 behavior
 
-The application now exposes **one assistant only**. The old visible Arabic Agent / General Agent selector is gone.
+- **Hammer only**: greetings, casual chat and work commands all go through Hammer. There is no hidden Arabic/General fallback model and no hard-coded greeting reply path.
+- **Resilient local runtime**: initial attempt + up to two automatic restarts (low-memory, then ultra-safe) with persistent `local_ai.log` diagnostics.
+- **4 GB friendly**: one ~398 MB Q4 model, lazy loading, idle unload, Eco/Balanced/Performance modes, max 2 CPU threads and max 1024 context by default.
+- **One-language UI**: first run asks for Arabic or English. Arabic mode is Arabic-only; English mode is English-only. The language can be changed later from Settings.
+- **ChatGPT-like shell**: left navigation rail with Home, Chat, Status, Facebook, Tasks, Backup and Settings. Telegram/GitHub stay under Advanced until enabled.
+- **Live status**: current Facebook task, progress bar, pause/resume/stop and a timestamped activity timeline.
 
-The local model is **Hammer 2.1 0.5B Q4_K_M**. Hammer is used as the action/tool-routing model and can also respond to normal conversation. Very common greetings use an instant fast path, so saying `كيف حالك؟` or `Hello` does not need to load the model.
+## Security and backup
 
-The main sidebar is intentionally simple:
-- **المحادثة / Chat**
-- **الحالة / Status** — live automatic progress timeline
-- **الإعدادات / Settings**
-- **متقدم / Advanced**
+First run creates the app security layer. The user chooses whether a password is requested every launch, once per Windows session, or not at all. A separate **Recovery Key** wraps the same random master encryption key.
 
-## Smart Agent behavior
+Backups use AES-GCM and are encrypted **before** Google Drive upload. v2 backup files include only encrypted key-wrapping metadata outside the ciphertext, so the original password or Recovery Key can unlock a backup on a new computer. Google Drive uses the official OAuth flow with `drive.appdata`; a real Desktop OAuth Client ID must be supplied by the user/package owner.
 
-A normal conversation gets a normal reply. A work request such as:
+Facebook browser-profile/session material is excluded from backups by default. Credential syncing is opt-in per service.
 
-> غداً الساعة 8 مساء خذ آخر منشور من صفحتي وانشره على الجروبات التي تحتوي كلمة خلدة
+## Normal-browser bridge
 
-is routed through Hammer's allow-listed tools, converted to a plan, matched against saved groups, and shown for confirmation. The app never exposes arbitrary local Python execution to the model.
+`browser_extension/` contains the optional browser bridge. It connects the user's **normal open browser** to the desktop app through localhost `127.0.0.1:8765`. The bridge has an allow-listed command channel for opening pages and interacting with the active tab.
 
-Facebook execution writes live events to Status, including opening Facebook, locating the source post, each group being processed, pending-admin-approval outcomes, failures, and the final summary.
+In v2.0.0 the extension is the preferred path for opening Facebook/manual login and lightweight browser status work. The mature Facebook sharing engine still has a managed-browser fallback for operations that have not yet been migrated to the extension command channel. CAPTCHA and Facebook checkpoints are always manual.
 
-## 4 GB RAM design
-- one GGUF model only (~398 MB)
-- lazy model loading
-- llama.cpp CPU runtime
-- context 768 by default (max 1024)
-- 2 CPU threads by default
-- one low-memory retry if the local server drops
+## Facebook Smart Agent
+
+Hammer exposes safe tools for:
+- app/Facebook/backup status
+- task listing
+- group counting
+- group discovery (approval-gated)
+- preparing Facebook campaigns
+- running saved Facebook rules (approval-gated)
+
+The app never exposes arbitrary Python execution to Hammer. Publishing/external actions remain behind the approval boundary. Scheduled sharing keeps no-repeat checks and records published/pending/failed outcomes.
+
+## Voice
+
+The microphone button can use Windows' built-in **System.Speech** locally when local voice is enabled. TTS also uses installed Windows voices. Voice quality/available female voices therefore depend on Windows language/voice packs. Cloud voice, wake-word continuous listening and premium voice packs are represented in Settings but require optional skills/providers; they are not silently enabled.
+
+## Features staged behind the v2 architecture
+
+The UI/settings/data model now have foundations for Telegram, GitHub, Skills, proactive learning, advanced reports, multi-device conflict resolution and richer browser-extension automation. These are **not all production-complete in v2.0.0**. In particular, do not treat the current Telegram/GitHub connector placeholders or the browser extension as equivalent to a fully migrated production connector yet.
 
 ## Hammer model and license
-- Original: `MadeAgents/Hammer2.1-0.5b`
-- GGUF used: `Melvin56/Hammer2.1-0.5b-GGUF` / `hammer2.1-0.5b-Q4_K_M.gguf`
-- SHA256: `190676fe7ac430ac6680b32c216d4eb7413002e2af0c140b8280a0f74fcc6a4d`
-- Declared license: **CC BY-NC 4.0**
 
-This project build is intended for personal/non-commercial use. See `THIRD_PARTY_HAMMER.md` before any commercial distribution.
+- Original: `MadeAgents/Hammer2.1-0.5b`
+- GGUF: `Melvin56/Hammer2.1-0.5b-GGUF` / `hammer2.1-0.5b-Q4_K_M.gguf`
+- SHA256: `190676fe7ac430ac6680b32c216d4eb7413002e2af0c140b8280a0f74fcc6a4d`
+- Declared model license: **CC BY-NC 4.0**
+
+Because of the Hammer model license, this packaged build is intended for personal/non-commercial use unless the model is replaced or separately licensed.
 
 ## Build
-Push the project to `main`. The single workflow `.github/workflows/build-windows.yml` downloads and verifies the Hammer GGUF and llama.cpp, runs tests, builds the PyInstaller one-folder app, creates the Inno Setup installer, and uploads the Windows Setup artifact.
 
-Optional Authenticode signing remains supported through the existing GitHub secrets described in `SIGNING_AND_TRUST_AR.md`.
+Push the complete project to `main`. The single workflow `.github/workflows/build-windows.yml`:
+1. installs dependencies,
+2. runs the source self-test and all tests,
+3. downloads and SHA-verifies Hammer,
+4. downloads llama.cpp Windows CPU runtime,
+5. builds the PyInstaller one-folder application,
+6. smoke-tests the packaged EXE,
+7. builds the Inno Setup installer,
+8. optionally Authenticode-signs the EXE/Setup when signing secrets are configured,
+9. uploads the Setup artifact and SHA256.

@@ -1,5 +1,4 @@
-When updating an existing v1.6 repository, these old source files are no longer used in v1.7 and may be deleted:
-- src/yaa_lite/ui/agent_picker.py
-- UPLOAD_V1.6.0_AR.txt
+When applying the v2.0.0 PATCH over the exact v1.7.0 source tree, delete this obsolete file:
+- UPLOAD_V1.7.0_AR.txt
 
-They are not imported by v1.7, so leaving them in GitHub does not change runtime behavior; deleting them only keeps the repository clean.
+The FULL PROJECT ZIP already contains the clean v2.0.0 tree, so no manual deletion is needed when replacing the repository contents with the full project.

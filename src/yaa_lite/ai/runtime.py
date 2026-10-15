@@ -65,20 +65,36 @@ def _free_port() -> int:
 
 
 def _parse_json_object(text: str) -> dict | None:
+    """Normalize Hammer's textual tool-call format to the first call object.
+
+    Hammer's native template normally emits a JSON *list* of tool calls, while
+    some llama.cpp builds return one object or wrap JSON in a Markdown fence.
+    Supporting all three keeps the app independent of a specific parser build.
+    """
     if not text:
         return None
     cleaned = text.strip()
     cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.I)
     cleaned = re.sub(r"\s*```$", "", cleaned)
-    # Hammer commonly emits one JSON object in a fenced block.
+    try:
+        parsed = json.loads(cleaned)
+        if isinstance(parsed, dict):
+            return parsed
+        if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
+            return parsed[0]
+        if isinstance(parsed, list) and not parsed:
+            return None
+    except Exception:
+        pass
+    # Last-resort compatibility for models that surround one object with prose.
     first, last = cleaned.find("{"), cleaned.rfind("}")
     if first >= 0 and last > first:
-        cleaned = cleaned[first:last + 1]
-    try:
-        obj = json.loads(cleaned)
-        return obj if isinstance(obj, dict) else None
-    except Exception:
-        return None
+        try:
+            obj = json.loads(cleaned[first:last + 1])
+            return obj if isinstance(obj, dict) else None
+        except Exception:
+            return None
+    return None
 
 
 class LocalAIRuntime:
@@ -89,10 +105,15 @@ class LocalAIRuntime:
     RAM and fixes the old Arabic/General model switching overhead.
     """
 
-    def __init__(self, context_tokens: int = 768, threads: int = 2, retry_once: bool = True):
-        self.context_tokens = max(512, min(int(context_tokens), 1024))
+    def __init__(self, context_tokens: int = 2048, threads: int = 2, retry_once: bool = True, retry_count: int | None = None, performance_mode: str = "balanced"):
+        self.performance_mode = performance_mode if performance_mode in {"eco","balanced","performance"} else "balanced"
+        self.context_tokens = max(768, min(int(context_tokens), 2048))
         self.threads = max(1, min(int(threads), 2))
-        self.retry_once = bool(retry_once)
+        if self.performance_mode == "eco":
+            self.context_tokens = 1024; self.threads = 1
+        self.retry_count = max(0, min(int(retry_count if retry_count is not None else (1 if retry_once else 0)), 2))
+        self.retry_once = self.retry_count > 0  # backward-compatible attribute
+        self.last_used_monotonic = 0.0
         self._proc: subprocess.Popen | None = None
         self._profile_key: str | None = None
         self._port: int | None = None
@@ -104,17 +125,18 @@ class LocalAIRuntime:
     def loaded_profile(self) -> str | None:
         return self._profile_key
 
-    def reconfigure(self, context_tokens: int, threads: int, retry_once: bool = True) -> None:
-        new_context = max(512, min(int(context_tokens), 1024))
+    def reconfigure(self, context_tokens: int, threads: int, retry_once: bool = True, retry_count: int | None = None, performance_mode: str | None = None) -> None:
+        new_mode = performance_mode if performance_mode in {"eco","balanced","performance"} else self.performance_mode
+        new_context = max(768, min(int(context_tokens), 2048))
         new_threads = max(1, min(int(threads), 2))
-        changed = (new_context, new_threads, bool(retry_once)) != (
-            self.context_tokens,
-            self.threads,
-            self.retry_once,
-        )
+        if new_mode == "eco": new_context, new_threads = 1024, 1
+        new_retries = max(0, min(int(retry_count if retry_count is not None else (1 if retry_once else 0)), 2))
+        changed = (new_context, new_threads, new_retries, new_mode) != (self.context_tokens, self.threads, self.retry_count, self.performance_mode)
         self.context_tokens = new_context
         self.threads = new_threads
-        self.retry_once = bool(retry_once)
+        self.performance_mode = new_mode
+        self.retry_count = new_retries
+        self.retry_once = new_retries > 0
         if changed:
             self.stop(wait=False)
 
@@ -156,7 +178,7 @@ class LocalAIRuntime:
         self,
         profile: AgentProfile,
         status: Callable[[str], None] | None = None,
-        safe_mode: bool = False,
+        safe_mode: int | bool = 0,
     ) -> None:
         with self._lock:
             if (
@@ -165,18 +187,26 @@ class LocalAIRuntime:
                 and self._profile_key == profile.model_filename
                 and self._safe_mode == safe_mode
             ):
+                self.last_used_monotonic = time.monotonic()
                 return
         self.stop(wait=False)
+        level = int(safe_mode)
         if status:
-            status("Starting Hammer 2.1…" if not safe_mode else "Restarting Hammer in low-memory mode…")
+            if level == 0:
+                status("Starting Hammer 2.1…")
+            elif level == 1:
+                status("Restarting Hammer in low-memory mode…")
+            else:
+                status("Restarting Hammer in ultra-safe mode…")
 
         server = find_llama_server()
         model = model_path(profile)
         port = _free_port()
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
-        ctx = 512 if safe_mode else self.context_tokens
-        threads = 1 if safe_mode else self.threads
-        batch = 16 if safe_mode else 32
+        ctx = self.context_tokens if level == 0 else (1536 if level == 1 else 1024)
+        threads = self.threads if level == 0 else 1
+        normal_batch = 16 if self.performance_mode == "eco" else (48 if self.performance_mode == "performance" else 32)
+        batch = normal_batch if level == 0 else (16 if level == 1 else 8)
         cmd = [
             str(server),
             "--model", str(model),
@@ -192,7 +222,7 @@ class LocalAIRuntime:
 
         log_file = log_path().open("a", encoding="utf-8", errors="replace")
         self._write_log(
-            f"Starting Hammer model={profile.model_filename} safe_mode={safe_mode} ctx={ctx} threads={threads} batch={batch}"
+            f"Starting Hammer model={profile.model_filename} safe_mode={level} ctx={ctx} threads={threads} batch={batch}"
         )
         try:
             proc = subprocess.Popen(
@@ -205,7 +235,7 @@ class LocalAIRuntime:
             log_file.close()
             raise
 
-        deadline = time.monotonic() + (60 if safe_mode else 50)
+        deadline = time.monotonic() + (65 if level else 50)
         url = f"http://127.0.0.1:{port}/health"
         while time.monotonic() < deadline:
             if proc.poll() is not None:
@@ -219,8 +249,9 @@ class LocalAIRuntime:
                         self._proc = proc
                         self._profile_key = profile.model_filename
                         self._port = port
-                        self._safe_mode = safe_mode
+                        self._safe_mode = level
                         self._log_handle = log_file
+                    self.last_used_monotonic = time.monotonic()
                     if status:
                         status("Hammer 2.1 ready")
                     return
@@ -243,7 +274,7 @@ class LocalAIRuntime:
         max_tokens: int,
         timeout: int,
         status: Callable[[str], None] | None,
-        safe_mode: bool,
+        safe_mode: int | bool,
         tools: list[dict] | None = None,
     ) -> dict:
         self.ensure_started(profile, status=status, safe_mode=safe_mode)
@@ -256,7 +287,7 @@ class LocalAIRuntime:
             "model": "local",
             "messages": [{"role": "system", "content": profile.system_prompt}] + messages,
             "temperature": 0.0 if tools else 0.35,
-            "max_tokens": max(64, min(int(max_tokens), 256 if not safe_mode else 160)),
+            "max_tokens": max(64, min(int(max_tokens), 256 if int(safe_mode) == 0 else 160)),
             "stream": False,
         }
         if tools:
@@ -271,23 +302,38 @@ class LocalAIRuntime:
         )
         r.raise_for_status()
         data = r.json()
+        self.last_used_monotonic = time.monotonic()
         return data["choices"][0]["message"]
 
     def _run_with_retry(self, fn, status=None):
-        attempts = 2 if self.retry_once else 1
+        attempts = 1 + self.retry_count
         last_error: Exception | None = None
         for attempt in range(attempts):
-            safe_mode = attempt > 0
+            level = attempt  # 0 normal, 1 low-memory, 2 ultra-safe
             try:
-                return fn(safe_mode)
+                return fn(level)
             except (requests.RequestException, OSError, RuntimeError, TimeoutError, KeyError, ValueError) as exc:
                 last_error = exc
-                self._write_log(f"AI attempt {attempt + 1} failed: {type(exc).__name__}: {exc}")
+                self._write_log(f"AI attempt {attempt + 1}/{attempts} failed: {type(exc).__name__}: {exc}")
                 self.stop(wait=True)
                 if attempt + 1 < attempts and status:
-                    status("AI connection dropped — retrying once in low-memory mode…")
-                time.sleep(0.35)
-        raise LocalAIError("Local AI could not complete the request. Check Status for details.") from last_error
+                    if attempt == 0:
+                        status("Hammer failed — retrying in low-memory mode…")
+                    else:
+                        status("Hammer failed again — final ultra-safe retry…")
+                time.sleep(0.45)
+        raise LocalAIError("Hammer could not complete the request after automatic restart attempts. Check Status for details.") from last_error
+
+    def unload_if_idle(self, idle_minutes: int) -> bool:
+        """Unload Hammer after an idle period. Returns True when a running model was stopped."""
+        idle_minutes = max(0, int(idle_minutes))
+        if idle_minutes == 0 or not self.loaded_profile or not self.last_used_monotonic:
+            return False
+        if time.monotonic() - self.last_used_monotonic < idle_minutes * 60:
+            return False
+        self._write_log(f"Unloading Hammer after {idle_minutes} idle minute(s)")
+        self.stop(wait=False)
+        return True
 
     def chat(
         self,
@@ -297,7 +343,7 @@ class LocalAIRuntime:
         timeout: int,
         status: Callable[[str], None] | None = None,
     ) -> str:
-        def run(safe_mode: bool):
+        def run(safe_mode: int):
             message = self._post_completion(
                 profile, messages, max_tokens, timeout, status, safe_mode, tools=None
             )
@@ -321,7 +367,7 @@ class LocalAIRuntime:
         llama.cpp may return OpenAI-style ``tool_calls`` or Hammer's textual
         JSON format. Both are normalized to {name, arguments, content}.
         """
-        def run(safe_mode: bool):
+        def run(safe_mode: int):
             message = self._post_completion(
                 profile, messages, max_tokens, timeout, status, safe_mode, tools=tools
             )

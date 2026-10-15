@@ -1,12 +1,10 @@
-# Third-party Smart Agent component
+# Third-party Smart Agent design notice
 
-Your Assistant Agent v1.6 includes a deliberately small tool-contract adapter inspired by the **smolagents** project from Hugging Face. The full smolagents runtime is not bundled, which keeps the desktop build lighter and avoids code-executing agent features.
+Your Assistant Agent v2.0.0 keeps a deliberately small local tool-contract adapter inspired by **Hugging Face smolagents**. The full smolagents runtime is not bundled; this keeps the desktop build light and avoids enabling arbitrary code-executing agents.
 
 - Project: `huggingface/smolagents`
 - License: Apache License 2.0
-- Purpose in this project: typed/validated allow-listed tools for Smart Agent actions.
-- Integration style: small local adapter; no full smolagents runtime dependency.
+- Purpose here: typed, validated, allow-listed tool contracts.
+- Arbitrary local `CodeAgent` execution is not enabled.
 
-This application does not enable arbitrary local CodeAgent execution. External actions remain constrained to explicit application tools and can require user approval.
-
-The full Apache-2.0 license and upstream notices remain available from the upstream project and must be preserved when required by the license.
+See `licenses/Apache-2.0-smolagents.txt` for the included license text.

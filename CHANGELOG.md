@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.0.0
+- Hammer is the only conversational/reasoning model; no greeting fast-path or hidden fallback model.
+- ChatGPT-like Home/Chat/Status/Facebook/Tasks/Backup/Settings shell with one-language UI.
+- Added first-run setup, app password modes, Recovery Key and portable encrypted backups.
+- Added official Google Drive OAuth/PKCE backup client and Drive version/restore foundation.
+- Added normal-browser extension bridge and extension-first manual Facebook login.
+- Added two-stage safe Hammer restart, performance modes, idle unload, tray/startup foundation and local Windows voice foundation.
+
 ## 1.7.0
 - Single visible Hammer 2.1 Smart Agent.
 - Removed visible Arabic/General agent chooser.

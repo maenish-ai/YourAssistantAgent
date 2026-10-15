@@ -3,7 +3,7 @@ from pathlib import Path
 
 root = Path(SPECPATH)
 datas = []
-for folder in ("models", "runtime", "assets", "licenses"):
+for folder in ("models", "runtime", "assets", "licenses", "browser_extension"):
     p = root / folder
     if p.exists():
         datas.append((str(p), folder))
@@ -16,6 +16,21 @@ hiddenimports = [
     "yaa_lite",
     "yaa_lite.main",
     "yaa_lite.ui.app",
+    "PIL",
+    "pystray",
+    "yaa_lite.startup",
+    "yaa_lite.voice.service",
+    "yaa_lite.browser_bridge.server",
+    "yaa_lite.backup.google_drive",
+    "yaa_lite.backup.service",
+    "yaa_lite.security.manager",
+    "yaa_lite.ui.tray",
+    "yaa_lite.ui.unlock_dialog",
+    "yaa_lite.ui.setup_wizard",
+    "yaa_lite.ui.backup_view",
+    "yaa_lite.ui.tasks_view",
+    "yaa_lite.ui.facebook_view",
+    "yaa_lite.ui.home_view",
     "yaa_lite.ui.chat_window",
     "yaa_lite.ui.activity_view",
     "yaa_lite.ui.settings_view",

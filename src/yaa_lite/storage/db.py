@@ -41,6 +41,17 @@ class ChatDB:
                 "id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, agent TEXT NOT NULL, "
                 "created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)"
             )
+            # v2 conversation organization/privacy fields are added in-place.
+            session_cols = self._columns(con, "sessions")
+            for col, spec in {
+                "pinned": "INTEGER NOT NULL DEFAULT 0",
+                "archived": "INTEGER NOT NULL DEFAULT 0",
+                "category": "TEXT NOT NULL DEFAULT ''",
+                "is_private": "INTEGER NOT NULL DEFAULT 0",
+                "memory_enabled": "INTEGER NOT NULL DEFAULT 1",
+            }.items():
+                if col not in session_cols:
+                    con.execute(f"ALTER TABLE sessions ADD COLUMN {col} {spec}")
             con.execute(
                 "CREATE TABLE IF NOT EXISTS messages ("
                 "id INTEGER PRIMARY KEY AUTOINCREMENT, role TEXT NOT NULL, content TEXT NOT NULL, "
@@ -80,14 +91,27 @@ class ChatDB:
                 "session_id INTEGER PRIMARY KEY, tool_name TEXT NOT NULL, arguments_json TEXT NOT NULL, "
                 "summary TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)"
             )
+            con.execute(
+                "CREATE TABLE IF NOT EXISTS memory_items ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, content TEXT NOT NULL, "
+                "source_session_id INTEGER, enabled INTEGER NOT NULL DEFAULT 1, "
+                "created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)"
+            )
+            con.execute(
+                "CREATE TABLE IF NOT EXISTS task_events ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, rule_id INTEGER, event TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', "
+                "created_at TEXT DEFAULT CURRENT_TIMESTAMP)"
+            )
             con.execute("CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, id)")
             con.execute("CREATE INDEX IF NOT EXISTS idx_rules_due ON smart_rules(enabled, next_run_at)")
             con.execute("CREATE INDEX IF NOT EXISTS idx_share_lookup ON share_history(group_id, post_url, created_at)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_sessions_sidebar ON sessions(archived,pinned,updated_at)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_memory_enabled ON memory_items(enabled,updated_at)")
 
     # ---------------- Chat sessions ----------------
-    def create_session(self, agent: str, title: str = "محادثة جديدة") -> int:
+    def create_session(self, agent: str, title: str = "محادثة جديدة", category: str = "") -> int:
         with self._lock, self._connect() as con:
-            cur = con.execute("INSERT INTO sessions(title,agent) VALUES(?,?)", (title[:120], agent))
+            cur = con.execute("INSERT INTO sessions(title,agent,category) VALUES(?,?,?)", (title[:120], agent, category[:60]))
             return int(cur.lastrowid)
 
     def ensure_session(self, agent: str) -> int:
@@ -97,12 +121,18 @@ class ChatDB:
                 return int(row["id"])
         return self.create_session(agent)
 
-    def list_sessions(self, limit: int = 12) -> list[dict]:
+    def list_sessions(self, limit: int = 50, include_archived: bool = False) -> list[dict]:
         with self._lock, self._connect() as con:
-            rows = con.execute(
-                "SELECT id,title,agent,created_at,updated_at FROM sessions ORDER BY updated_at DESC, id DESC LIMIT ?",
-                (max(1, int(limit)),),
-            ).fetchall()
+            if include_archived:
+                rows = con.execute(
+                    "SELECT * FROM sessions ORDER BY pinned DESC, updated_at DESC, id DESC LIMIT ?",
+                    (max(1, int(limit)),),
+                ).fetchall()
+            else:
+                rows = con.execute(
+                    "SELECT * FROM sessions WHERE archived=0 ORDER BY pinned DESC, updated_at DESC, id DESC LIMIT ?",
+                    (max(1, int(limit)),),
+                ).fetchall()
         return [dict(r) for r in rows]
 
     def get_session(self, session_id: int) -> dict | None:
@@ -116,6 +146,40 @@ class ChatDB:
             row = con.execute("SELECT title FROM sessions WHERE id=?", (int(session_id),)).fetchone()
             if row and str(row["title"]) in {"محادثة جديدة", "New chat"}:
                 con.execute("UPDATE sessions SET title=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (title, int(session_id)))
+
+    def update_session(self, session_id: int, *, title: str | None = None, pinned: bool | None = None,
+                       archived: bool | None = None, category: str | None = None,
+                       is_private: bool | None = None, memory_enabled: bool | None = None) -> None:
+        fields, values = [], []
+        for name, value in (("title", title), ("pinned", None if pinned is None else int(pinned)),
+                            ("archived", None if archived is None else int(archived)),
+                            ("category", category), ("is_private", None if is_private is None else int(is_private)),
+                            ("memory_enabled", None if memory_enabled is None else int(memory_enabled))):
+            if value is not None:
+                fields.append(f"{name}=?")
+                values.append(value)
+        if not fields:
+            return
+        values.append(int(session_id))
+        with self._lock, self._connect() as con:
+            con.execute(f"UPDATE sessions SET {', '.join(fields)}, updated_at=CURRENT_TIMESTAMP WHERE id=?", values)
+
+    def delete_session(self, session_id: int) -> None:
+        with self._lock, self._connect() as con:
+            con.execute("DELETE FROM messages WHERE session_id=?", (int(session_id),))
+            con.execute("DELETE FROM pending_actions WHERE session_id=?", (int(session_id),))
+            con.execute("DELETE FROM sessions WHERE id=?", (int(session_id),))
+
+    def search_sessions(self, query: str, limit: int = 50) -> list[dict]:
+        q = f"%{query.strip()}%"
+        with self._lock, self._connect() as con:
+            rows = con.execute(
+                "SELECT DISTINCT s.* FROM sessions s LEFT JOIN messages m ON m.session_id=s.id "
+                "WHERE s.archived=0 AND (s.title LIKE ? OR m.content LIKE ?) "
+                "ORDER BY s.pinned DESC,s.updated_at DESC LIMIT ?",
+                (q, q, max(1, int(limit))),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def touch_session(self, session_id: int) -> None:
         with self._lock, self._connect() as con:
@@ -310,6 +374,51 @@ class ChatDB:
     def set_rule_enabled(self, rule_id: int, enabled: bool) -> None:
         with self._lock, self._connect() as con:
             con.execute("UPDATE smart_rules SET enabled=? WHERE id=?", (1 if enabled else 0, int(rule_id)))
+
+    def delete_rule(self, rule_id: int) -> None:
+        with self._lock, self._connect() as con:
+            con.execute("DELETE FROM smart_rules WHERE id=?", (int(rule_id),))
+
+    def add_task_event(self, rule_id: int | None, event: str, detail: str = "") -> None:
+        with self._lock, self._connect() as con:
+            con.execute("INSERT INTO task_events(rule_id,event,detail) VALUES(?,?,?)", (rule_id, event, detail[:4000]))
+
+    def add_memory_item(self, kind: str, content: str, source_session_id: int | None = None) -> int:
+        with self._lock, self._connect() as con:
+            cur = con.execute("INSERT INTO memory_items(kind,content,source_session_id) VALUES(?,?,?)",
+                              (kind[:40], content[:8000], source_session_id))
+            return int(cur.lastrowid)
+
+    def list_memory_items(self, limit: int = 200, enabled_only: bool = True) -> list[dict]:
+        with self._lock, self._connect() as con:
+            sql = "SELECT * FROM memory_items" + (" WHERE enabled=1" if enabled_only else "") + " ORDER BY updated_at DESC,id DESC LIMIT ?"
+            rows = con.execute(sql, (max(1, int(limit)),)).fetchall()
+        return [dict(r) for r in rows]
+
+    def set_memory_enabled(self, memory_id: int, enabled: bool) -> None:
+        with self._lock, self._connect() as con:
+            con.execute("UPDATE memory_items SET enabled=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", (int(enabled), int(memory_id)))
+
+    def delete_memory_item(self, memory_id: int) -> None:
+        with self._lock, self._connect() as con:
+            con.execute("DELETE FROM memory_items WHERE id=?", (int(memory_id),))
+
+    def global_search(self, query: str, limit: int = 50) -> list[dict]:
+        term = query.strip()
+        if not term:
+            return []
+        q = f"%{term}%"
+        results: list[dict] = []
+        with self._lock, self._connect() as con:
+            for r in con.execute("SELECT id,title,updated_at FROM sessions WHERE title LIKE ? LIMIT ?", (q, limit)).fetchall():
+                results.append({"type": "chat", "id": r["id"], "title": r["title"], "detail": r["updated_at"]})
+            for r in con.execute("SELECT id,name,next_run_at FROM smart_rules WHERE name LIKE ? OR command_text LIKE ? LIMIT ?", (q, q, limit)).fetchall():
+                results.append({"type": "task", "id": r["id"], "title": r["name"], "detail": r["next_run_at"] or ""})
+            for r in con.execute("SELECT id,name,url FROM facebook_groups WHERE name LIKE ? OR tags LIKE ? LIMIT ?", (q, q, limit)).fetchall():
+                results.append({"type": "facebook", "id": r["id"], "title": r["name"], "detail": r["url"]})
+            for r in con.execute("SELECT id,kind,content FROM memory_items WHERE enabled=1 AND content LIKE ? LIMIT ?", (q, limit)).fetchall():
+                results.append({"type": "memory", "id": r["id"], "title": r["kind"], "detail": r["content"][:240]})
+        return results[:limit]
 
     # ---------------- Share history ----------------
     def was_shared_recently(self, group_id: int, post_url: str, days: int) -> bool:

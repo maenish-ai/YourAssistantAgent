@@ -12,43 +12,28 @@ class AgentProfile:
     system_prompt: str
 
 
-# v1.7 uses a single local model for both conversation and agentic tool routing.
-# Arabic/General aliases are kept only so conversations created by older builds
-# continue to open without migration errors.
 HAMMER = AgentProfile(
     key="hammer",
     title="Hammer 2.1 Smart Agent",
-    subtitle="0.5B local action model for conversation + tool calling",
+    subtitle="0.5B local action model — the only AI brain",
     model_filename="hammer2.1-0.5b-Q4_K_M.gguf",
     system_prompt=(
-        "You are Your Assistant Agent, a private local desktop assistant. Reply in the same language as the user "
-        "(Arabic or English) and keep ordinary conversation natural and concise. You are also a tool-using smart agent. "
-        "When tools are provided, choose a tool only when it is relevant. Never claim that Facebook, Telegram, GitHub, "
-        "scheduling, or any external action succeeded unless the tool layer confirms it. For actions that publish, send, "
-        "delete, or change external data, prefer preparing a plan and waiting for user confirmation. Understand colloquial "
-        "Arabic, including Jordanian phrasing, without requiring rigid keywords."
+        "You are the single AI brain inside Your Assistant Agent. The desktop application is your interface, state store, "
+        "permission boundary, and tool host. You handle ALL user conversation, including greetings and casual chat, as well "
+        "as deciding when an application tool is needed. Reply in the user's language unless a per-user language preference "
+        "is supplied in context. Understand colloquial Arabic, especially Jordanian Arabic, but do not invent tool results. "
+        "Never claim Facebook, Telegram, GitHub, Google Drive, file, browser, scheduling, or external actions succeeded unless "
+        "the application tool result confirms it. For publishing, sending, deleting, security changes, payments, or other "
+        "sensitive external actions, respect the application's approval gate. Use the respond function for ordinary conversation. "
+        "Be concise, natural, and helpful."
     ),
 )
 
-# Backward-compatibility aliases: all point to the same Hammer GGUF.
-ARABIC = AgentProfile(
-    key="arabic",
-    title="Smart Agent",
-    subtitle="Auto Arabic/English conversation",
-    model_filename=HAMMER.model_filename,
-    system_prompt=HAMMER.system_prompt,
-)
-GENERAL = AgentProfile(
-    key="general",
-    title="Smart Agent",
-    subtitle="Auto Arabic/English conversation",
-    model_filename=HAMMER.model_filename,
-    system_prompt=HAMMER.system_prompt,
-)
-
+# Old session/profile names still resolve to Hammer so upgrades do not break.
+ARABIC = AgentProfile("arabic", HAMMER.title, HAMMER.subtitle, HAMMER.model_filename, HAMMER.system_prompt)
+GENERAL = AgentProfile("general", HAMMER.title, HAMMER.subtitle, HAMMER.model_filename, HAMMER.system_prompt)
 PROFILES = {"hammer": HAMMER, "arabic": ARABIC, "general": GENERAL, "auto": HAMMER}
 
 
 def get_profile(key: str | None = None) -> AgentProfile:
-    # New UI exposes a single assistant. Old session keys still map to Hammer.
     return PROFILES.get((key or "hammer").lower(), HAMMER)

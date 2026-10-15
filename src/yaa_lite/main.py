@@ -10,7 +10,7 @@ def _set_windows_app_id() -> None:
         return
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-            "YourAssistantAgent.Desktop.1.7.0"
+            "YourAssistantAgent.Desktop.2.0.0"
         )
     except Exception:
         pass
@@ -23,6 +23,9 @@ def _self_test() -> int:
     from .agent.orchestrator import SmartAgentController  # noqa: F401
     from .agent.tools import ToolRegistry  # noqa: F401
     from .agent.hammer_agent import HammerAgentRouter  # noqa: F401
+    from .security.manager import SecurityManager  # noqa: F401
+    from .backup.service import BackupService  # noqa: F401
+    from .browser_bridge.server import BrowserBridge  # noqa: F401
 
     required = (
         "icon.ico",

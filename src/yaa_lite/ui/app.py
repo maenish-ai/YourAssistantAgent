@@ -4,47 +4,36 @@ import tkinter as tk
 from tkinter import ttk
 
 from ..agent.facebook_service import FacebookService
+from ..agent.hammer_agent import HAMMER_MODEL_LABEL
 from ..config import Settings
 from ..storage.db import ChatDB
 from . import theme
-from .activity_view import ActivityView
+from .activity_view import ActivityView, FRIENDLY
 from .advanced_view import AdvancedView
-from .agent_picker import AgentPicker
 from .chat_window import ChatWindow
+from .i18n import ui_text
 from .resources import asset_path
 from .settings_view import SettingsView
 
 
 class App(tk.Tk):
-    """ChatGPT-like compact desktop shell.
-
-    The left sidebar owns navigation and recent conversations. Heavy components
-    (local AI model and browser automation) remain lazy so the shell itself stays
-    responsive on 4 GB machines.
-    """
+    """Compact ChatGPT-like shell with one visible Smart Agent."""
 
     def __init__(self):
         super().__init__()
         self.withdraw()
         self.title("Your Assistant Agent")
-        self.geometry("1120x760")
-        self.minsize(860, 620)
+        self.geometry("1160x780")
+        self.minsize(900, 640)
         self.configure(bg=theme.BG)
 
         self.settings_obj = Settings.load()
-        if not self.settings_obj.selected_agent:
-            self.settings_obj.selected_agent = "arabic"
+        self.settings_obj.selected_agent = "hammer"
         self.db = ChatDB()
         self.facebook = FacebookService(self.db, self.settings_obj)
         self.facebook.start_scheduler()
 
-        self.current = None
-        self.shell = None
-        self.sidebar = None
-        self.main = None
-        self.main_header = None
-        self.content = None
-        self.sessions_frame = None
+        self.shell = self.sidebar = self.main = self.main_header = self.content = self.sessions_frame = None
         self.chat_window: ChatWindow | None = None
         self.activity_view: ActivityView | None = None
         self.settings_view: SettingsView | None = None
@@ -52,11 +41,15 @@ class App(tk.Tk):
         self.current_session_id: int | None = None
         self.current_view = "chat"
         self._brand_images: list[tk.PhotoImage] = []
+        self.live_status_label = None
 
         self._styles()
         self._apply_brand_icon()
         self.protocol("WM_DELETE_WINDOW", self._close)
         self._show_splash()
+
+    def t(self, ar: str, en: str) -> str:
+        return ui_text(ar, en, self.settings_obj.interface_language)
 
     def _styles(self):
         style = ttk.Style(self)
@@ -101,7 +94,7 @@ class App(tk.Tk):
         except Exception:
             pass
         tk.Label(splash, text="Your Assistant Agent", bg="#ffffff", fg="#172554", font=("Segoe UI", 22, "bold")).pack(pady=(0, 6))
-        tk.Label(splash, text="Chat • Smart Agent • Local AI", bg="#ffffff", fg=theme.MUTED, font=("Segoe UI", 10)).pack()
+        tk.Label(splash, text="Hammer 2.1 • Smart Agent • Local & Private", bg="#ffffff", fg=theme.MUTED, font=("Segoe UI", 10)).pack()
         self.update_idletasks()
         self.after(800, lambda: self._finish_splash(splash))
 
@@ -110,10 +103,7 @@ class App(tk.Tk):
             splash.destroy()
         except Exception:
             pass
-        if self.settings_obj.remember_agent and self.settings_obj.selected_agent in {"arabic", "general"}:
-            self.show_main(self.settings_obj.selected_agent)
-        else:
-            self.show_picker()
+        self.show_main()
         self.deiconify()
         self.lift()
 
@@ -133,24 +123,10 @@ class App(tk.Tk):
                 continue
             child.destroy()
 
-    def show_picker(self):
+    def show_main(self, session_id: int | None = None):
         self._clear_root()
-        self.current = AgentPicker(self, self._selected, self.settings_obj.remember_agent)
-        self.current.pack(fill="both", expand=True)
-
-    def _selected(self, key: str, remember: bool):
-        self.settings_obj.selected_agent = key
-        self.settings_obj.remember_agent = remember
-        self.settings_obj.save()
-        self.facebook.update_settings(self.settings_obj)
-        self.db.add_activity("agent_selected", key)
-        self.show_main(key)
-
-    # ---------------- Main shell ----------------
-    def show_main(self, key: str, session_id: int | None = None):
-        self._clear_root()
-        self.current = None
-        self.settings_obj.selected_agent = key
+        self.settings_obj.selected_agent = "hammer"
+        self.settings_obj.remember_agent = True
         self.settings_obj.save()
         self.facebook.update_settings(self.settings_obj)
 
@@ -160,7 +136,7 @@ class App(tk.Tk):
         shell.grid_rowconfigure(0, weight=1)
         self.shell = shell
 
-        self.sidebar = tk.Frame(shell, bg=theme.SIDEBAR, width=242)
+        self.sidebar = tk.Frame(shell, bg=theme.SIDEBAR, width=258)
         self.sidebar.grid(row=0, column=0, sticky="nsw")
         self.sidebar.grid_propagate(False)
         self.main = tk.Frame(shell, bg=theme.BG)
@@ -170,7 +146,6 @@ class App(tk.Tk):
 
         self._build_sidebar()
         self._build_header()
-
         self.content = tk.Frame(self.main, bg=theme.BG)
         self.content.grid(row=1, column=0, sticky="nsew")
         self.content.grid_rowconfigure(0, weight=1)
@@ -178,16 +153,12 @@ class App(tk.Tk):
 
         if session_id is None:
             sessions = self.db.list_sessions(1)
-            if sessions:
-                session_id = int(sessions[0]["id"])
-            else:
-                session_id = self.db.create_session(key)
+            session_id = int(sessions[0]["id"]) if sessions else self.db.create_session("hammer")
         self.show_chat_session(int(session_id))
+        self.after(900, self._poll_sidebar_status)
 
     def _build_sidebar(self):
         sb = self.sidebar
-        if not sb:
-            return
         top = tk.Frame(sb, bg=theme.SIDEBAR)
         top.pack(fill="x", padx=12, pady=(14, 8))
         try:
@@ -198,38 +169,37 @@ class App(tk.Tk):
             pass
         tk.Label(top, text="Your Assistant\nAgent", bg=theme.SIDEBAR, fg=theme.TEXT, font=("Segoe UI", 11, "bold"), justify="left").pack(side="left", padx=7)
 
-        self._side_button(sb, "＋  محادثة جديدة", self.new_chat, strong=True).pack(fill="x", padx=12, pady=(6, 10))
-
-        tk.Label(sb, text="المحادثات", bg=theme.SIDEBAR, fg=theme.MUTED, font=("Segoe UI", 9, "bold"), anchor="w").pack(fill="x", padx=16, pady=(4, 4))
+        self._side_button(sb, self.t("＋  محادثة جديدة", "＋  New chat"), self.new_chat, strong=True).pack(fill="x", padx=12, pady=(6, 10))
+        tk.Label(sb, text=self.t("المحادثات", "Chats"), bg=theme.SIDEBAR, fg=theme.MUTED, font=("Segoe UI", 9, "bold"), anchor="w").pack(fill="x", padx=16, pady=(4, 4))
         self.sessions_frame = tk.Frame(sb, bg=theme.SIDEBAR)
         self.sessions_frame.pack(fill="both", expand=True, padx=8)
         self._refresh_sessions()
 
         bottom = tk.Frame(sb, bg=theme.SIDEBAR)
         bottom.pack(fill="x", side="bottom", padx=8, pady=10)
-        self._side_button(bottom, "💬  المحادثة", lambda: self.navigate("chat")).pack(fill="x", pady=2)
-        self._side_button(bottom, "◷  النشاط", lambda: self.navigate("activity")).pack(fill="x", pady=2)
-        self._side_button(bottom, "⚙  الإعدادات", lambda: self.navigate("settings")).pack(fill="x", pady=2)
-        self._side_button(bottom, "⋯  متقدم", lambda: self.navigate("advanced")).pack(fill="x", pady=2)
-        self._side_button(bottom, "⇄  تغيير الوكيل", self.show_picker).pack(fill="x", pady=(8, 2))
+        self.live_status_label = tk.Label(
+            bottom,
+            text=self.t("● جاهز", "● Ready"),
+            bg=theme.SIDEBAR,
+            fg="#087f5b",
+            anchor="w",
+            justify="left",
+            wraplength=220,
+            font=("Segoe UI", 8),
+            padx=10,
+            pady=6,
+        )
+        self.live_status_label.pack(fill="x", pady=(0, 4))
+        self._side_button(bottom, self.t("💬  المحادثة", "💬  Chat"), lambda: self.navigate("chat")).pack(fill="x", pady=2)
+        self._side_button(bottom, self.t("◉  الحالة", "◉  Status"), lambda: self.navigate("status")).pack(fill="x", pady=2)
+        self._side_button(bottom, self.t("⚙  الإعدادات", "⚙  Settings"), lambda: self.navigate("settings")).pack(fill="x", pady=2)
+        self._side_button(bottom, self.t("⋯  متقدم", "⋯  Advanced"), lambda: self.navigate("advanced")).pack(fill="x", pady=2)
 
     def _side_button(self, parent, text: str, command, strong: bool = False):
         bg = "#ffffff" if strong else theme.SIDEBAR
-        return tk.Button(
-            parent,
-            text=text,
-            command=command,
-            anchor="w",
-            relief="flat",
-            bd=0,
-            bg=bg,
-            activebackground=theme.SIDEBAR_HOVER,
-            fg=theme.TEXT,
-            font=("Segoe UI", 10, "bold" if strong else "normal"),
-            padx=10,
-            pady=9,
-            cursor="hand2",
-        )
+        return tk.Button(parent, text=text, command=command, anchor="w", relief="flat", bd=0, bg=bg,
+                         activebackground=theme.SIDEBAR_HOVER, fg=theme.TEXT,
+                         font=("Segoe UI", 10, "bold" if strong else "normal"), padx=10, pady=9, cursor="hand2")
 
     def _refresh_sessions(self):
         if not self.sessions_frame:
@@ -238,80 +208,38 @@ class App(tk.Tk):
             w.destroy()
         for s in self.db.list_sessions(10):
             sid = int(s["id"])
-            title = str(s["title"] or "محادثة جديدة")
-            if len(title) > 28:
-                title = title[:27] + "…"
+            title = str(s["title"] or self.t("محادثة جديدة", "New chat"))
+            if len(title) > 30:
+                title = title[:29] + "…"
             active = sid == self.current_session_id and self.current_view == "chat"
-            btn = tk.Button(
-                self.sessions_frame,
-                text=title,
-                command=lambda x=sid: self.show_chat_session(x),
-                anchor="w",
-                relief="flat",
-                bd=0,
-                bg=theme.SIDEBAR_ACTIVE if active else theme.SIDEBAR,
-                activebackground=theme.SIDEBAR_HOVER,
-                fg=theme.TEXT,
-                font=("Segoe UI", 9),
-                padx=8,
-                pady=7,
-                cursor="hand2",
-            )
+            btn = tk.Button(self.sessions_frame, text=title, command=lambda x=sid: self.show_chat_session(x), anchor="w",
+                            relief="flat", bd=0, bg=theme.SIDEBAR_ACTIVE if active else theme.SIDEBAR,
+                            activebackground=theme.SIDEBAR_HOVER, fg=theme.TEXT, font=("Segoe UI", 9), padx=8, pady=7, cursor="hand2")
             btn.pack(fill="x", pady=1)
 
     def _build_header(self):
-        if not self.main:
-            return
-        header = tk.Frame(self.main, bg=theme.PANEL, height=58, highlightbackground=theme.BORDER, highlightthickness=0)
+        header = tk.Frame(self.main, bg=theme.PANEL, height=60)
         header.grid(row=0, column=0, sticky="ew")
         header.grid_propagate(False)
         header.grid_columnconfigure(0, weight=1)
         self.main_header = header
-        self.header_title = tk.Label(header, text="المحادثة", bg=theme.PANEL, fg=theme.TEXT, font=("Segoe UI", 12, "bold"))
+        self.header_title = tk.Label(header, text=self.t("المحادثة", "Chat"), bg=theme.PANEL, fg=theme.TEXT, font=("Segoe UI", 12, "bold"))
         self.header_title.grid(row=0, column=0, sticky="w", padx=20, pady=17)
-        self.header_agent = tk.Label(
-            header,
-            text="",
-            bg="#eef2ff",
-            fg=theme.ACCENT,
-            font=("Segoe UI", 9, "bold"),
-            padx=9,
-            pady=5,
-        )
+        self.header_agent = tk.Label(header, text="Hammer 2.1", bg="#eef2ff", fg=theme.ACCENT, font=("Segoe UI", 9, "bold"), padx=9, pady=5)
         self.header_agent.grid(row=0, column=1, padx=6)
-        self.header_smart = tk.Label(
-            header,
-            text="Smart Agent ON" if self.settings_obj.smart_agent_enabled else "Smart Agent OFF",
-            bg="#ecfdf3" if self.settings_obj.smart_agent_enabled else "#f3f4f6",
-            fg="#087f5b" if self.settings_obj.smart_agent_enabled else theme.MUTED,
-            font=("Segoe UI", 9, "bold"),
-            padx=9,
-            pady=5,
-        )
+        self.header_smart = tk.Label(header, text=self.t("الوكيل الذكي مفعّل", "Smart Agent ON") if self.settings_obj.smart_agent_enabled else self.t("الوكيل الذكي متوقف", "Smart Agent OFF"),
+                                     bg="#ecfdf3" if self.settings_obj.smart_agent_enabled else "#f3f4f6",
+                                     fg="#087f5b" if self.settings_obj.smart_agent_enabled else theme.MUTED,
+                                     font=("Segoe UI", 9, "bold"), padx=9, pady=5)
         self.header_smart.grid(row=0, column=2, padx=6)
-        self.stop_ai_btn = tk.Button(
-            header, text="إيقاف AI", command=self._stop_ai_from_header, relief="flat", bd=0,
-            bg=theme.PANEL, activebackground=theme.SIDEBAR_HOVER, fg=theme.MUTED,
-            font=("Segoe UI", 9), padx=8, pady=5, cursor="hand2"
-        )
+        self.stop_ai_btn = tk.Button(header, text=self.t("إيقاف AI", "Stop AI"), command=self._stop_ai_from_header,
+                                     relief="flat", bd=0, bg=theme.PANEL, activebackground=theme.SIDEBAR_HOVER,
+                                     fg=theme.MUTED, font=("Segoe UI", 9), padx=8, pady=5, cursor="hand2")
         self.stop_ai_btn.grid(row=0, column=3, padx=(0, 18))
-        self._update_header_agent()
 
     def _stop_ai_from_header(self):
         if self.chat_window:
             self.chat_window.stop_ai()
-
-    def _update_header_agent(self):
-        if hasattr(self, "header_agent"):
-            label = "Arabic Agent" if self.settings_obj.selected_agent == "arabic" else "General Agent"
-            self.header_agent.config(text=label)
-        if hasattr(self, "header_smart"):
-            enabled = self.settings_obj.smart_agent_enabled
-            self.header_smart.config(
-                text="Smart Agent ON" if enabled else "Smart Agent OFF",
-                bg="#ecfdf3" if enabled else "#f3f4f6",
-                fg="#087f5b" if enabled else theme.MUTED,
-            )
 
     def _clear_content(self):
         if self.chat_window:
@@ -337,10 +265,10 @@ class App(tk.Tk):
         self.current_view = view
         self._clear_content()
         self._refresh_sessions()
-        titles = {"activity": "النشاط", "settings": "الإعدادات", "advanced": "متقدم"}
+        titles = {"status": self.t("الحالة", "Status"), "settings": self.t("الإعدادات", "Settings"), "advanced": self.t("متقدم", "Advanced")}
         self.header_title.config(text=titles.get(view, view))
-        if view == "activity":
-            self.activity_view = ActivityView(self.content)
+        if view == "status":
+            self.activity_view = ActivityView(self.content, self.facebook, self.settings_obj)
             self.activity_view.grid(row=0, column=0, sticky="nsew")
         elif view == "settings":
             self.settings_view = SettingsView(self.content, self.settings_obj, self._settings_saved)
@@ -350,45 +278,36 @@ class App(tk.Tk):
             self.advanced_view.grid(row=0, column=0, sticky="nsew")
 
     def new_chat(self):
-        sid = self.db.create_session(self.settings_obj.selected_agent or "arabic")
+        sid = self.db.create_session("hammer")
         self.show_chat_session(sid)
 
     def show_chat_session(self, session_id: int):
         session = self.db.get_session(session_id)
         if not session:
-            session_id = self.db.create_session(self.settings_obj.selected_agent or "arabic")
-            session = self.db.get_session(session_id)
-        agent_key = str((session or {}).get("agent") or self.settings_obj.selected_agent or "arabic")
+            session_id = self.db.create_session("hammer")
         self.current_session_id = int(session_id)
         self.current_view = "chat"
         self._clear_content()
-        self.header_title.config(text="المحادثة")
+        self.header_title.config(text=self.t("المحادثة", "Chat"))
         self._refresh_sessions()
-        self.chat_window = ChatWindow(
-            self.content,
-            agent_key,
-            self.settings_obj,
-            self.current_session_id,
-            self.facebook,
-            on_activity=self._refresh_activity,
-            on_session_title_changed=self._refresh_sessions,
-        )
+        self.chat_window = ChatWindow(self.content, "hammer", self.settings_obj, self.current_session_id, self.facebook,
+                                      on_activity=self._refresh_activity, on_session_title_changed=self._refresh_sessions)
         self.chat_window.grid(row=0, column=0, sticky="nsew")
 
     def _settings_saved(self, settings: Settings):
-        previous_key = self.settings_obj.selected_agent
+        old_lang = self.settings_obj.interface_language
         self.settings_obj = settings
         self.facebook.update_settings(settings)
-        self.db.add_activity(
-            "settings_saved",
-            f"agent={settings.selected_agent}; smart={settings.smart_agent_enabled}; ctx={settings.context_tokens}; threads={settings.threads}",
-        )
-        self._update_header_agent()
-        if settings.selected_agent != previous_key:
-            self.new_chat()
+        self.db.add_activity("settings_saved", f"smart={settings.smart_agent_enabled}; language={settings.interface_language}; ctx={settings.context_tokens}; threads={settings.threads}")
+        if settings.interface_language != old_lang:
+            self.show_main(self.current_session_id)
             return
         if self.chat_window:
             self.chat_window.apply_settings(settings)
+        if self.header_smart:
+            self.header_smart.config(text=self.t("الوكيل الذكي مفعّل", "Smart Agent ON") if settings.smart_agent_enabled else self.t("الوكيل الذكي متوقف", "Smart Agent OFF"),
+                                     bg="#ecfdf3" if settings.smart_agent_enabled else "#f3f4f6",
+                                     fg="#087f5b" if settings.smart_agent_enabled else theme.MUTED)
         self._refresh_activity()
 
     def _refresh_activity(self):
@@ -396,6 +315,26 @@ class App(tk.Tk):
             self.activity_view.refresh()
         if self.advanced_view:
             self.advanced_view.refresh()
+        self._update_sidebar_status()
+
+    def _update_sidebar_status(self):
+        if not self.live_status_label:
+            return
+        rows = self.db.recent_activity(1)
+        if not rows:
+            self.live_status_label.config(text=self.t("● جاهز", "● Ready"), fg="#087f5b")
+            return
+        row = rows[0]
+        icon, ar, en = FRIENDLY.get(row["kind"], ("•", row["kind"], row["kind"]))
+        state = ui_text(ar, en, self.settings_obj.interface_language)
+        detail = str(row.get("detail") or "")[:90]
+        self.live_status_label.config(text=f"{icon} {state}\n{detail}", fg="#087f5b" if "error" not in row["kind"] else "#b42318")
+
+    def _poll_sidebar_status(self):
+        if not self.winfo_exists():
+            return
+        self._update_sidebar_status()
+        self.after(900, self._poll_sidebar_status)
 
     def _close(self):
         if self.chat_window:

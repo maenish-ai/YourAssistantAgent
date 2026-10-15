@@ -12,34 +12,43 @@ class AgentProfile:
     system_prompt: str
 
 
+# v1.7 uses a single local model for both conversation and agentic tool routing.
+# Arabic/General aliases are kept only so conversations created by older builds
+# continue to open without migration errors.
+HAMMER = AgentProfile(
+    key="hammer",
+    title="Hammer 2.1 Smart Agent",
+    subtitle="0.5B local action model for conversation + tool calling",
+    model_filename="hammer2.1-0.5b-Q4_K_M.gguf",
+    system_prompt=(
+        "You are Your Assistant Agent, a private local desktop assistant. Reply in the same language as the user "
+        "(Arabic or English) and keep ordinary conversation natural and concise. You are also a tool-using smart agent. "
+        "When tools are provided, choose a tool only when it is relevant. Never claim that Facebook, Telegram, GitHub, "
+        "scheduling, or any external action succeeded unless the tool layer confirms it. For actions that publish, send, "
+        "delete, or change external data, prefer preparing a plan and waiting for user confirmation. Understand colloquial "
+        "Arabic, including Jordanian phrasing, without requiring rigid keywords."
+    ),
+)
+
+# Backward-compatibility aliases: all point to the same Hammer GGUF.
 ARABIC = AgentProfile(
     key="arabic",
-    title="Arabic Agent",
-    subtitle="مخصص للمحادثة العربية واللهجة والأوامر اليومية",
-    model_filename="RightNow-Arabic-0.5B-Turbo-q4_k_m.gguf",
-    system_prompt=(
-        "أنت Your Assistant Agent، مساعد مكتبي عربي محلي. افهم العربية واللهجة الأردنية والكلام الطبيعي، "
-        "ولا تجبر المستخدم على صيغة أو كلمات محددة. لا تكرر كلام المستخدم بلا داعٍ، ولا تكتب محاضرات طويلة. "
-        "في أوامر العمل لخّص أولاً ما فهمته: ماذا، أين، ومتى، واسأل سؤالاً واحداً فقط إذا كان هناك غموض مهم. "
-        "لا تدّعي تنفيذ Facebook أو Telegram أو GitHub أو أي إجراء خارجي قبل أن تؤكده طبقة الأدوات. "
-        "أجب بالعربية بشكل طبيعي ومختصر وواضح."
-    ),
+    title="Smart Agent",
+    subtitle="Auto Arabic/English conversation",
+    model_filename=HAMMER.model_filename,
+    system_prompt=HAMMER.system_prompt,
 )
-
 GENERAL = AgentProfile(
     key="general",
-    title="General Agent",
-    subtitle="مساعد عام متعدد اللغات للمهام والمحادثة",
-    model_filename="Qwen3-0.6B.Q4_K_M.gguf",
-    system_prompt=(
-        "You are Your Assistant Agent, a lightweight local desktop assistant. Understand natural Arabic and English without requiring rigid wording. "
-        "Keep replies concise, summarize what you understood for work requests, ask only necessary clarification, and never claim an external action "
-        "was completed unless the tool layer confirms it."
-    ),
+    title="Smart Agent",
+    subtitle="Auto Arabic/English conversation",
+    model_filename=HAMMER.model_filename,
+    system_prompt=HAMMER.system_prompt,
 )
 
-PROFILES = {ARABIC.key: ARABIC, GENERAL.key: GENERAL}
+PROFILES = {"hammer": HAMMER, "arabic": ARABIC, "general": GENERAL, "auto": HAMMER}
 
 
-def get_profile(key: str) -> AgentProfile:
-    return PROFILES.get(key, GENERAL)
+def get_profile(key: str | None = None) -> AgentProfile:
+    # New UI exposes a single assistant. Old session keys still map to Hammer.
+    return PROFILES.get((key or "hammer").lower(), HAMMER)

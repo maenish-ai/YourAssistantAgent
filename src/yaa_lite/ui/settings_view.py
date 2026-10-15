@@ -3,62 +3,70 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 
+from ..agent.hammer_agent import HAMMER_LICENSE, HAMMER_MODEL_LABEL
 from ..config import Settings
+from .i18n import ui_text
 
 
 class SettingsView(ttk.Frame):
-    AGENT_LABELS = {"arabic": "Arabic Agent — عربي", "general": "General Agent — عام"}
-
     def __init__(self, master, settings: Settings, on_save):
         super().__init__(master, padding=24)
         self.settings = settings
         self.on_save = on_save
+        self.language = settings.interface_language or "bilingual"
         self._build()
+
+    def t(self, ar: str, en: str) -> str:
+        return ui_text(ar, en, self.language)
 
     def _section(self, row: int, title: str, subtitle: str = "") -> ttk.Frame:
         box = ttk.LabelFrame(self, text=title, padding=14)
         box.grid(row=row, column=0, sticky="ew", pady=(0, 14))
         box.columnconfigure(1, weight=1)
         if subtitle:
-            ttk.Label(box, text=subtitle, style="Muted.TLabel", wraplength=680).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+            ttk.Label(box, text=subtitle, style="Muted.TLabel", wraplength=760).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
         return box
 
     def _build(self):
         self.columnconfigure(0, weight=1)
-        ttk.Label(self, text="الإعدادات", style="Title.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
+        ttk.Label(self, text=self.t("الإعدادات", "Settings"), style="Title.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
         ttk.Label(
             self,
-            text="إعدادات واضحة مثل تطبيقات المحادثة: الوكيل، Smart Agent، Facebook، والأداء.",
+            text=self.t("واجهة مرتبة: اللغة، Hammer Smart Agent، Facebook، والأداء.", "Organized settings for language, Hammer Smart Agent, Facebook and performance."),
             style="Muted.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(0, 18))
 
-        agent_box = self._section(2, "الوكيل والمحادثة")
-        ttk.Label(agent_box, text="الوكيل الافتراضي").grid(row=1, column=0, sticky="w", pady=6)
-        self.agent = ttk.Combobox(agent_box, state="readonly", values=list(self.AGENT_LABELS.values()), width=30)
-        self.agent.grid(row=1, column=1, sticky="w", pady=6)
-        self.agent.set(self.AGENT_LABELS.get(self.settings.selected_agent or "arabic", self.AGENT_LABELS["arabic"]))
-        self.remember_var = tk.BooleanVar(value=self.settings.remember_agent)
-        ttk.Checkbutton(agent_box, text="تذكر الوكيل المختار عند فتح البرنامج", variable=self.remember_var).grid(row=2, column=1, sticky="w", pady=6)
+        ui_box = self._section(2, self.t("الواجهة واللغة", "Interface & language"))
+        ttk.Label(ui_box, text=self.t("لغة الواجهة", "Interface language")).grid(row=1, column=0, sticky="w", pady=6)
+        self.language_combo = ttk.Combobox(ui_box, state="readonly", values=["العربية + English", "العربية", "English"], width=24)
+        self.language_combo.grid(row=1, column=1, sticky="w", pady=6)
+        self.language_combo.set({"bilingual": "العربية + English", "ar": "العربية", "en": "English"}.get(self.settings.interface_language, "العربية + English"))
+        ttk.Label(ui_box, text=self.t("لغة الرد", "Reply language")).grid(row=2, column=0, sticky="w", pady=6)
+        ttk.Label(ui_box, text=self.t("تلقائي حسب لغة رسالتك", "Automatic — follows your message language"), style="Muted.TLabel").grid(row=2, column=1, sticky="w", pady=6)
 
         smart_box = self._section(
             3,
-            "Smart Agent / الوكيل الذكي",
-            "المحادثة العادية تبقى محادثة. أوامر العمل تتحول إلى خطة وأدوات مسموحة فقط؛ لا يوجد تنفيذ Python عشوائي.",
+            self.t("الوكيل الذكي", "Smart Agent"),
+            self.t("موديل واحد فقط ظاهر للمستخدم. Hammer يتولى اختيار الأدوات والمحادثة، مع بوابة موافقة قبل الإجراءات الخارجية.", "One visible assistant. Hammer handles tool routing and conversation, with confirmation before external actions."),
         )
+        ttk.Label(smart_box, text=self.t("الموديل", "Model")).grid(row=1, column=0, sticky="w", pady=6)
+        ttk.Label(smart_box, text=HAMMER_MODEL_LABEL, style="CardTitle.TLabel").grid(row=1, column=1, sticky="w", pady=6)
+        ttk.Label(smart_box, text=self.t("الترخيص", "License")).grid(row=2, column=0, sticky="w", pady=6)
+        ttk.Label(smart_box, text=f"{HAMMER_LICENSE} — Personal / non-commercial", style="Muted.TLabel").grid(row=2, column=1, sticky="w", pady=6)
         self.smart_var = tk.BooleanVar(value=self.settings.smart_agent_enabled)
-        ttk.Checkbutton(smart_box, text="تفعيل Smart Agent", variable=self.smart_var).grid(row=1, column=0, columnspan=2, sticky="w", pady=5)
+        ttk.Checkbutton(smart_box, text=self.t("تفعيل الوكيل الذكي", "Enable Smart Agent"), variable=self.smart_var).grid(row=3, column=0, columnspan=2, sticky="w", pady=5)
         self.confirm_var = tk.BooleanVar(value=self.settings.confirm_external_actions)
-        ttk.Checkbutton(smart_box, text="اطلب موافقتي قبل الحفظ أو أي إجراء خارجي", variable=self.confirm_var).grid(row=2, column=0, columnspan=2, sticky="w", pady=5)
-        ttk.Label(smart_box, text="محرك الأدوات").grid(row=3, column=0, sticky="w", pady=6)
-        ttk.Label(smart_box, text="smolagents-compatible tools — lightweight Apache-2.0 integration", style="Muted.TLabel").grid(row=3, column=1, sticky="w", pady=6)
+        ttk.Checkbutton(smart_box, text=self.t("اطلب موافقتي قبل النشر أو التغيير الخارجي", "Ask for approval before publishing or external changes"), variable=self.confirm_var).grid(row=4, column=0, columnspan=2, sticky="w", pady=5)
+        ttk.Label(smart_box, text=self.t("التشغيل", "Runtime")).grid(row=5, column=0, sticky="w", pady=6)
+        ttk.Label(smart_box, text=self.t("محلي بالكامل عبر llama.cpp — يحمل عند أول طلب فقط", "Fully local via llama.cpp — lazy loads on first real request"), style="Muted.TLabel").grid(row=5, column=1, sticky="w", pady=6)
 
-        fb_box = self._section(4, "Facebook", "حدد صفحة المصدر مرة واحدة، وبعدها تستطيع قول اسم الصفحة بالكلام الطبيعي بدون لصق الرابط في كل مرة.")
-        ttk.Label(fb_box, text="رابط صفحة المصدر الافتراضية").grid(row=1, column=0, sticky="w", pady=6)
-        self.source_page = ttk.Entry(fb_box, width=66)
+        fb_box = self._section(4, "Facebook", self.t("احفظ صفحة المصدر مرة واحدة ليستخدمها الوكيل في الأوامر الطبيعية.", "Save the source page once so the agent can reuse it in natural commands."))
+        ttk.Label(fb_box, text=self.t("صفحة المصدر الافتراضية", "Default source page")).grid(row=1, column=0, sticky="w", pady=6)
+        self.source_page = ttk.Entry(fb_box, width=68)
         self.source_page.grid(row=1, column=1, sticky="ew", pady=6)
         self.source_page.insert(0, self.settings.default_source_page or "")
 
-        perf_box = self._section(5, "الأداء — مناسب لأجهزة 4GB RAM")
+        perf_box = self._section(5, self.t("الأداء — أجهزة 4GB RAM", "Performance — 4GB RAM"))
         ttk.Label(perf_box, text="Context").grid(row=1, column=0, sticky="w", pady=6)
         self.context = ttk.Combobox(perf_box, state="readonly", values=[512, 768, 1024], width=12)
         self.context.grid(row=1, column=1, sticky="w", pady=6)
@@ -67,28 +75,29 @@ class SettingsView(ttk.Frame):
         self.threads = ttk.Combobox(perf_box, state="readonly", values=[1, 2], width=12)
         self.threads.grid(row=2, column=1, sticky="w", pady=6)
         self.threads.set(str(self.settings.threads))
-        ttk.Label(perf_box, text="Max reply tokens").grid(row=3, column=0, sticky="w", pady=6)
+        ttk.Label(perf_box, text=self.t("حد الرد", "Max reply tokens")).grid(row=3, column=0, sticky="w", pady=6)
         self.max_tokens = ttk.Combobox(perf_box, state="readonly", values=[96, 128, 160, 220, 256], width=12)
         self.max_tokens.grid(row=3, column=1, sticky="w", pady=6)
         self.max_tokens.set(str(self.settings.max_response_tokens))
-        ttk.Label(perf_box, text="AI timeout (seconds)").grid(row=4, column=0, sticky="w", pady=6)
-        self.timeout = ttk.Combobox(perf_box, state="readonly", values=[45, 60, 75, 90, 120], width=12)
+        ttk.Label(perf_box, text=self.t("مهلة AI بالثواني", "AI timeout seconds")).grid(row=4, column=0, sticky="w", pady=6)
+        self.timeout = ttk.Combobox(perf_box, state="readonly", values=[45, 60, 75, 90, 120, 150], width=12)
         self.timeout.grid(row=4, column=1, sticky="w", pady=6)
         self.timeout.set(str(self.settings.ai_timeout_seconds))
         self.retry_var = tk.BooleanVar(value=self.settings.retry_ai_once)
-        ttk.Checkbutton(perf_box, text="أعد تشغيل الذكاء مرة تلقائيًا بوضع خفيف عند سقوط الاتصال", variable=self.retry_var).grid(row=5, column=0, columnspan=2, sticky="w", pady=6)
-        ttk.Label(perf_box, text="الموصى به: Context 768، Threads 2، Reply 160. يتم تحميل موديل واحد فقط في الذاكرة.", style="Muted.TLabel").grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Checkbutton(perf_box, text=self.t("إعادة محاولة واحدة بوضع ذاكرة خفيف عند سقوط الاتصال", "Retry once in low-memory mode if the AI connection drops"), variable=self.retry_var).grid(row=5, column=0, columnspan=2, sticky="w", pady=6)
+        ttk.Label(perf_box, text=self.t("الموصى به: Context 768، Threads 2. Hammer هو الموديل الوحيد في الذاكرة.", "Recommended: Context 768, Threads 2. Hammer is the only model loaded in memory."), style="Muted.TLabel").grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
         actions = ttk.Frame(self)
         actions.grid(row=6, column=0, sticky="ew", pady=(4, 0))
-        ttk.Button(actions, text="حفظ وتطبيق", style="Accent.TButton", command=self.save).pack(side="left")
+        ttk.Button(actions, text=self.t("حفظ وتطبيق", "Save & apply"), style="Accent.TButton", command=self.save).pack(side="left")
         self.status = ttk.Label(actions, text="", style="Muted.TLabel")
         self.status.pack(side="left", padx=12)
 
     def save(self):
-        reverse = {v: k for k, v in self.AGENT_LABELS.items()}
-        self.settings.selected_agent = reverse.get(self.agent.get(), "arabic")
-        self.settings.remember_agent = bool(self.remember_var.get())
+        lang = {"العربية + English": "bilingual", "العربية": "ar", "English": "en"}.get(self.language_combo.get(), "bilingual")
+        self.settings.interface_language = lang
+        self.settings.selected_agent = "hammer"
+        self.settings.remember_agent = True
         self.settings.smart_agent_enabled = bool(self.smart_var.get())
         self.settings.confirm_external_actions = bool(self.confirm_var.get())
         self.settings.default_source_page = self.source_page.get().strip()
@@ -99,4 +108,4 @@ class SettingsView(ttk.Frame):
         self.settings.retry_ai_once = bool(self.retry_var.get())
         self.settings.save()
         self.on_save(self.settings)
-        self.status.config(text="تم الحفظ. لا يتم تحميل AI إلا عند الحاجة.")
+        self.status.config(text=ui_text("تم الحفظ", "Saved", lang))

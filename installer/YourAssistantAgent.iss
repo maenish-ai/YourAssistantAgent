@@ -1,5 +1,5 @@
 #define MyAppName "Your Assistant Agent"
-#define MyAppVersion "1.6.0"
+#define MyAppVersion "1.7.0"
 #define MyAppPublisher "Your Assistant Agent"
 #define MyAppExeName "YourAssistantAgent.exe"
 #define MyAppURL "https://github.com/maenish-ai/YourAssistantAgent"
@@ -17,7 +17,7 @@ DefaultDirName={localappdata}\Programs\Your Assistant Agent
 DefaultGroupName={#MyAppName}
 UninstallDisplayIcon={app}\{#MyAppExeName}
 OutputDir=..\output
-OutputBaseFilename=YourAssistantAgent-Windows-Setup-v1.6.0
+OutputBaseFilename=YourAssistantAgent-Windows-Setup-v1.7.0
 Compression=lzma2
 SolidCompression=yes
 ArchitecturesAllowed=x64compatible
@@ -30,7 +30,7 @@ PrivilegesRequired=lowest
 DisableProgramGroupPage=yes
 CloseApplications=no
 RestartApplications=no
-VersionInfoVersion=1.6.0.0
+VersionInfoVersion=1.7.0.0
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription={#MyAppName} Windows Setup
 VersionInfoProductName={#MyAppName}

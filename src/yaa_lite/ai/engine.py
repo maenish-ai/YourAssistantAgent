@@ -17,7 +17,6 @@ def _normalize(text: str) -> str:
     text = text.strip().lower()
     text = re.sub(r"[؟?!.,،؛:]+$", "", text)
     text = re.sub(r"\s+", " ", text)
-    # Light Arabic normalization for common conversational forms.
     text = text.translate(str.maketrans({"أ": "ا", "إ": "ا", "آ": "ا", "ى": "ي"}))
     return text.strip()
 
@@ -32,15 +31,21 @@ _FAST_AR = {
     "هاي": "أهلًا! شو بدك نعمل؟",
     "الو": "معك، احكيلي شو بدك.",
     "السلام عليكم": "وعليكم السلام. شو بدك أساعدك فيه؟",
-    "انت مين": "أنا Your Assistant Agent، مساعدك المحلي على الكمبيوتر. احكيلي المهمة بشكل طبيعي وأنا بفهمها وبجهزها معك.",
-    "مين انت": "أنا Your Assistant Agent، مساعدك المحلي على الكمبيوتر. احكيلي المهمة بشكل طبيعي وأنا بفهمها وبجهزها معك.",
+    "انت مين": "أنا Your Assistant Agent، مساعدك المحلي. عندي Hammer 2.1 للمهام والأدوات، واحكي معي طبيعي.",
+    "مين انت": "أنا Your Assistant Agent، مساعدك المحلي. عندي Hammer 2.1 للمهام والأدوات، واحكي معي طبيعي.",
 }
 _FAST_EN = {
     "hi": "Hi! What would you like to do?",
     "hello": "Hello! What would you like to do?",
     "how are you": "I'm ready. What would you like me to do?",
-    "who are you": "I'm Your Assistant Agent, your local desktop assistant. Tell me the task naturally and I'll work through it with you.",
+    "what's up": "I'm ready. What would you like to work on?",
+    "who are you": "I'm Your Assistant Agent. Hammer 2.1 handles local tool routing and tasks, and you can talk to me naturally.",
 }
+
+
+def quick_reply(user_text: str) -> str | None:
+    normalized = _normalize(user_text)
+    return _FAST_AR.get(normalized) or _FAST_EN.get(normalized)
 
 
 class ChatEngine:
@@ -56,13 +61,10 @@ class ChatEngine:
         timeout: int,
         status=None,
     ) -> Reply:
-        normalized = _normalize(user_text)
-        if normalized in _FAST_AR:
-            return Reply(_FAST_AR[normalized], used_model=False)
-        if normalized in _FAST_EN:
-            return Reply(_FAST_EN[normalized], used_model=False)
+        instant = quick_reply(user_text)
+        if instant:
+            return Reply(instant, used_model=False)
 
-        # Keep the prompt small on 4 GB machines: last 8 turns only.
         compact = history[-8:] + [{"role": "user", "content": user_text[:3000]}]
         return Reply(
             self.runtime.chat(

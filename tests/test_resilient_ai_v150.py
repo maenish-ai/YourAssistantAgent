@@ -1,6 +1,6 @@
 import requests
 
-from yaa_lite.ai.profiles import ARABIC
+from yaa_lite.ai.profiles import HAMMER
 from yaa_lite.ai.runtime import LocalAIRuntime
 
 
@@ -9,17 +9,17 @@ def test_runtime_retries_once_in_safe_mode(monkeypatch):
     calls = []
     stops = []
 
-    def fake_chat_once(profile, messages, max_tokens, timeout, status, safe_mode):
+    def fake_post(profile, messages, max_tokens, timeout, status, safe_mode, tools=None):
         calls.append(safe_mode)
         if not safe_mode:
             raise requests.ConnectionError("connection dropped")
-        return "تم"
+        return {"content": "تم"}
 
-    monkeypatch.setattr(runtime, "_chat_once", fake_chat_once)
+    monkeypatch.setattr(runtime, "_post_completion", fake_post)
     monkeypatch.setattr(runtime, "stop", lambda wait=True: stops.append(wait))
     monkeypatch.setattr(runtime, "_write_log", lambda message: None)
 
-    result = runtime.chat(ARABIC, [], 128, 30)
+    result = runtime.chat(HAMMER, [], 128, 30)
     assert result == "تم"
     assert calls == [False, True]
     assert stops == [True]

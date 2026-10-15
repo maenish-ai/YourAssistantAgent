@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -62,8 +64,30 @@ def _free_port() -> int:
     return port
 
 
+def _parse_json_object(text: str) -> dict | None:
+    if not text:
+        return None
+    cleaned = text.strip()
+    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.I)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+    # Hammer commonly emits one JSON object in a fenced block.
+    first, last = cleaned.find("{"), cleaned.rfind("}")
+    if first >= 0 and last > first:
+        cleaned = cleaned[first:last + 1]
+    try:
+        obj = json.loads(cleaned)
+        return obj if isinstance(obj, dict) else None
+    except Exception:
+        return None
+
+
 class LocalAIRuntime:
-    """Lazy one-model-at-a-time llama.cpp runtime tuned for 4 GB Windows laptops."""
+    """Lazy llama.cpp runtime tuned for 4 GB Windows laptops.
+
+    v1.7 ships only one model (Hammer 2.1 0.5B), so the same process handles
+    ordinary chat and structured tool routing. This avoids keeping two models in
+    RAM and fixes the old Arabic/General model switching overhead.
+    """
 
     def __init__(self, context_tokens: int = 768, threads: int = 2, retry_once: bool = True):
         self.context_tokens = max(512, min(int(context_tokens), 1024))
@@ -138,13 +162,13 @@ class LocalAIRuntime:
             if (
                 self._proc
                 and self._proc.poll() is None
-                and self._profile_key == profile.key
+                and self._profile_key == profile.model_filename
                 and self._safe_mode == safe_mode
             ):
                 return
         self.stop(wait=False)
         if status:
-            status("Starting local AI…" if not safe_mode else "Restarting AI in low-memory mode…")
+            status("Starting Hammer 2.1…" if not safe_mode else "Restarting Hammer in low-memory mode…")
 
         server = find_llama_server()
         model = model_path(profile)
@@ -163,11 +187,12 @@ class LocalAIRuntime:
             "--batch-size", str(batch),
             "--ubatch-size", str(batch),
             "--parallel", "1",
+            "--jinja",
         ]
 
         log_file = log_path().open("a", encoding="utf-8", errors="replace")
         self._write_log(
-            f"Starting profile={profile.key} safe_mode={safe_mode} ctx={ctx} threads={threads} batch={batch}"
+            f"Starting Hammer model={profile.model_filename} safe_mode={safe_mode} ctx={ctx} threads={threads} batch={batch}"
         )
         try:
             proc = subprocess.Popen(
@@ -180,7 +205,7 @@ class LocalAIRuntime:
             log_file.close()
             raise
 
-        deadline = time.monotonic() + (55 if safe_mode else 45)
+        deadline = time.monotonic() + (60 if safe_mode else 50)
         url = f"http://127.0.0.1:{port}/health"
         while time.monotonic() < deadline:
             if proc.poll() is not None:
@@ -192,12 +217,12 @@ class LocalAIRuntime:
                 if r.status_code < 500:
                     with self._lock:
                         self._proc = proc
-                        self._profile_key = profile.key
+                        self._profile_key = profile.model_filename
                         self._port = port
                         self._safe_mode = safe_mode
                         self._log_handle = log_file
                     if status:
-                        status("Local AI ready")
+                        status("Hammer 2.1 ready")
                     return
             except requests.RequestException:
                 pass
@@ -208,10 +233,10 @@ class LocalAIRuntime:
         except Exception:
             pass
         log_file.close()
-        self._write_log("Local AI startup timed out")
+        self._write_log("Hammer startup timed out")
         raise TimeoutError("Local AI did not become ready in time")
 
-    def _chat_once(
+    def _post_completion(
         self,
         profile: AgentProfile,
         messages: list[dict],
@@ -219,22 +244,26 @@ class LocalAIRuntime:
         timeout: int,
         status: Callable[[str], None] | None,
         safe_mode: bool,
-    ) -> str:
+        tools: list[dict] | None = None,
+    ) -> dict:
         self.ensure_started(profile, status=status, safe_mode=safe_mode)
         with self._lock:
             port = self._port
             proc = self._proc
         if not port or not proc or proc.poll() is not None:
             raise RuntimeError("Local AI server is unavailable")
-        payload = {
+        payload: dict = {
             "model": "local",
             "messages": [{"role": "system", "content": profile.system_prompt}] + messages,
-            "temperature": 0.35,
+            "temperature": 0.0 if tools else 0.35,
             "max_tokens": max(64, min(int(max_tokens), 256 if not safe_mode else 160)),
             "stream": False,
         }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
         if status:
-            status("Thinking…")
+            status("Hammer is choosing an action…" if tools else "Hammer is thinking…")
         r = requests.post(
             f"http://127.0.0.1:{port}/v1/chat/completions",
             json=payload,
@@ -242,10 +271,23 @@ class LocalAIRuntime:
         )
         r.raise_for_status()
         data = r.json()
-        text = data["choices"][0]["message"]["content"].strip()
-        if not text:
-            raise RuntimeError("Local AI returned an empty response")
-        return _strip_reasoning(text)
+        return data["choices"][0]["message"]
+
+    def _run_with_retry(self, fn, status=None):
+        attempts = 2 if self.retry_once else 1
+        last_error: Exception | None = None
+        for attempt in range(attempts):
+            safe_mode = attempt > 0
+            try:
+                return fn(safe_mode)
+            except (requests.RequestException, OSError, RuntimeError, TimeoutError, KeyError, ValueError) as exc:
+                last_error = exc
+                self._write_log(f"AI attempt {attempt + 1} failed: {type(exc).__name__}: {exc}")
+                self.stop(wait=True)
+                if attempt + 1 < attempts and status:
+                    status("AI connection dropped — retrying once in low-memory mode…")
+                time.sleep(0.35)
+        raise LocalAIError("Local AI could not complete the request. Check Status for details.") from last_error
 
     def chat(
         self,
@@ -255,27 +297,59 @@ class LocalAIRuntime:
         timeout: int,
         status: Callable[[str], None] | None = None,
     ) -> str:
-        attempts = 2 if self.retry_once else 1
-        last_error: Exception | None = None
-        for attempt in range(attempts):
-            safe_mode = attempt > 0
-            try:
-                return self._chat_once(
-                    profile,
-                    messages,
-                    max_tokens=max_tokens,
-                    timeout=timeout,
-                    status=status,
-                    safe_mode=safe_mode,
-                )
-            except (requests.RequestException, OSError, RuntimeError, TimeoutError, KeyError, ValueError) as exc:
-                last_error = exc
-                self._write_log(f"Chat attempt {attempt + 1} failed: {type(exc).__name__}: {exc}")
-                self.stop(wait=True)
-                if attempt + 1 < attempts and status:
-                    status("AI connection dropped — retrying once in low-memory mode…")
-                time.sleep(0.35)
-        raise LocalAIError("Local AI could not complete the request. Check Activity for details.") from last_error
+        def run(safe_mode: bool):
+            message = self._post_completion(
+                profile, messages, max_tokens, timeout, status, safe_mode, tools=None
+            )
+            text = str(message.get("content") or "").strip()
+            if not text:
+                raise RuntimeError("Local AI returned an empty response")
+            return _strip_reasoning(text)
+        return self._run_with_retry(run, status=status)
+
+    def tool_call(
+        self,
+        profile: AgentProfile,
+        messages: list[dict],
+        tools: list[dict],
+        max_tokens: int,
+        timeout: int,
+        status: Callable[[str], None] | None = None,
+    ) -> dict:
+        """Ask Hammer for one structured tool choice.
+
+        llama.cpp may return OpenAI-style ``tool_calls`` or Hammer's textual
+        JSON format. Both are normalized to {name, arguments, content}.
+        """
+        def run(safe_mode: bool):
+            message = self._post_completion(
+                profile, messages, max_tokens, timeout, status, safe_mode, tools=tools
+            )
+            calls = message.get("tool_calls") or []
+            if calls:
+                call = calls[0] or {}
+                fn = call.get("function") or {}
+                args = fn.get("arguments") or {}
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except Exception:
+                        args = {}
+                return {"name": str(fn.get("name") or ""), "arguments": args if isinstance(args, dict) else {}, "content": str(message.get("content") or "")}
+
+            content = _strip_reasoning(str(message.get("content") or "").strip())
+            obj = _parse_json_object(content)
+            if obj and (obj.get("name") or obj.get("tool")):
+                args = obj.get("arguments", obj.get("params", {}))
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except Exception:
+                        args = {"value": args}
+                return {"name": str(obj.get("name") or obj.get("tool")), "arguments": args if isinstance(args, dict) else {}, "content": content}
+            return {"name": "respond", "arguments": {"message": content}, "content": content}
+
+        return self._run_with_retry(run, status=status)
 
 
 def _strip_reasoning(text: str) -> str:

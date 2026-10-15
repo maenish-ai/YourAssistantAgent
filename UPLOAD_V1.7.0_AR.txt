@@ -1,0 +1,19 @@
+Your Assistant Agent v1.7.0 — رفع المشروع الكامل إلى GitHub
+
+1) فك ضغط FULL_PROJECT_GITHUB_READY.zip.
+2) ارفع محتويات المجلد نفسه إلى جذر مستودع maenish-ai/YourAssistantAgent.
+3) تأكد أن .github/workflows يحتوي build-windows.yml فقط.
+4) اعمل Commit + Push إلى main مرة واحدة.
+5) افتح Actions وانتظر Build Windows Setup.
+6) حمّل Artifact: YourAssistantAgent-Windows-Setup.
+
+الموديل:
+- Hammer 2.1 0.5B Q4_K_M فقط.
+- GitHub Actions ينزله ويتحقق من SHA256 أثناء البناء.
+- الترخيص CC BY-NC 4.0؛ هذه النسخة للاستخدام الشخصي/غير التجاري.
+
+الواجهة:
+- Chat / المحادثة
+- Status / الحالة (تقرير حي)
+- Settings / الإعدادات
+- Advanced / متقدم

@@ -48,7 +48,7 @@ jobs:
         shell: pwsh
         run: |
           $env:PYTHONPATH = "$PWD\src"
-          python -c "import playwright; from yaa_lite.agent.tools import ToolRegistry; from yaa_lite.agent.smol_contract import Tool; print('Smart Agent dependencies OK')"
+          python -c "import playwright; from yaa_lite.agent.hammer_agent import HammerAgentRouter; from yaa_lite.agent.tools import ToolRegistry; print('Hammer Smart Agent dependencies OK')"
 
       - name: Run source startup self-test
         shell: pwsh
@@ -113,7 +113,8 @@ jobs:
             tests/test_resilient_ai_v150.py `
             tests/test_chat_shell_v150.py `
             tests/test_smart_agent_v160.py `
-            tests/test_sessions_v160.py
+            tests/test_sessions_v160.py `
+            tests/test_hammer_agent_v170.py
 
       - name: Build app folder
         shell: pwsh

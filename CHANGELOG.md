@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.7.0
+- Single visible Hammer 2.1 Smart Agent.
+- Removed visible Arabic/General agent chooser.
+- Added Hammer tool routing for Facebook tasks and ordinary conversation.
+- Added bilingual Chat / Status / Settings / Advanced shell.
+- Added live Facebook progress timeline.
+- Installer now downloads one verified Hammer Q4_K_M model only.
+
 ## 1.6.0
 - New ChatGPT-like sidebar/chat interface with recent conversations.
 - Integrated a safe smolagents-based Smart Agent tool layer.

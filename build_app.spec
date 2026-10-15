@@ -7,7 +7,7 @@ for folder in ("models", "runtime", "assets", "licenses"):
     p = root / folder
     if p.exists():
         datas.append((str(p), folder))
-for file_name in ("THIRD_PARTY_SMOLAGENTS.md",):
+for file_name in ("THIRD_PARTY_SMOLAGENTS.md", "THIRD_PARTY_HAMMER.md"):
     p = root / file_name
     if p.exists():
         datas.append((str(p), "."))
@@ -16,17 +16,18 @@ hiddenimports = [
     "yaa_lite",
     "yaa_lite.main",
     "yaa_lite.ui.app",
-    "yaa_lite.ui.agent_picker",
     "yaa_lite.ui.chat_window",
     "yaa_lite.ui.activity_view",
     "yaa_lite.ui.settings_view",
     "yaa_lite.ui.advanced_view",
     "yaa_lite.ui.resources",
+    "yaa_lite.ui.i18n",
     "yaa_lite.ai.engine",
     "yaa_lite.ai.profiles",
     "yaa_lite.ai.runtime",
     "yaa_lite.storage.db",
     "yaa_lite.agent.orchestrator",
+    "yaa_lite.agent.hammer_agent",
     "yaa_lite.agent.tools",
     "yaa_lite.agent.facebook_service",
     "yaa_lite.agent.legacy_smart",

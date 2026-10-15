@@ -1,10 +1,10 @@
 # Third-party notices
 
-This source package does not include model binaries or llama.cpp binaries.
-The Windows build workflow downloads them from their upstream projects.
+This source package does not include the large AI model binary or llama.cpp binary. The Windows build workflow downloads them from their upstream projects and verifies the configured SHA256 before packaging.
 
-- RightNowAI/RightNow-Arabic-0.5B-Turbo: Apache-2.0 (see upstream model repository).
-- Qwen3-0.6B and the selected GGUF quantization repository: Apache-2.0 (see upstream repositories).
-- llama.cpp: see the upstream ggml-org/llama.cpp repository for its license and notices.
+- **Hammer 2.1 0.5B** original model: `MadeAgents/Hammer2.1-0.5b` — repository declares **CC BY-NC 4.0**.
+- GGUF quantization used by this build: `Melvin56/Hammer2.1-0.5b-GGUF`, `hammer2.1-0.5b-Q4_K_M.gguf` — repository declares **CC BY-NC 4.0**.
+- **llama.cpp**: see `ggml-org/llama.cpp` upstream license/notices.
+- The lightweight tool-contract adapter remains based on concepts from **Hugging Face smolagents**, Apache-2.0; see `THIRD_PARTY_SMOLAGENTS.md` and `licenses/Apache-2.0-smolagents.txt`.
 
-Review all upstream licenses/notices before redistribution.
+This v1.7 build is intended for personal/non-commercial use because of the Hammer model license. Review and satisfy every upstream license before redistribution or commercial use.

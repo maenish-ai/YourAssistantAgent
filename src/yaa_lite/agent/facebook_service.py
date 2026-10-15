@@ -78,7 +78,7 @@ class FacebookService:
         # normal chat-only session.
         from ..facebook_backend.facebook import FacebookAutomation, FacebookConfig
 
-        locale = "ar-JO" if self.settings.selected_agent == "arabic" else "en-US"
+        locale = "ar-JO" if self.settings.interface_language != "en" else "en-US"
         return FacebookAutomation(FacebookConfig(
             locale=locale,
             browser_choice=self.settings.facebook_browser_choice or "auto",
@@ -182,11 +182,13 @@ class FacebookService:
         if not groups:
             self.activity("facebook_rule_no_groups", f"id={rule_id}; keyword={rule.get('group_keyword','')}")
             return
-        self.activity("facebook_rule_start", f"id={rule_id}; groups={len(groups)}")
+        self.activity("facebook_rule_start", f"id={rule_id}; groups={len(groups)}; keyword={rule.get('group_keyword','')}")
         try:
+            self.activity("facebook_opening", f"id={rule_id}; opening saved browser session")
             fb = self.fb()
             fb.ensure_logged_in()
             wanted = max(8, int(rule.get("post_offset") or 0) + 4)
+            self.activity("facebook_source_post_search", f"id={rule_id}; page={rule.get('source_page_url','')}; wanted={wanted}")
             posts = fb.find_recent_post_urls(str(rule.get("source_page_url") or ""), limit=min(wanted, 50))
             if not posts:
                 self.activity("facebook_rule_error", f"id={rule_id}; no source posts found")
@@ -198,6 +200,7 @@ class FacebookService:
                 self.activity("facebook_rule_error", f"id={rule_id}; post offset {offset}, found {len(posts)}")
                 return
             post_url = posts[offset]
+            self.activity("facebook_post_found", f"id={rule_id}; post={post_url}")
 
             submitted = 0
             skipped = 0
@@ -211,6 +214,7 @@ class FacebookService:
                     skipped += 1
                     continue
                 try:
+                    self.activity("facebook_group_share_start", f"{index + 1}/{len(groups)}; {group['name']}")
                     outcome = fb.share_post_to_group(
                         group_name=group["name"],
                         group_url=group["url"],
@@ -225,6 +229,6 @@ class FacebookService:
                     self.activity("facebook_share_error", f"{group['name']}: {type(exc).__name__}: {exc}")
                 if index < len(groups) - 1 and not self._stop_event.wait(interval):
                     continue
-            self.activity("facebook_rule_done", f"id={rule_id}; submitted={submitted}; skipped={skipped}")
+            self.activity("facebook_rule_done", f"id={rule_id}; total={len(groups)}; submitted={submitted}; skipped={skipped}")
         except Exception as exc:
             self.activity("facebook_rule_error", f"id={rule_id}; {type(exc).__name__}: {exc}")

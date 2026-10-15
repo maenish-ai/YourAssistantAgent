@@ -23,9 +23,15 @@ def data_dir() -> Path:
 
 @dataclass
 class Settings:
-    selected_agent: str = ""
-    remember_agent: bool = False
-    ai_timeout_seconds: int = 60
+    # Kept for database/backward compatibility. v1.7 exposes one assistant only.
+    selected_agent: str = "hammer"
+    remember_agent: bool = True
+
+    # Interface can be Arabic, English, or bilingual. Bilingual is the default
+    # because the user explicitly asked to see both labels.
+    interface_language: str = "bilingual"
+
+    ai_timeout_seconds: int = 75
     context_tokens: int = 768
     max_response_tokens: int = 160
     threads: int = 2
@@ -33,12 +39,11 @@ class Settings:
     auto_backup: bool = True
     retry_ai_once: bool = True
 
-    # Smart Agent v1.6
     smart_agent_enabled: bool = True
     confirm_external_actions: bool = True
     default_source_page: str = ""
     facebook_browser_choice: str = "auto"
-    smart_agent_framework: str = "smolagents-tools"
+    smart_agent_framework: str = "hammer2.1-tool-router"
 
     @classmethod
     def load(cls) -> "Settings":
@@ -52,14 +57,21 @@ class Settings:
             obj.context_tokens = max(512, min(int(obj.context_tokens), 1024))
             obj.max_response_tokens = max(96, min(int(obj.max_response_tokens), 256))
             obj.threads = max(1, min(int(obj.threads), 2))
-            obj.ai_timeout_seconds = max(30, min(int(obj.ai_timeout_seconds), 120))
-            if obj.selected_agent not in {"", "arabic", "general"}:
-                obj.selected_agent = "arabic"
+            obj.ai_timeout_seconds = max(30, min(int(obj.ai_timeout_seconds), 150))
+            if obj.interface_language not in {"bilingual", "ar", "en"}:
+                obj.interface_language = "bilingual"
+            # Migrate all previous visible agent choices to the single Hammer assistant.
+            obj.selected_agent = "hammer"
+            obj.remember_agent = True
+            obj.smart_agent_framework = "hammer2.1-tool-router"
             return obj
         except Exception:
             return cls()
 
     def save(self) -> None:
+        self.selected_agent = "hammer"
+        self.remember_agent = True
+        self.smart_agent_framework = "hammer2.1-tool-router"
         path = config_dir() / "settings.json"
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(asdict(self), ensure_ascii=False, indent=2), encoding="utf-8")

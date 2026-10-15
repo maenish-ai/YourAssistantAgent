@@ -5,6 +5,10 @@ on:
   push:
     branches: [ main ]
 
+concurrency:
+  group: your-assistant-agent-windows-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: windows-latest
@@ -15,8 +19,13 @@ jobs:
         with:
           python-version: '3.11'
           cache: 'pip'
+
       - name: Install Python dependencies
-        run: pip install -r requirements-dev.txt
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
       - name: Download and verify local AI models
         shell: pwsh
         run: |
@@ -28,37 +37,88 @@ jobs:
             $hash = (Get-FileHash $dest -Algorithm SHA256).Hash.ToLower()
             if ($hash -ne $x.sha256.ToLower()) { throw "SHA256 mismatch: $($x.filename)" }
           }
-      - name: Download latest llama.cpp Windows CPU runtime
+
+      - name: Download llama.cpp Windows x64 CPU runtime
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force runtime | Out-Null
-          $headers = @{ 'User-Agent'='YourAssistantAgent-Build' }
-          $release = Invoke-RestMethod -Headers $headers https://api.github.com/repos/ggml-org/llama.cpp/releases/latest
-          $asset = $release.assets | Where-Object { $_.name -match 'bin-win-cpu-x64\.zip$' } | Select-Object -First 1
-          if (-not $asset) { throw 'Could not locate llama.cpp Windows x64 CPU asset' }
-          Invoke-WebRequest -Headers $headers -Uri $asset.browser_download_url -OutFile llama.zip
+          $headers = @{
+            'User-Agent' = 'YourAssistantAgent-Build'
+            'Accept' = 'application/vnd.github+json'
+          }
+
+          # llama.cpp stable releases do not always contain Windows binaries.
+          # Search recent releases (including prereleases/build releases) for the
+          # actual Windows x64 CPU ZIP instead of assuming /releases/latest has it.
+          $releases = Invoke-RestMethod -Headers $headers -Uri 'https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=30'
+          $asset = $null
+          $releaseTag = $null
+          foreach ($release in $releases) {
+            if ($release.draft) { continue }
+            $candidate = $release.assets | Where-Object {
+              $_.name -match '^llama-b[0-9]+-bin-win-cpu-x64[.]zip$' -or
+              $_.name -match '^llama-.*-bin-win-cpu-x64[.]zip$'
+            } | Select-Object -First 1
+            if ($candidate) {
+              $asset = $candidate
+              $releaseTag = $release.tag_name
+              break
+            }
+          }
+
+          # Reproducible fallback known to contain the CPU runtime if GitHub's
+          # releases API shape/ranking changes temporarily.
+          if (-not $asset) {
+            Write-Warning 'Recent release scan found no Windows x64 CPU asset; using pinned fallback b11635.'
+            $downloadUrl = 'https://github.com/ggml-org/llama.cpp/releases/download/b11635/llama-b11635-bin-win-cpu-x64.zip'
+          } else {
+            $downloadUrl = $asset.browser_download_url
+            Write-Host "Using llama.cpp $releaseTag asset: $($asset.name)"
+          }
+
+          Invoke-WebRequest -Headers $headers -Uri $downloadUrl -OutFile llama.zip -UseBasicParsing
+          Remove-Item llama_tmp -Recurse -Force -ErrorAction SilentlyContinue
           Expand-Archive llama.zip -DestinationPath llama_tmp -Force
-          Copy-Item (Get-ChildItem llama_tmp -Recurse -Filter 'llama-server.exe' | Select-Object -First 1).FullName runtime\llama-server.exe
+
+          $server = Get-ChildItem llama_tmp -Recurse -Filter 'llama-server.exe' | Select-Object -First 1
+          if (-not $server) { throw 'llama-server.exe is missing from downloaded llama.cpp archive' }
+          Copy-Item $server.FullName runtime\llama-server.exe -Force
           Get-ChildItem llama_tmp -Recurse -Filter '*.dll' | ForEach-Object { Copy-Item $_.FullName runtime\ -Force }
+
+          if (-not (Test-Path 'runtime\llama-server.exe')) { throw 'llama-server.exe was not staged' }
+          Write-Host 'llama.cpp runtime staged successfully.'
+
       - name: Run tests
         shell: pwsh
         run: |
           $env:PYTHONPATH = "$PWD\src"
-          pytest -q
+          python -m pytest -q
+
       - name: Build app folder
-        run: pyinstaller --clean build_app.spec
+        shell: pwsh
+        run: python -m PyInstaller --clean build_app.spec
+
       - name: Build installer
         shell: pwsh
         run: |
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\YourAssistantAgent.iss
+          $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+          }
+          & $iscc installer\YourAssistantAgent.iss
+
       - name: Create SHA256
         shell: pwsh
         run: |
           $f = Get-ChildItem output\*.exe | Select-Object -First 1
+          if (-not $f) { throw 'Installer EXE was not created' }
           (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower() | Set-Content ($f.FullName + '.sha256.txt')
+
       - uses: actions/upload-artifact@v4
         with:
           name: YourAssistantAgent-Windows-Setup
           path: |
             output/*.exe
             output/*.sha256.txt
+          if-no-files-found: error
+          retention-days: 30

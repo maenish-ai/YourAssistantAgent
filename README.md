@@ -1,8 +1,8 @@
-# Your Assistant Agent v1.4.0 — Lite Agent Picker
+# Your Assistant Agent v1.4.1 — Lite Agent Picker
 
 A clean Windows-first rebuild focused on 4 GB RAM laptops and avoiding UI freezes.
 
-## What changed in v1.4.0
+## What changed in v1.4.1
 
 - **Agent picker before chat**: Arabic Agent or General Agent.
 - **Only one local model can be loaded at a time.**

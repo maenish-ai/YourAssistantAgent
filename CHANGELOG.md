@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.1
+- Fixed llama.cpp Windows runtime discovery in GitHub Actions.
+- Added recent-release scan + pinned fallback.
+- Added workflow concurrency and runtime verification.
+- Bumped version to 1.4.1.
+
 ## 1.4.0
 - New pre-chat Arabic/General agent picker.
 - Lazy local-AI startup.

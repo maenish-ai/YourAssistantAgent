@@ -1,5 +1,5 @@
 #define MyAppName "Your Assistant Agent"
-#define MyAppVersion "1.4.0"
+#define MyAppVersion "1.4.1"
 #define MyAppExeName "YourAssistantAgent.exe"
 
 [Setup]
@@ -9,7 +9,7 @@ AppVersion={#MyAppVersion}
 DefaultDirName={autopf}\Your Assistant Agent
 DefaultGroupName={#MyAppName}
 OutputDir=..\output
-OutputBaseFilename=YourAssistantAgent-Windows-Setup-v1.4.0
+OutputBaseFilename=YourAssistantAgent-Windows-Setup-v1.4.1
 Compression=lzma2
 SolidCompression=yes
 ArchitecturesAllowed=x64compatible

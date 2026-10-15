@@ -1,77 +1,91 @@
-# Your Assistant Agent v1.4.3 — Lite Agent Picker
+# Your Assistant Agent v1.6.0
 
-A clean Windows-first rebuild focused on 4 GB RAM laptops and avoiding UI freezes.
+A lightweight Windows desktop assistant with a **ChatGPT-like compact interface**, local Arabic/General AI, and a controlled Smart Agent tool layer.
 
-## What changed in v1.4.3
+## What changed in v1.6
 
-- **Agent picker before chat**: Arabic Agent or General Agent.
-- **Only one local model can be loaded at a time.**
-- **Lazy AI loading**: opening the app and entering chat does not load a model. The selected model starts only when a real AI request needs it.
-- **GUI never waits for AI**: model startup and inference run on a background worker thread.
-- **Enter sends / Shift+Enter inserts a new line.**
-- **Fast path for tiny greetings** so messages such as `كيف حالك؟` do not boot a 400+ MB model unnecessarily.
-- **4 GB defaults**: 1024-token context, 2 CPU threads, 220 max response tokens, single parallel slot.
-- **Stop AI** button releases the model process from memory.
-- SQLite uses WAL mode so chat writes do not block the interface.
-- Source repository stays small. GitHub Actions downloads and verifies both GGUF files during the Windows build.
+The application is now conversation-first:
 
-## Local AI profiles
+- A left sidebar contains **New chat**, recent conversations, **Activity**, **Settings**, **Advanced**, and agent switching.
+- The center is the chat. `Enter` sends; `Shift+Enter` adds a new line.
+- Simple conversation such as **"كيف حالك؟"**, **"شو أخبارك؟"** and greetings works as normal chat. Common greetings answer instantly without loading the local model.
+- Work instructions are routed through the **Smart Agent**. The agent creates a readable plan, counts matching saved Facebook groups, asks for approval, and accepts natural follow-up edits such as **"خليها الساعة 9"** before saving.
+- Chat conversations are stored as separate sessions and shown in the sidebar.
 
-### Arabic Agent
-`RightNowAI/RightNow-Arabic-0.5B-Turbo` — Q4_K_M, about 424 MB.
+## Smart Agent architecture
 
-### General Agent
-`Qwen3-0.6B` — Q4_K_M quantization used by this build, about 484 MB.
+v1.6 uses a **lightweight vendored smolagents-compatible tool contract** derived from the Apache-2.0 Hugging Face project, while keeping execution restricted to explicit application tools. We intentionally do **not** expose `CodeAgent` or arbitrary Python execution on the user's computer.
 
-The installer contains both model files, but the app never loads both into RAM simultaneously.
+Current allow-listed tools include:
 
-## Run from source
+- count saved Facebook groups by natural-language keyword;
+- discover/refresh joined Facebook groups;
+- read Facebook connection status;
+- save an approved Facebook sharing schedule;
+- run a saved Facebook rule now.
 
-Python 3.11+ is recommended.
+The local conversation model and Smart Agent are separate responsibilities:
 
-```powershell
-py -3.11 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-$env:PYTHONPATH = "$PWD\src"
-python -m yaa_lite.main
-```
+1. **Conversation model** — Arabic/General natural conversation and explanations.
+2. **Smart Agent planner** — recognizes supported work instructions and builds a plan.
+3. **Tool layer** — performs only approved, allow-listed actions.
 
-For local AI from source, place `llama-server.exe` and its required DLLs under `runtime/`, and place the model files under `models/` using the names in `models.manifest.json`.
+This means a normal message such as **"كيف حالك؟"** still receives a normal reply; it is not treated as a tool request.
 
-## Tests
+## Facebook Smart Agent flow
 
-```powershell
-pip install -r requirements-dev.txt
-$env:PYTHONPATH = "$PWD\src"
-pytest -q
-```
+Example:
 
-## GitHub build
+> غداً الساعة 8 مساء شارك آخر منشور على المجموعات التي يوجد في اسمها كلمة خلدة
 
-Push the repository to `main`, then open **Actions → Build Windows Setup**. The workflow:
+The assistant previews:
 
-1. installs dependencies;
-2. downloads both GGUF models;
-3. verifies their SHA-256 hashes;
-4. downloads the latest Windows x64 CPU llama.cpp runtime;
-5. runs tests;
-6. builds a PyInstaller folder;
-7. creates one Inno Setup installer artifact.
+- source page;
+- date/time;
+- latest/previous post selection;
+- target group keyword;
+- current matching group count and examples;
+- delay between groups;
+- no-repeat window;
+- Pending Approval behavior.
 
-## Backup
+It then asks for approval. The user can answer **"نعم"**, **"إلغاء"**, or edit the preview naturally before approval.
 
-`src/yaa_lite/backup/crypto_backup.py` provides AES-256-GCM encrypted `.yaa` snapshots. The intended cross-device flow is to choose a Google Drive for desktop folder in Settings and save encrypted backups there. The recovery key must be stored separately.
+Posts accepted by Facebook for group-admin review are recorded as **Pending Approval**, not as failed submissions.
 
-## Important connector note
+## Interface
 
-The lightweight shell deliberately does **not** launch Facebook/browser discovery at startup. Connector work should be invoked only when the user explicitly requests it and should run in a separate worker/process, so a slow browser or network request cannot freeze the chat UI.
+The main shell is intentionally similar to modern chat applications:
 
-## v1.4.3 packaging / trust hardening
+- **Chat** is the default screen.
+- **Settings** lives in the lower-left sidebar rather than occupying the main interface.
+- **Activity** contains technical events and errors instead of dumping them into the conversation.
+- **Advanced** contains Facebook login/session/group discovery and diagnostics.
 
-- Stable absolute-import launcher fixes the frozen-EXE relative-import crash.
-- Original purple/blue robot-orbit branding is embedded in the EXE, splash, picker, chat header and installer.
-- Windows file metadata identifies product, company and version.
-- PyInstaller remains one-folder with UPX disabled.
-- GitHub Actions runs a packaged `--self-test` before publishing.
-- Optional Authenticode signing is enabled when `WINDOWS_SIGNING_CERT_BASE64` and `WINDOWS_SIGNING_CERT_PASSWORD` secrets are configured.
+## 4 GB RAM behavior
+
+- No model loads at app startup.
+- Only one local model is loaded at a time.
+- Default: 768 context tokens, 2 CPU threads, 160 reply tokens.
+- Local AI runs outside the Tk UI thread.
+- If llama.cpp drops the connection, it retries once in low-memory mode.
+- Browser automation is lazy and does not launch at app startup.
+
+## Local AI models
+
+- Arabic Agent: `RightNow-Arabic-0.5B-Turbo-q4_k_m.gguf`
+- General Agent: `Qwen3-0.6B.Q4_K_M.gguf`
+
+GitHub Actions downloads and verifies the model files and llama.cpp Windows runtime during the build.
+
+## Branding and trust
+
+The original Your Assistant Agent branding remains on the splash, executable icon, taskbar icon, installer and uninstall metadata. The workflow supports optional Authenticode signing when a real code-signing certificate is configured. It does not attempt to bypass antivirus or SmartScreen.
+
+## GitHub Actions
+
+The project ships exactly one workflow:
+
+`.github/workflows/build-windows.yml`
+
+It verifies the Smart Agent dependencies, runs tests, downloads local models and llama.cpp, builds the one-folder PyInstaller application, runs a packaged startup self-test, optionally signs, builds the Inno Setup installer and uploads the Windows Setup artifact.

@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.6.0
+- New ChatGPT-like sidebar/chat interface with recent conversations.
+- Integrated a safe smolagents-based Smart Agent tool layer.
+- Added preview, approval, cancellation and natural follow-up edits for Facebook work instructions.
+- Added real on-demand Facebook connection/group discovery and lightweight scheduled rule execution.
+- Normal conversation remains chat; common Arabic greetings answer instantly.
+- Preserved low-memory local AI behavior, branding, signing readiness and one workflow.
+
+## 1.5.0
+- Restored Chat / Activity / Settings / Advanced application shell.
+- Added resilient local-AI retry and persistent diagnostics.
+- Tuned low-memory fallback for 4 GB laptops.
+- Kept one GitHub Actions workflow and existing startup/branding/signing fixes.
+
 ## 1.4.3
 - Fixed packaged startup import crash.
 - Restored full original branding.

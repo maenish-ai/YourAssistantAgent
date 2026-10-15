@@ -10,7 +10,7 @@ def _set_windows_app_id() -> None:
         return
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-            "YourAssistantAgent.Desktop.1.4.3"
+            "YourAssistantAgent.Desktop.1.6.0"
         )
     except Exception:
         pass
@@ -20,6 +20,8 @@ def _self_test() -> int:
     """Fast packaged-startup check used by CI before publishing the installer."""
     from .ui.app import App  # noqa: F401 - import itself is the important test
     from .ui.resources import asset_path
+    from .agent.orchestrator import SmartAgentController  # noqa: F401
+    from .agent.tools import ToolRegistry  # noqa: F401
 
     required = (
         "icon.ico",

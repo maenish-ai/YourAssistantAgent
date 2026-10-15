@@ -1,97 +1,166 @@
 from __future__ import annotations
 
 import queue
+import re
 import threading
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, ttk
 
+from ..agent.facebook_service import FacebookService
+from ..agent.orchestrator import SmartAgentController
 from ..ai.engine import ChatEngine
 from ..ai.profiles import get_profile
-from ..ai.runtime import LocalAIRuntime
+from ..ai.runtime import LocalAIError, LocalAIRuntime
 from ..config import Settings
 from ..storage.db import ChatDB
 from . import theme
-from .resources import asset_path
+
+_ARABIC_RE = re.compile(r"[\u0600-\u06ff]")
+
 
 class ChatWindow(ttk.Frame):
-    def __init__(self, master, agent_key: str, settings: Settings, on_change_agent):
+    def __init__(
+        self,
+        master,
+        agent_key: str,
+        settings: Settings,
+        session_id: int,
+        facebook_service: FacebookService,
+        on_activity=None,
+        on_session_title_changed=None,
+    ):
         super().__init__(master, padding=0)
         self.settings = settings
         self.profile = get_profile(agent_key)
-        self.on_change_agent = on_change_agent
+        self.session_id = int(session_id)
+        self.on_activity = on_activity
+        self.on_session_title_changed = on_session_title_changed
         self.db = ChatDB()
-        self.runtime = LocalAIRuntime(settings.context_tokens, settings.threads)
+        self.runtime = LocalAIRuntime(
+            settings.context_tokens,
+            settings.threads,
+            retry_once=settings.retry_ai_once,
+        )
         self.engine = ChatEngine(self.runtime)
+        self.controller = SmartAgentController(self.db, settings, self.engine, facebook_service)
         self.result_q: queue.Queue = queue.Queue()
         self.busy = False
         self.attachments: list[str] = []
-        self._brand_image = None
         self._build()
         self._load_history()
         self.after(100, self._poll_results)
 
+    @property
+    def agent_key(self) -> str:
+        return self.profile.key
+
     def _build(self):
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(1, weight=1)
-        top = ttk.Frame(self, padding=(16, 10))
-        top.grid(row=0, column=0, sticky="ew")
-        top.columnconfigure(2, weight=1)
-        try:
-            self._brand_image = tk.PhotoImage(file=str(asset_path("brand_mark_64.png")))
-            ttk.Label(top, image=self._brand_image).grid(row=0, column=0, sticky="w", padx=(0, 8))
-        except Exception:
-            pass
-        ttk.Label(top, text="Your Assistant Agent", style="CardTitle.TLabel").grid(row=0, column=1, sticky="w")
-        self.agent_label = ttk.Label(top, text=f"{self.profile.title} • AI loads on first real request", style="Muted.TLabel")
-        self.agent_label.grid(row=0, column=2, sticky="w", padx=12)
-        ttk.Button(top, text="Change agent", command=self._change_agent).grid(row=0, column=3, padx=4)
-        ttk.Button(top, text="Stop AI", command=self._stop_ai).grid(row=0, column=4, padx=4)
+        self.rowconfigure(0, weight=1)
 
-        body = ttk.Frame(self, padding=(18, 6))
-        body.grid(row=1, column=0, sticky="nsew")
+        body = ttk.Frame(self, padding=(26, 10, 26, 0))
+        body.grid(row=0, column=0, sticky="nsew")
         body.columnconfigure(0, weight=1)
         body.rowconfigure(0, weight=1)
-        self.chat = tk.Text(body, wrap="word", state="disabled", relief="flat", bg=theme.BG, fg=theme.TEXT, font=("Segoe UI", 10), padx=8, pady=8)
+
+        self.chat = tk.Text(
+            body,
+            wrap="word",
+            state="disabled",
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=0,
+            bg=theme.BG,
+            fg=theme.TEXT,
+            font=("Segoe UI", 10),
+            padx=16,
+            pady=12,
+            spacing1=2,
+            spacing3=6,
+        )
         self.chat.grid(row=0, column=0, sticky="nsew")
         scroll = ttk.Scrollbar(body, orient="vertical", command=self.chat.yview)
         scroll.grid(row=0, column=1, sticky="ns")
         self.chat.configure(yscrollcommand=scroll.set)
-        self.chat.tag_configure("user_name", font=("Segoe UI", 9, "bold"), foreground=theme.ACCENT, spacing1=8)
-        self.chat.tag_configure("assistant_name", font=("Segoe UI", 9, "bold"), foreground="#087f5b", spacing1=8)
-        self.chat.tag_configure("msg", spacing3=8, lmargin1=6, lmargin2=6)
 
-        composer = ttk.Frame(self, padding=(18, 10, 18, 16))
-        composer.grid(row=2, column=0, sticky="ew")
+        self.chat.tag_configure("user_name", font=("Segoe UI", 9, "bold"), foreground=theme.ACCENT, spacing1=12)
+        self.chat.tag_configure("assistant_name", font=("Segoe UI", 9, "bold"), foreground="#087f5b", spacing1=12)
+        self.chat.tag_configure("msg_ltr", spacing3=12, lmargin1=8, lmargin2=8, rmargin=40, justify="left")
+        self.chat.tag_configure("msg_rtl", spacing3=12, lmargin1=40, lmargin2=40, rmargin=8, justify="right")
+        self.chat.tag_configure("system_hint", foreground=theme.MUTED, justify="center", spacing1=8, spacing3=10)
+
+        composer_outer = ttk.Frame(self, padding=(26, 8, 26, 18))
+        composer_outer.grid(row=1, column=0, sticky="ew")
+        composer_outer.columnconfigure(0, weight=1)
+
+        composer = tk.Frame(
+            composer_outer,
+            bg="#ffffff",
+            highlightbackground="#d0d5dd",
+            highlightcolor=theme.ACCENT,
+            highlightthickness=1,
+            bd=0,
+        )
+        composer.grid(row=0, column=0, sticky="ew")
         composer.columnconfigure(0, weight=1)
-        self.input = tk.Text(composer, height=3, wrap="word", relief="solid", bd=1, font=("Segoe UI", 10), padx=8, pady=7)
-        self.input.grid(row=0, column=0, sticky="ew")
+
+        self.input = tk.Text(
+            composer,
+            height=3,
+            wrap="word",
+            relief="flat",
+            bd=0,
+            highlightthickness=0,
+            bg="#ffffff",
+            fg=theme.TEXT,
+            font=("Segoe UI", 10),
+            padx=12,
+            pady=10,
+        )
+        self.input.grid(row=0, column=0, columnspan=3, sticky="ew")
         self.input.bind("<Return>", self._on_enter)
         self.input.bind("<Shift-Return>", self._on_shift_enter)
-        controls = ttk.Frame(composer)
-        controls.grid(row=1, column=0, sticky="ew", pady=(8, 0))
-        self.status = ttk.Label(controls, text="Ready", style="Muted.TLabel")
-        self.status.pack(side="left")
-        ttk.Button(controls, text="Attach", command=self._attach).pack(side="right", padx=4)
-        self.send_btn = ttk.Button(controls, text="Send", style="Accent.TButton", command=self.send)
-        self.send_btn.pack(side="right")
+
+        self.attach_btn = ttk.Button(composer, text="＋ إرفاق", command=self._attach)
+        self.attach_btn.grid(row=1, column=0, sticky="w", padx=(8, 4), pady=(0, 8))
+        self.status = ttk.Label(composer, text="جاهز", style="Muted.TLabel")
+        self.status.grid(row=1, column=1, sticky="e", padx=8, pady=(0, 8))
+        self.send_btn = ttk.Button(composer, text="إرسال  ➤", style="Accent.TButton", command=self.send)
+        self.send_btn.grid(row=1, column=2, sticky="e", padx=(4, 8), pady=(0, 8))
+
+        ttk.Label(
+            composer_outer,
+            text="Enter للإرسال • Shift+Enter لسطر جديد • Smart Agent ينفذ فقط الأدوات المسموحة وبعد الموافقة",
+            style="Muted.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(6, 0))
 
     def _load_history(self):
-        for m in self.db.recent_messages(self.profile.key, 30):
+        history = self.db.recent_messages(self.profile.key, 80, session_id=self.session_id)
+        if not history:
+            self._append_hint("احكي معي بشكل طبيعي. المحادثة العادية تظل محادثة، وأوامر العمل تتحول إلى خطة قبل التنفيذ.")
+        for m in history:
             self._append(m["role"], m["content"])
+
+    def _append_hint(self, text: str):
+        self.chat.configure(state="normal")
+        self.chat.insert("end", text.strip() + "\n", "system_hint")
+        self.chat.configure(state="disabled")
+        self.chat.see("end")
 
     def _append(self, role: str, text: str):
         self.chat.configure(state="normal")
         if role == "user":
-            self.chat.insert("end", "You\n", "user_name")
+            self.chat.insert("end", "أنت\n" if _ARABIC_RE.search(text) else "You\n", "user_name")
         else:
-            self.chat.insert("end", f"{self.profile.title}\n", "assistant_name")
-        self.chat.insert("end", text.strip() + "\n", "msg")
+            self.chat.insert("end", "Your Assistant Agent\n", "assistant_name")
+        tag = "msg_rtl" if _ARABIC_RE.search(text) else "msg_ltr"
+        self.chat.insert("end", text.strip() + "\n", tag)
         self.chat.configure(state="disabled")
         self.chat.see("end")
 
     def _on_enter(self, event):
-        if event.state & 0x0001:  # shift on Windows/Tk
+        if event.state & 0x0001:
             return None
         self.send()
         return "break"
@@ -100,10 +169,10 @@ class ChatWindow(ttk.Frame):
         return None
 
     def _attach(self):
-        paths = filedialog.askopenfilenames(title="Attach files")
+        paths = filedialog.askopenfilenames(title="إرفاق صور أو ملفات")
         if paths:
             self.attachments.extend(paths)
-            self.status.config(text=f"{len(self.attachments)} attachment(s) ready")
+            self.status.config(text=f"{len(self.attachments)} مرفق")
 
     def send(self):
         if self.busy:
@@ -116,45 +185,73 @@ class ChatWindow(ttk.Frame):
             text_for_ai = f"{text}\n\nAttached task files: {names}"
         else:
             text_for_ai = text
+
         self.input.delete("1.0", "end")
         self._append("user", text)
-        self.db.add_message("user", text, self.profile.key)
-        history = self.db.recent_messages(self.profile.key, 8)
+        self.db.add_message("user", text, self.profile.key, self.session_id)
+        self.db.rename_session_from_first_message(self.session_id, text)
+        if self.on_session_title_changed:
+            self.on_session_title_changed()
+        self.db.add_activity("chat_request", f"session={self.session_id}; {self.profile.key}: {text[:500]}")
+        history = self.db.recent_messages(self.profile.key, 10, session_id=self.session_id)
         self.busy = True
         self.send_btn.state(["disabled"])
-        self.status.config(text="Working in background…")
+        self.status.config(text="يفهم طلبك…")
 
         def work():
             try:
-                reply = self.engine.reply(
-                    self.profile, history[:-1], text_for_ai,
+                reply = self.controller.handle(
+                    self.profile,
+                    history[:-1],
+                    text_for_ai,
+                    session_id=self.session_id,
                     max_tokens=self.settings.max_response_tokens,
                     timeout=self.settings.ai_timeout_seconds,
                     status=lambda s: self.result_q.put(("status", s)),
                 )
                 self.result_q.put(("reply", reply.text))
+            except LocalAIError as e:
+                detail = f"{type(e.__cause__).__name__ if e.__cause__ else 'LocalAIError'}: {e.__cause__ or e}"
+                self.result_q.put(("ai_error", detail))
             except Exception as e:
-                self.result_q.put(("error", str(e)))
-        threading.Thread(target=work, daemon=True, name="yaa-ai-worker").start()
+                self.result_q.put(("ai_error", f"{type(e).__name__}: {e}"))
+
+        threading.Thread(target=work, daemon=True, name="yaa-chat-agent-worker").start()
 
     def _poll_results(self):
         try:
             while True:
                 kind, value = self.result_q.get_nowait()
                 if kind == "status":
-                    self.status.config(text=value)
+                    friendly = {
+                        "Loading local AI…": "يتم تحميل الذكاء المحلي…",
+                        "Local AI ready": "الذكاء المحلي جاهز",
+                        "Thinking…": "يفكر…",
+                    }.get(value, value)
+                    self.status.config(text=friendly)
                 elif kind == "reply":
                     self._append("assistant", value)
-                    self.db.add_message("assistant", value, self.profile.key)
-                    self._finish("Ready")
+                    self.db.add_message("assistant", value, self.profile.key, self.session_id)
+                    self.db.add_activity("chat_reply", f"session={self.session_id}; {value[:500]}")
+                    self._finish("جاهز")
                     self.attachments.clear()
-                elif kind == "error":
-                    self._append("assistant", "تعذر تشغيل الذكاء المحلي الآن. الواجهة ما زالت شغالة.\n" + value)
+                    if self.on_activity:
+                        self.on_activity()
+                elif kind == "ai_error":
                     self.db.add_activity("ai_error", value)
-                    self._finish("AI error — app still responsive")
+                    friendly = (
+                        "تعذر على الذكاء المحلي إكمال الرد الآن. البرنامج ما زال شغال، والتفاصيل موجودة في النشاط."
+                        if self.profile.key == "arabic"
+                        else "The local AI could not complete the reply. The app is still running; see Activity for details."
+                    )
+                    self._append("assistant", friendly)
+                    self._finish("تعذر الرد — راجع النشاط")
+                    if self.on_activity:
+                        self.on_activity()
         except queue.Empty:
             pass
-        self.after(100, self._poll_results)
+        if self.winfo_exists():
+            self.after(100, self._poll_results)
 
     def _finish(self, status):
         self.busy = False
@@ -162,13 +259,16 @@ class ChatWindow(ttk.Frame):
         self.status.config(text=status)
         self.input.focus_set()
 
-    def _stop_ai(self):
-        threading.Thread(target=self.runtime.stop, daemon=True).start()
-        self.status.config(text="AI stopping in background…")
+    def stop_ai(self):
+        threading.Thread(target=lambda: self.runtime.stop(wait=True), daemon=True, name="yaa-stop-ai").start()
+        self.status.config(text="جاري إيقاف AI…")
+        self.db.add_activity("ai_stop", self.profile.key)
 
-    def _change_agent(self):
-        self._stop_ai()
-        self.on_change_agent()
+    def apply_settings(self, settings: Settings):
+        self.settings = settings
+        self.runtime.reconfigure(settings.context_tokens, settings.threads, settings.retry_ai_once)
+        self.controller.update_settings(settings)
+        self.status.config(text="تم تطبيق الإعدادات")
 
     def shutdown(self):
-        self.runtime.stop()
+        self.runtime.stop(wait=False)

@@ -1,17 +1,13 @@
-رفع المشروع الكامل v1.4.2 إلى GitHub
-====================================
+Your Assistant Agent v1.6.0 — رفع المشروع الكامل إلى GitHub
 
-هذا ZIP يحتوي Workflow واحد فقط:
-.github/workflows/build-windows.yml
+1) فك ضغط ملف FULL_PROJECT_GITHUB_READY.zip.
+2) ارفع محتويات المجلد نفسه إلى جذر مستودع maenish-ai/YourAssistantAgent (وليس مجلدًا خارجيًا باسم الملف).
+3) تأكد أن .github/workflows يحتوي ملفًا واحدًا فقط: build-windows.yml
+4) اعمل Commit + Push إلى main مرة واحدة.
+5) افتح Actions وانتظر Build Windows Setup.
+6) حمّل Artifact: YourAssistantAgent-Windows-Setup.
 
-المستودع القديم عندك ما زال قد يحتوي ملف Workflow قديم اسمه:
-.github/workflows/windows-build.yml
-
-مهم: رفع ZIP جديد من واجهة GitHub لا يحذف الملفات القديمة تلقائياً.
-لذلك احذف windows-build.yml مرة واحدة من المستودع، ثم ارفع محتويات هذا المشروع واعمل Commit واحد.
-
-بعدها يكون البناء من Workflow واحد فقط: Build Windows Setup.
-
-إصلاح الخطأ الأحمر الحالي:
-الخطأ كان في مرحلة الاختبارات لأن مستودعك ما زال يحتوي اختبارات من الإصدارات القديمة تتطلب Playwright.
-الـWorkflow الجديد يشغّل فقط اختبارات نسخة Lite الحالية الخمسة قبل بناء البرنامج.
+ملاحظات:
+- موديلات الذكاء المحلي و llama.cpp لا تُرفع إلى المستودع؛ GitHub Actions ينزلها أثناء البناء.
+- شاشة Chat هي الرئيسية. Settings وActivity وAdvanced موجودة في الشريط الجانبي.
+- Smart Agent ينشئ Preview قبل أي إجراء خارجي إذا كان خيار التأكيد مفعّلًا.

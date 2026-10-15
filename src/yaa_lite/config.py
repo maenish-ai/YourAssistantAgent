@@ -25,12 +25,20 @@ def data_dir() -> Path:
 class Settings:
     selected_agent: str = ""
     remember_agent: bool = False
-    ai_timeout_seconds: int = 75
-    context_tokens: int = 1024
-    max_response_tokens: int = 220
+    ai_timeout_seconds: int = 60
+    context_tokens: int = 768
+    max_response_tokens: int = 160
     threads: int = 2
     drive_backup_folder: str = ""
     auto_backup: bool = True
+    retry_ai_once: bool = True
+
+    # Smart Agent v1.6
+    smart_agent_enabled: bool = True
+    confirm_external_actions: bool = True
+    default_source_page: str = ""
+    facebook_browser_choice: str = "auto"
+    smart_agent_framework: str = "smolagents-tools"
 
     @classmethod
     def load(cls) -> "Settings":
@@ -40,7 +48,14 @@ class Settings:
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
             safe = {k: v for k, v in raw.items() if k in cls.__dataclass_fields__}
-            return cls(**safe)
+            obj = cls(**safe)
+            obj.context_tokens = max(512, min(int(obj.context_tokens), 1024))
+            obj.max_response_tokens = max(96, min(int(obj.max_response_tokens), 256))
+            obj.threads = max(1, min(int(obj.threads), 2))
+            obj.ai_timeout_seconds = max(30, min(int(obj.ai_timeout_seconds), 120))
+            if obj.selected_agent not in {"", "arabic", "general"}:
+                obj.selected_agent = "arabic"
+            return obj
         except Exception:
             return cls()
 

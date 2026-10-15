@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import socket
 import subprocess
@@ -12,18 +11,27 @@ from typing import Callable
 
 import requests
 
+from ..config import data_dir
 from .profiles import AgentProfile
 
 
+class LocalAIError(RuntimeError):
+    """User-facing local AI failure. The technical detail is written to the AI log."""
+
+
 def bundle_root() -> Path:
-    # PyInstaller one-folder builds place bundled data under sys._MEIPASS
-    # (normally dist/YourAssistantAgent/_internal). From source, use repo root.
     if getattr(sys, "frozen", False):
         meipass = getattr(sys, "_MEIPASS", None)
         if meipass:
             return Path(meipass).resolve()
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parents[3]
+
+
+def log_path() -> Path:
+    p = data_dir() / "logs"
+    p.mkdir(parents=True, exist_ok=True)
+    return p / "local_ai.log"
 
 
 def find_llama_server() -> Path:
@@ -55,71 +63,130 @@ def _free_port() -> int:
 
 
 class LocalAIRuntime:
-    """Runs exactly one llama.cpp server at a time.
+    """Lazy one-model-at-a-time llama.cpp runtime tuned for 4 GB Windows laptops."""
 
-    The process is started/stopped outside the GUI thread by callers. No model is
-    loaded at application startup; lazy loading avoids the previous UI freeze.
-    """
-
-    def __init__(self, context_tokens: int = 1024, threads: int = 2):
-        self.context_tokens = max(512, min(int(context_tokens), 2048))
-        self.threads = max(1, min(int(threads), 4))
+    def __init__(self, context_tokens: int = 768, threads: int = 2, retry_once: bool = True):
+        self.context_tokens = max(512, min(int(context_tokens), 1024))
+        self.threads = max(1, min(int(threads), 2))
+        self.retry_once = bool(retry_once)
         self._proc: subprocess.Popen | None = None
         self._profile_key: str | None = None
         self._port: int | None = None
+        self._safe_mode = False
         self._lock = threading.RLock()
+        self._log_handle = None
 
     @property
     def loaded_profile(self) -> str | None:
         return self._profile_key
 
-    def stop(self) -> None:
+    def reconfigure(self, context_tokens: int, threads: int, retry_once: bool = True) -> None:
+        new_context = max(512, min(int(context_tokens), 1024))
+        new_threads = max(1, min(int(threads), 2))
+        changed = (new_context, new_threads, bool(retry_once)) != (
+            self.context_tokens,
+            self.threads,
+            self.retry_once,
+        )
+        self.context_tokens = new_context
+        self.threads = new_threads
+        self.retry_once = bool(retry_once)
+        if changed:
+            self.stop(wait=False)
+
+    def _write_log(self, message: str) -> None:
+        try:
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            with log_path().open("a", encoding="utf-8") as f:
+                f.write(f"[{stamp}] {message}\n")
+        except Exception:
+            pass
+
+    def stop(self, wait: bool = True) -> None:
         with self._lock:
             proc, self._proc = self._proc, None
             self._profile_key = None
             self._port = None
+            self._safe_mode = False
+            handle, self._log_handle = self._log_handle, None
         if proc and proc.poll() is None:
-            proc.terminate()
             try:
-                proc.wait(timeout=4)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+                proc.terminate()
+            except Exception:
+                pass
+            if wait:
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+        if handle:
+            try:
+                handle.close()
+            except Exception:
+                pass
 
-    def ensure_started(self, profile: AgentProfile, status: Callable[[str], None] | None = None) -> None:
+    def ensure_started(
+        self,
+        profile: AgentProfile,
+        status: Callable[[str], None] | None = None,
+        safe_mode: bool = False,
+    ) -> None:
         with self._lock:
-            if self._proc and self._proc.poll() is None and self._profile_key == profile.key:
+            if (
+                self._proc
+                and self._proc.poll() is None
+                and self._profile_key == profile.key
+                and self._safe_mode == safe_mode
+            ):
                 return
-        self.stop()
+        self.stop(wait=False)
         if status:
-            status("Loading local AI…")
+            status("Starting local AI…" if not safe_mode else "Restarting AI in low-memory mode…")
+
         server = find_llama_server()
         model = model_path(profile)
         port = _free_port()
-        creationflags = 0
-        if os.name == "nt":
-            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+        ctx = 512 if safe_mode else self.context_tokens
+        threads = 1 if safe_mode else self.threads
+        batch = 16 if safe_mode else 32
         cmd = [
             str(server),
             "--model", str(model),
             "--host", "127.0.0.1",
             "--port", str(port),
-            "--ctx-size", str(self.context_tokens),
-            "--threads", str(self.threads),
-            "--batch-size", "64",
-            "--ubatch-size", "64",
+            "--ctx-size", str(ctx),
+            "--threads", str(threads),
+            "--batch-size", str(batch),
+            "--ubatch-size", str(batch),
             "--parallel", "1",
         ]
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=creationflags,
+
+        log_file = log_path().open("a", encoding="utf-8", errors="replace")
+        self._write_log(
+            f"Starting profile={profile.key} safe_mode={safe_mode} ctx={ctx} threads={threads} batch={batch}"
         )
-        deadline = time.monotonic() + 45
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                creationflags=creationflags,
+            )
+        except Exception:
+            log_file.close()
+            raise
+
+        deadline = time.monotonic() + (55 if safe_mode else 45)
         url = f"http://127.0.0.1:{port}/health"
         while time.monotonic() < deadline:
             if proc.poll() is not None:
-                raise RuntimeError("Local AI process stopped during startup")
+                log_file.close()
+                self._write_log(f"llama-server exited during startup with code {proc.returncode}")
+                raise RuntimeError(f"Local AI process stopped during startup (exit {proc.returncode})")
             try:
                 r = requests.get(url, timeout=0.8)
                 if r.status_code < 500:
@@ -127,40 +194,91 @@ class LocalAIRuntime:
                         self._proc = proc
                         self._profile_key = profile.key
                         self._port = port
+                        self._safe_mode = safe_mode
+                        self._log_handle = log_file
                     if status:
                         status("Local AI ready")
                     return
             except requests.RequestException:
                 pass
-            time.sleep(0.25)
-        proc.terminate()
-        raise TimeoutError("Local AI did not become ready within 45 seconds")
+            time.sleep(0.3)
 
-    def chat(self, profile: AgentProfile, messages: list[dict], max_tokens: int, timeout: int,
-             status: Callable[[str], None] | None = None) -> str:
-        self.ensure_started(profile, status=status)
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        log_file.close()
+        self._write_log("Local AI startup timed out")
+        raise TimeoutError("Local AI did not become ready in time")
+
+    def _chat_once(
+        self,
+        profile: AgentProfile,
+        messages: list[dict],
+        max_tokens: int,
+        timeout: int,
+        status: Callable[[str], None] | None,
+        safe_mode: bool,
+    ) -> str:
+        self.ensure_started(profile, status=status, safe_mode=safe_mode)
         with self._lock:
             port = self._port
-        if not port:
+            proc = self._proc
+        if not port or not proc or proc.poll() is not None:
             raise RuntimeError("Local AI server is unavailable")
         payload = {
             "model": "local",
             "messages": [{"role": "system", "content": profile.system_prompt}] + messages,
             "temperature": 0.35,
-            "max_tokens": max(64, min(int(max_tokens), 384)),
+            "max_tokens": max(64, min(int(max_tokens), 256 if not safe_mode else 160)),
             "stream": False,
         }
         if status:
             status("Thinking…")
-        r = requests.post(f"http://127.0.0.1:{port}/v1/chat/completions", json=payload, timeout=timeout)
+        r = requests.post(
+            f"http://127.0.0.1:{port}/v1/chat/completions",
+            json=payload,
+            timeout=timeout,
+        )
         r.raise_for_status()
         data = r.json()
         text = data["choices"][0]["message"]["content"].strip()
+        if not text:
+            raise RuntimeError("Local AI returned an empty response")
         return _strip_reasoning(text)
+
+    def chat(
+        self,
+        profile: AgentProfile,
+        messages: list[dict],
+        max_tokens: int,
+        timeout: int,
+        status: Callable[[str], None] | None = None,
+    ) -> str:
+        attempts = 2 if self.retry_once else 1
+        last_error: Exception | None = None
+        for attempt in range(attempts):
+            safe_mode = attempt > 0
+            try:
+                return self._chat_once(
+                    profile,
+                    messages,
+                    max_tokens=max_tokens,
+                    timeout=timeout,
+                    status=status,
+                    safe_mode=safe_mode,
+                )
+            except (requests.RequestException, OSError, RuntimeError, TimeoutError, KeyError, ValueError) as exc:
+                last_error = exc
+                self._write_log(f"Chat attempt {attempt + 1} failed: {type(exc).__name__}: {exc}")
+                self.stop(wait=True)
+                if attempt + 1 < attempts and status:
+                    status("AI connection dropped — retrying once in low-memory mode…")
+                time.sleep(0.35)
+        raise LocalAIError("Local AI could not complete the request. Check Activity for details.") from last_error
 
 
 def _strip_reasoning(text: str) -> str:
-    # Small reasoning models sometimes expose think tags. Keep private working hidden.
     while "<think>" in text and "</think>" in text:
         a = text.find("<think>")
         b = text.find("</think>", a)

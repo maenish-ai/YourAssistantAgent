@@ -12,6 +12,7 @@ from ..ai.runtime import LocalAIRuntime
 from ..config import Settings
 from ..storage.db import ChatDB
 from . import theme
+from .resources import asset_path
 
 class ChatWindow(ttk.Frame):
     def __init__(self, master, agent_key: str, settings: Settings, on_change_agent):
@@ -25,6 +26,7 @@ class ChatWindow(ttk.Frame):
         self.result_q: queue.Queue = queue.Queue()
         self.busy = False
         self.attachments: list[str] = []
+        self._brand_image = None
         self._build()
         self._load_history()
         self.after(100, self._poll_results)
@@ -34,12 +36,17 @@ class ChatWindow(ttk.Frame):
         self.rowconfigure(1, weight=1)
         top = ttk.Frame(self, padding=(16, 10))
         top.grid(row=0, column=0, sticky="ew")
-        top.columnconfigure(1, weight=1)
-        ttk.Label(top, text="Your Assistant Agent", style="CardTitle.TLabel").grid(row=0, column=0, sticky="w")
+        top.columnconfigure(2, weight=1)
+        try:
+            self._brand_image = tk.PhotoImage(file=str(asset_path("brand_mark_64.png")))
+            ttk.Label(top, image=self._brand_image).grid(row=0, column=0, sticky="w", padx=(0, 8))
+        except Exception:
+            pass
+        ttk.Label(top, text="Your Assistant Agent", style="CardTitle.TLabel").grid(row=0, column=1, sticky="w")
         self.agent_label = ttk.Label(top, text=f"{self.profile.title} • AI loads on first real request", style="Muted.TLabel")
-        self.agent_label.grid(row=0, column=1, sticky="w", padx=12)
-        ttk.Button(top, text="Change agent", command=self._change_agent).grid(row=0, column=2, padx=4)
-        ttk.Button(top, text="Stop AI", command=self._stop_ai).grid(row=0, column=3, padx=4)
+        self.agent_label.grid(row=0, column=2, sticky="w", padx=12)
+        ttk.Button(top, text="Change agent", command=self._change_agent).grid(row=0, column=3, padx=4)
+        ttk.Button(top, text="Stop AI", command=self._stop_ai).grid(row=0, column=4, padx=4)
 
         body = ttk.Frame(self, padding=(18, 6))
         body.grid(row=1, column=0, sticky="nsew")

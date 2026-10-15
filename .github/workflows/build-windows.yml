@@ -10,9 +10,37 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  cleanup-legacy-workflow:
+    name: Remove legacy duplicate workflow
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Remove old windows-build.yml once
+        shell: bash
+        continue-on-error: true
+        run: |
+          if [ -f .github/workflows/windows-build.yml ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git rm .github/workflows/windows-build.yml
+            git commit -m "Remove legacy duplicate Windows workflow"
+            git push origin HEAD:main
+          else
+            echo "Legacy workflow already absent."
+          fi
+
   build:
+    name: Build signed-ready Windows Setup
+    needs: cleanup-legacy-workflow
+    if: ${{ always() }}
+    permissions:
+      contents: read
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -25,6 +53,12 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
+
+      - name: Run source startup self-test
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = "$PWD\src"
+          python launcher.py --self-test
 
       - name: Download and verify local AI models
         shell: pwsh
@@ -46,49 +80,30 @@ jobs:
             'User-Agent' = 'YourAssistantAgent-Build'
             'Accept' = 'application/vnd.github+json'
           }
-
-          # llama.cpp stable releases do not always contain Windows binaries.
-          # Search recent releases (including prereleases/build releases) for the
-          # actual Windows x64 CPU ZIP instead of assuming /releases/latest has it.
           $releases = Invoke-RestMethod -Headers $headers -Uri 'https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=30'
           $asset = $null
-          $releaseTag = $null
           foreach ($release in $releases) {
             if ($release.draft) { continue }
             $candidate = $release.assets | Where-Object {
               $_.name -match '^llama-b[0-9]+-bin-win-cpu-x64[.]zip$' -or
               $_.name -match '^llama-.*-bin-win-cpu-x64[.]zip$'
             } | Select-Object -First 1
-            if ($candidate) {
-              $asset = $candidate
-              $releaseTag = $release.tag_name
-              break
-            }
+            if ($candidate) { $asset = $candidate; break }
           }
-
-          # Reproducible fallback known to contain the CPU runtime if GitHub's
-          # releases API shape/ranking changes temporarily.
           if (-not $asset) {
-            Write-Warning 'Recent release scan found no Windows x64 CPU asset; using pinned fallback b11635.'
             $downloadUrl = 'https://github.com/ggml-org/llama.cpp/releases/download/b11635/llama-b11635-bin-win-cpu-x64.zip'
           } else {
             $downloadUrl = $asset.browser_download_url
-            Write-Host "Using llama.cpp $releaseTag asset: $($asset.name)"
           }
-
           Invoke-WebRequest -Headers $headers -Uri $downloadUrl -OutFile llama.zip -UseBasicParsing
           Remove-Item llama_tmp -Recurse -Force -ErrorAction SilentlyContinue
           Expand-Archive llama.zip -DestinationPath llama_tmp -Force
-
           $server = Get-ChildItem llama_tmp -Recurse -Filter 'llama-server.exe' | Select-Object -First 1
           if (-not $server) { throw 'llama-server.exe is missing from downloaded llama.cpp archive' }
           Copy-Item $server.FullName runtime\llama-server.exe -Force
           Get-ChildItem llama_tmp -Recurse -Filter '*.dll' | ForEach-Object { Copy-Item $_.FullName runtime\ -Force }
 
-          if (-not (Test-Path 'runtime\llama-server.exe')) { throw 'llama-server.exe was not staged' }
-          Write-Host 'llama.cpp runtime staged successfully.'
-
-      - name: Run current v1.4.1 tests
+      - name: Run current tests
         shell: pwsh
         run: |
           $env:PYTHONPATH = "$PWD\src"
@@ -97,27 +112,76 @@ jobs:
             tests/test_config.py `
             tests/test_engine.py `
             tests/test_profiles.py `
-            tests/test_runtime.py
+            tests/test_runtime.py `
+            tests/test_packaging_branding_v143.py
 
       - name: Build app folder
         shell: pwsh
-        run: python -m PyInstaller --clean build_app.spec
+        run: python -m PyInstaller --noconfirm --clean build_app.spec
+
+      - name: Verify packaged EXE starts cleanly
+        shell: pwsh
+        run: |
+          $exe = "$PWD\dist\YourAssistantAgent\YourAssistantAgent.exe"
+          if (-not (Test-Path $exe)) { throw 'YourAssistantAgent.exe was not created' }
+          $p = Start-Process -FilePath $exe -ArgumentList '--self-test' -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw "Packaged startup self-test failed with exit code $($p.ExitCode)" }
+
+      - name: Optional Authenticode sign application EXE
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERT_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
+          WINDOWS_SIGNING_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_BASE64)) {
+            Write-Host 'No code-signing certificate configured; EXE will remain unsigned.'
+            exit 0
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP 'yaa-signing.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERT_BASE64))
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) { throw 'signtool.exe was not found' }
+          & $signtool.FullName sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f $pfx /p $env:WINDOWS_SIGNING_CERT_PASSWORD "$PWD\dist\YourAssistantAgent\YourAssistantAgent.exe"
+          if ($LASTEXITCODE -ne 0) { throw 'Application signing failed' }
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
 
       - name: Build installer
         shell: pwsh
         run: |
           $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
-          if (-not (Test-Path $iscc)) {
-            choco install innosetup --no-progress -y
-          }
+          if (-not (Test-Path $iscc)) { throw 'Inno Setup compiler was not found' }
           & $iscc installer\YourAssistantAgent.iss
+          if ($LASTEXITCODE -ne 0) { throw 'Installer build failed' }
+
+      - name: Optional Authenticode sign Setup EXE
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERT_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
+          WINDOWS_SIGNING_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_BASE64)) {
+            Write-Host 'No code-signing certificate configured; Setup will remain unsigned.'
+            exit 0
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP 'yaa-signing.pfx'
+          if (-not (Test-Path $pfx)) { [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_SIGNING_CERT_BASE64)) }
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) { throw 'signtool.exe was not found' }
+          $setup = Get-ChildItem "$PWD\output\*.exe" | Select-Object -First 1
+          if (-not $setup) { throw 'Setup EXE was not created' }
+          & $signtool.FullName sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f $pfx /p $env:WINDOWS_SIGNING_CERT_PASSWORD $setup.FullName
+          if ($LASTEXITCODE -ne 0) { throw 'Setup signing failed' }
 
       - name: Create SHA256
         shell: pwsh
         run: |
           $f = Get-ChildItem output\*.exe | Select-Object -First 1
           if (-not $f) { throw 'Installer EXE was not created' }
-          (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower() | Set-Content ($f.FullName + '.sha256.txt')
+          $hash = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower()
+          "$hash  $($f.Name)" | Set-Content ($f.FullName + '.sha256.txt')
 
       - uses: actions/upload-artifact@v4
         with:

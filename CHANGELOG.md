@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.3
+- Fixed packaged startup import crash.
+- Restored full original branding.
+- Added Windows metadata and optional Authenticode signing.
+- Added packaged EXE startup smoke test.
+- Added best-effort automatic legacy workflow cleanup.
+
 ## 1.4.2
 - Fixed GitHub Actions test failure caused by legacy v1.3 test files remaining in an existing repository.
 - The active workflow now runs only the five v1.4 Lite tests used by this build.

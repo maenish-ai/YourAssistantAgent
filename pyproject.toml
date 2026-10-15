@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "your-assistant-agent-lite"
-version = "1.4.2"
+version = "1.4.3"
 description = "Lightweight local-first desktop assistant with selectable Arabic or General local AI agents."
 requires-python = ">=3.11"
 dependencies = [

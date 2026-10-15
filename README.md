@@ -1,8 +1,8 @@
-# Your Assistant Agent v1.4.2 — Lite Agent Picker
+# Your Assistant Agent v1.4.3 — Lite Agent Picker
 
 A clean Windows-first rebuild focused on 4 GB RAM laptops and avoiding UI freezes.
 
-## What changed in v1.4.2
+## What changed in v1.4.3
 
 - **Agent picker before chat**: Arabic Agent or General Agent.
 - **Only one local model can be loaded at a time.**
@@ -66,3 +66,12 @@ Push the repository to `main`, then open **Actions → Build Windows Setup**. Th
 ## Important connector note
 
 The lightweight shell deliberately does **not** launch Facebook/browser discovery at startup. Connector work should be invoked only when the user explicitly requests it and should run in a separate worker/process, so a slow browser or network request cannot freeze the chat UI.
+
+## v1.4.3 packaging / trust hardening
+
+- Stable absolute-import launcher fixes the frozen-EXE relative-import crash.
+- Original purple/blue robot-orbit branding is embedded in the EXE, splash, picker, chat header and installer.
+- Windows file metadata identifies product, company and version.
+- PyInstaller remains one-folder with UPX disabled.
+- GitHub Actions runs a packaged `--self-test` before publishing.
+- Optional Authenticode signing is enabled when `WINDOWS_SIGNING_CERT_BASE64` and `WINDOWS_SIGNING_CERT_PASSWORD` secrets are configured.

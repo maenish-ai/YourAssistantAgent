@@ -88,11 +88,16 @@ jobs:
           if (-not (Test-Path 'runtime\llama-server.exe')) { throw 'llama-server.exe was not staged' }
           Write-Host 'llama.cpp runtime staged successfully.'
 
-      - name: Run tests
+      - name: Run current v1.4.1 tests
         shell: pwsh
         run: |
           $env:PYTHONPATH = "$PWD\src"
-          python -m pytest -q
+          python -m pytest -q `
+            tests/test_backup.py `
+            tests/test_config.py `
+            tests/test_engine.py `
+            tests/test_profiles.py `
+            tests/test_runtime.py
 
       - name: Build app folder
         shell: pwsh

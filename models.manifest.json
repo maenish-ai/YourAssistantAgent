@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "key": "arabic",
+      "filename": "RightNow-Arabic-0.5B-Turbo-q4_k_m.gguf",
+      "url": "https://huggingface.co/RightNowAI/RightNow-Arabic-0.5B-Turbo/resolve/main/gguf/RightNow-Arabic-0.5B-Turbo-q4_k_m.gguf?download=true",
+      "sha256": "03a58f3cb23af68dbe4247ac2f3f67fdeb8bc3df8bb7e41e0ac0049f8b5211a1"
+    },
+    {
+      "key": "general",
+      "filename": "Qwen3-0.6B.Q4_K_M.gguf",
+      "url": "https://huggingface.co/QuantFactory/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B.Q4_K_M.gguf?download=true",
+      "sha256": "7af3fdf842f87b24672f8a7f1dd50404043f0bfb71093ff91c31d2b49df4631d"
+    }
+  ]
+}

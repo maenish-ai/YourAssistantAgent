@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "your-assistant-agent-lite"
+version = "1.4.0"
+description = "Lightweight local-first desktop assistant with selectable Arabic or General local AI agents."
+requires-python = ">=3.11"
+dependencies = [
+  "cryptography>=43,<46",
+  "platformdirs>=4.3,<5",
+  "requests>=2.32,<3",
+]
+
+[project.scripts]
+your-assistant-agent = "yaa_lite.main:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

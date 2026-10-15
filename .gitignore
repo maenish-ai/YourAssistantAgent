@@ -1,13 +1,9 @@
-.venv/
 __pycache__/
 *.pyc
+.venv/
 build/
 dist/
-*.spec
-.pytest_cache/
-release/
-assets/playwright-browsers/
-# Large Local AI assets are downloaded by GitHub Actions/build script, not committed.
-assets/local_ai/runtime/
-assets/local_ai/models/
-assets/local_ai/_download/
+models/*.gguf
+runtime/*
+*.yaa
+.env

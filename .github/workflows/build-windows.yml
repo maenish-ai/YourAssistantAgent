@@ -1,0 +1,64 @@
+name: Build Windows Setup
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install Python dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Download and verify local AI models
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force models | Out-Null
+          $m = Get-Content models.manifest.json | ConvertFrom-Json
+          foreach ($x in $m.models) {
+            $dest = Join-Path models $x.filename
+            Invoke-WebRequest -Uri $x.url -OutFile $dest -UseBasicParsing
+            $hash = (Get-FileHash $dest -Algorithm SHA256).Hash.ToLower()
+            if ($hash -ne $x.sha256.ToLower()) { throw "SHA256 mismatch: $($x.filename)" }
+          }
+      - name: Download latest llama.cpp Windows CPU runtime
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force runtime | Out-Null
+          $headers = @{ 'User-Agent'='YourAssistantAgent-Build' }
+          $release = Invoke-RestMethod -Headers $headers https://api.github.com/repos/ggml-org/llama.cpp/releases/latest
+          $asset = $release.assets | Where-Object { $_.name -match 'bin-win-cpu-x64\.zip$' } | Select-Object -First 1
+          if (-not $asset) { throw 'Could not locate llama.cpp Windows x64 CPU asset' }
+          Invoke-WebRequest -Headers $headers -Uri $asset.browser_download_url -OutFile llama.zip
+          Expand-Archive llama.zip -DestinationPath llama_tmp -Force
+          Copy-Item (Get-ChildItem llama_tmp -Recurse -Filter 'llama-server.exe' | Select-Object -First 1).FullName runtime\llama-server.exe
+          Get-ChildItem llama_tmp -Recurse -Filter '*.dll' | ForEach-Object { Copy-Item $_.FullName runtime\ -Force }
+      - name: Run tests
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = "$PWD\src"
+          pytest -q
+      - name: Build app folder
+        run: pyinstaller --clean build_app.spec
+      - name: Build installer
+        shell: pwsh
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\YourAssistantAgent.iss
+      - name: Create SHA256
+        shell: pwsh
+        run: |
+          $f = Get-ChildItem output\*.exe | Select-Object -First 1
+          (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower() | Set-Content ($f.FullName + '.sha256.txt')
+      - uses: actions/upload-artifact@v4
+        with:
+          name: YourAssistantAgent-Windows-Setup
+          path: |
+            output/*.exe
+            output/*.sha256.txt

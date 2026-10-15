@@ -10,39 +10,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  cleanup-legacy-workflow:
-    name: Remove legacy duplicate workflow
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Remove old windows-build.yml once
-        shell: bash
-        continue-on-error: true
-        run: |
-          if [ -f .github/workflows/windows-build.yml ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git rm .github/workflows/windows-build.yml
-            git commit -m "Remove legacy duplicate Windows workflow"
-            git push origin HEAD:main
-          else
-            echo "Legacy workflow already absent."
-          fi
-
   build:
     name: Build signed-ready Windows Setup
-    needs: cleanup-legacy-workflow
-    if: ${{ always() }}
     permissions:
       contents: read
     runs-on: windows-latest
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
+
+      # Important: a workflow run checks out the exact commit that triggered it.
+      # If that historical commit still contained the legacy workflow, remove it
+      # from THIS checkout before the packaging tests run. The repository itself
+      # is already cleaned and now contains only build-windows.yml.
+      - name: Ignore legacy workflow from triggering commit
+        shell: pwsh
+        run: |
+          Remove-Item ".github\workflows\windows-build.yml" -Force -ErrorAction SilentlyContinue
+          $remaining = @(Get-ChildItem ".github\workflows" -Filter "*.yml" | Select-Object -ExpandProperty Name)
+          Write-Host "Workflow files in build checkout: $($remaining -join ', ')"
+          if ($remaining.Count -ne 1 -or $remaining[0] -ne 'build-windows.yml') {
+            throw "Expected exactly one active workflow: build-windows.yml"
+          }
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'

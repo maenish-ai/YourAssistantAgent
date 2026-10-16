@@ -1,4 +1,4 @@
-# Your Assistant Agent v2.0.0 — Hammer OS Foundation
+# Your Assistant Agent v2.0.1 — Hammer OS Foundation
 
 A lightweight Windows desktop assistant built around **one local AI brain: Hammer 2.1 0.5B**. The desktop app is the interface, state store, permission boundary and tool host; Hammer handles all conversation and decides when an allow-listed application tool should be used.
 
@@ -23,7 +23,7 @@ Facebook browser-profile/session material is excluded from backups by default. C
 
 `browser_extension/` contains the optional browser bridge. It connects the user's **normal open browser** to the desktop app through localhost `127.0.0.1:8765`. The bridge has an allow-listed command channel for opening pages and interacting with the active tab.
 
-In v2.0.0 the extension is the preferred path for opening Facebook/manual login and lightweight browser status work. The mature Facebook sharing engine still has a managed-browser fallback for operations that have not yet been migrated to the extension command channel. CAPTCHA and Facebook checkpoints are always manual.
+In v2.0.1 the extension is the preferred path for opening Facebook/manual login and lightweight browser status work. The mature Facebook sharing engine still has a managed-browser fallback for operations that have not yet been migrated to the extension command channel. CAPTCHA and Facebook checkpoints are always manual.
 
 ## Facebook Smart Agent
 
@@ -43,7 +43,7 @@ The microphone button can use Windows' built-in **System.Speech** locally when l
 
 ## Features staged behind the v2 architecture
 
-The UI/settings/data model now have foundations for Telegram, GitHub, Skills, proactive learning, advanced reports, multi-device conflict resolution and richer browser-extension automation. These are **not all production-complete in v2.0.0**. In particular, do not treat the current Telegram/GitHub connector placeholders or the browser extension as equivalent to a fully migrated production connector yet.
+The UI/settings/data model now have foundations for Telegram, GitHub, Skills, proactive learning, advanced reports, multi-device conflict resolution and richer browser-extension automation. These are **not all production-complete in v2.0.1**. In particular, do not treat the current Telegram/GitHub connector placeholders or the browser extension as equivalent to a fully migrated production connector yet.
 
 ## Hammer model and license
 
@@ -66,3 +66,7 @@ Push the complete project to `main`. The single workflow `.github/workflows/buil
 7. builds the Inno Setup installer,
 8. optionally Authenticode-signs the EXE/Setup when signing secrets are configured,
 9. uploads the Setup artifact and SHA256.
+
+
+## v2.0.1 Hammer runtime note
+Hammer requests are rendered with the model's native function-calling prompt and sent through llama.cpp raw completion. Google Drive OAuth is optional and unrelated to local chat.

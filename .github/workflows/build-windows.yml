@@ -68,29 +68,15 @@ jobs:
             if ($hash -ne $x.sha256.ToLower()) { throw "SHA256 mismatch: $($x.filename)" }
           }
 
-      - name: Download llama.cpp Windows x64 CPU runtime
+      - name: Download pinned llama.cpp Windows x64 CPU runtime
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force runtime | Out-Null
-          $headers = @{
-            'User-Agent' = 'YourAssistantAgent-Build'
-            'Accept' = 'application/vnd.github+json'
-          }
-          $releases = Invoke-RestMethod -Headers $headers -Uri 'https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=30'
-          $asset = $null
-          foreach ($release in $releases) {
-            if ($release.draft) { continue }
-            $candidate = $release.assets | Where-Object {
-              $_.name -match '^llama-b[0-9]+-bin-win-cpu-x64[.]zip$' -or
-              $_.name -match '^llama-.*-bin-win-cpu-x64[.]zip$'
-            } | Select-Object -First 1
-            if ($candidate) { $asset = $candidate; break }
-          }
-          if (-not $asset) {
-            $downloadUrl = 'https://github.com/ggml-org/llama.cpp/releases/download/b11635/llama-b11635-bin-win-cpu-x64.zip'
-          } else {
-            $downloadUrl = $asset.browser_download_url
-          }
+          $headers = @{ 'User-Agent' = 'YourAssistantAgent-Build' }
+          # Pinned on purpose: v2.0.0 followed latest pre-releases, so a llama.cpp
+          # tool-parser regression could change behavior between builds. Hammer
+          # v2.0.1 renders its native prompt itself, and the runtime is fixed too.
+          $downloadUrl = 'https://github.com/ggml-org/llama.cpp/releases/download/b11635/llama-b11635-bin-win-cpu-x64.zip'
           Invoke-WebRequest -Headers $headers -Uri $downloadUrl -OutFile llama.zip -UseBasicParsing
           Remove-Item llama_tmp -Recurse -Force -ErrorAction SilentlyContinue
           Expand-Archive llama.zip -DestinationPath llama_tmp -Force

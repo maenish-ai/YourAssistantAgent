@@ -97,6 +97,78 @@ def _parse_json_object(text: str) -> dict | None:
     return None
 
 
+
+def _hammer_simple_tools(tools: list[dict]) -> list[dict]:
+    """Convert OpenAI-style function schemas to Hammer's native tool list.
+
+    Hammer 2.1 was trained with ``[{name, description, parameters}, ...]``
+    inside its chat template. Sending OpenAI ``tools`` directly to llama.cpp
+    makes llama.cpp choose/execute a server-side tool parser which is not
+    Hammer's native parser and can crash on some builds. We therefore render
+    Hammer's own template ourselves and use the raw completion endpoint.
+    """
+    out: list[dict] = []
+    for item in tools or []:
+        if not isinstance(item, dict):
+            continue
+        fn = item.get("function") if item.get("type") == "function" else item
+        if not isinstance(fn, dict) or not fn.get("name"):
+            continue
+        out.append({
+            "name": str(fn.get("name")),
+            "description": str(fn.get("description") or ""),
+            "parameters": fn.get("parameters") if isinstance(fn.get("parameters"), dict) else {
+                "type": "object", "properties": {}, "required": []
+            },
+        })
+    return out
+
+
+def _hammer_prompt(profile: AgentProfile, messages: list[dict], tools: list[dict]) -> str:
+    """Render the native Hammer 2.1 function-calling prompt.
+
+    This intentionally mirrors the model's tokenizer chat template instead of
+    delegating tool rendering to llama.cpp. It keeps behavior stable across
+    llama.cpp releases and avoids the ConnectionReset/500 failure seen with
+    server-side tool parsing on some Windows builds.
+    """
+    system_parts = [profile.system_prompt.strip()]
+    loop_messages: list[dict] = []
+    for m in messages or []:
+        role = str(m.get("role") or "user")
+        content = str(m.get("content") or "")
+        if role == "system":
+            if content.strip():
+                system_parts.append(content.strip())
+        else:
+            loop_messages.append({"role": role, "content": content})
+
+    simple_tools = _hammer_simple_tools(tools)
+    task_instruction = (
+        "You are a tool calling assistant. Select the appropriate tool and fill in its parameters. "
+        "For ordinary conversation, greetings, explanations, or anything that does not need an external action, "
+        "use the respond tool. Never invent tool results."
+    )
+    format_instruction = (
+        "Output ONLY a JSON list and no other text. The format must be exactly: "
+        '[{"name":"tool_name","arguments":{"key":"value"}}]. '
+        "Choose exactly one tool for this turn."
+    )
+    tool_text = json.dumps(simple_tools, ensure_ascii=False, separators=(",", ":"))
+    parts = [
+        "<|im_start|>system\n" + "\n".join(system_parts) + "<|im_end|>\n",
+        "<|im_start|>user\n[BEGIN OF TASK INSTRUCTION]\n" + task_instruction +
+        "\n[END OF TASK INSTRUCTION]\n\n[BEGIN OF AVAILABLE_TOOLS]\n" + tool_text +
+        "\n[END OF AVAILABLE_TOOLS]\n\n[BEGIN OF FORMAT INSTRUCTION]\n" + format_instruction +
+        "\n[END OF FORMAT INSTRUCTION]\n<|im_end|>\n",
+    ]
+    for m in loop_messages[-8:]:
+        role = m["role"] if m["role"] in {"user", "assistant", "tool"} else "user"
+        parts.append(f"<|im_start|>{role}\n{m['content']}<|im_end|>\n")
+    parts.append("<|im_start|>assistant\n")
+    return "".join(parts)
+
+
 class LocalAIRuntime:
     """Lazy llama.cpp runtime tuned for 4 GB Windows laptops.
 
@@ -217,7 +289,6 @@ class LocalAIRuntime:
             "--batch-size", str(batch),
             "--ubatch-size", str(batch),
             "--parallel", "1",
-            "--jinja",
         ]
 
         log_file = log_path().open("a", encoding="utf-8", errors="replace")
@@ -266,6 +337,83 @@ class LocalAIRuntime:
         log_file.close()
         self._write_log("Hammer startup timed out")
         raise TimeoutError("Local AI did not become ready in time")
+
+    def _hammer_completion(
+        self,
+        profile: AgentProfile,
+        messages: list[dict],
+        tools: list[dict],
+        max_tokens: int,
+        timeout: int,
+        status: Callable[[str], None] | None,
+        safe_mode: int | bool,
+    ) -> str:
+        """Run Hammer through llama.cpp's raw completion endpoint.
+
+        We deliberately do not send the OpenAI ``tools`` field. Hammer has its
+        own function-calling chat template; rendering it here avoids depending
+        on llama.cpp's model-specific tool parser and fixes the Windows server
+        reset seen in v2.0.0.
+        """
+        self.ensure_started(profile, status=status, safe_mode=safe_mode)
+        with self._lock:
+            port = self._port
+            proc = self._proc
+        if not port or not proc or proc.poll() is not None:
+            raise RuntimeError("Local AI server is unavailable")
+
+        prompt = _hammer_prompt(profile, messages, tools)
+        limit = max(64, min(int(max_tokens), 256 if int(safe_mode) == 0 else 160))
+        payload = {
+            "prompt": prompt,
+            "n_predict": limit,
+            "temperature": 0.0,
+            "stream": False,
+            "stop": ["<|im_end|>"],
+            "cache_prompt": True,
+        }
+        if status:
+            status("Hammer is choosing an action…")
+
+        url = f"http://127.0.0.1:{port}/completion"
+        try:
+            r = requests.post(url, json=payload, timeout=timeout)
+            # Some llama.cpp builds can expose only the OpenAI completions path.
+            if r.status_code == 404:
+                r = requests.post(
+                    f"http://127.0.0.1:{port}/v1/completions",
+                    json={
+                        "model": "local",
+                        "prompt": prompt,
+                        "max_tokens": limit,
+                        "temperature": 0.0,
+                        "stream": False,
+                        "stop": ["<|im_end|>"],
+                    },
+                    timeout=timeout,
+                )
+            if not r.ok:
+                body = (r.text or "")[:2000]
+                self._write_log(f"Hammer HTTP {r.status_code}: {body}")
+                r.raise_for_status()
+            data = r.json()
+        except requests.RequestException:
+            code = proc.poll()
+            if code is not None:
+                self._write_log(f"llama-server stopped during Hammer request with exit code {code}")
+            raise
+
+        if isinstance(data, dict) and "content" in data:
+            text = str(data.get("content") or "")
+        else:
+            choices = data.get("choices") if isinstance(data, dict) else None
+            text = str((choices or [{}])[0].get("text") or "")
+        text = text.strip()
+        if not text:
+            raise RuntimeError("Hammer returned an empty completion")
+        self.last_used_monotonic = time.monotonic()
+        self._write_log(f"Hammer raw reply: {text[:1200]}")
+        return text
 
     def _post_completion(
         self,
@@ -343,14 +491,37 @@ class LocalAIRuntime:
         timeout: int,
         status: Callable[[str], None] | None = None,
     ) -> str:
+        """Conversation is also a Hammer tool call (``respond``), not generic chat."""
+        respond_tool = [{
+            "type": "function",
+            "function": {
+                "name": "respond",
+                "description": "Reply naturally to the user in the user's language.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"message": {"type": "string"}},
+                    "required": ["message"],
+                },
+            },
+        }]
+
         def run(safe_mode: int):
-            message = self._post_completion(
-                profile, messages, max_tokens, timeout, status, safe_mode, tools=None
+            raw = self._hammer_completion(
+                profile, messages, respond_tool, max_tokens, timeout, status, safe_mode
             )
-            text = str(message.get("content") or "").strip()
-            if not text:
-                raise RuntimeError("Local AI returned an empty response")
-            return _strip_reasoning(text)
+            obj = _parse_json_object(_strip_reasoning(raw))
+            if obj:
+                args = obj.get("arguments") if isinstance(obj.get("arguments"), dict) else {}
+                text = str(args.get("message") or "").strip()
+                if text:
+                    return text
+            # Compatibility for a conversion that emits plain text despite the
+            # strict prompt: keep it usable instead of showing a blank reply.
+            plain = _strip_reasoning(raw).strip()
+            if plain and not plain.startswith("[") and not plain.startswith("{"):
+                return plain
+            raise RuntimeError("Hammer did not return a valid respond tool call")
+
         return self._run_with_retry(run, status=status)
 
     def tool_call(
@@ -362,38 +533,29 @@ class LocalAIRuntime:
         timeout: int,
         status: Callable[[str], None] | None = None,
     ) -> dict:
-        """Ask Hammer for one structured tool choice.
+        """Ask Hammer for one native structured tool choice.
 
-        llama.cpp may return OpenAI-style ``tool_calls`` or Hammer's textual
-        JSON format. Both are normalized to {name, arguments, content}.
+        Hammer's JSON-list output is parsed locally. No llama.cpp tool parser is
+        involved, which is intentional for stability on older Windows laptops.
         """
         def run(safe_mode: int):
-            message = self._post_completion(
-                profile, messages, max_tokens, timeout, status, safe_mode, tools=tools
-            )
-            calls = message.get("tool_calls") or []
-            if calls:
-                call = calls[0] or {}
-                fn = call.get("function") or {}
-                args = fn.get("arguments") or {}
-                if isinstance(args, str):
-                    try:
-                        args = json.loads(args)
-                    except Exception:
-                        args = {}
-                return {"name": str(fn.get("name") or ""), "arguments": args if isinstance(args, dict) else {}, "content": str(message.get("content") or "")}
-
-            content = _strip_reasoning(str(message.get("content") or "").strip())
+            content = _strip_reasoning(self._hammer_completion(
+                profile, messages, tools, max_tokens, timeout, status, safe_mode
+            )).strip()
             obj = _parse_json_object(content)
-            if obj and (obj.get("name") or obj.get("tool")):
-                args = obj.get("arguments", obj.get("params", {}))
-                if isinstance(args, str):
-                    try:
-                        args = json.loads(args)
-                    except Exception:
-                        args = {"value": args}
-                return {"name": str(obj.get("name") or obj.get("tool")), "arguments": args if isinstance(args, dict) else {}, "content": content}
-            return {"name": "respond", "arguments": {"message": content}, "content": content}
+            if not obj or not (obj.get("name") or obj.get("tool")):
+                raise RuntimeError(f"Hammer returned invalid tool JSON: {content[:400]}")
+            args = obj.get("arguments", obj.get("params", {}))
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except Exception:
+                    args = {"value": args}
+            return {
+                "name": str(obj.get("name") or obj.get("tool")),
+                "arguments": args if isinstance(args, dict) else {},
+                "content": content,
+            }
 
         return self._run_with_retry(run, status=status)
 

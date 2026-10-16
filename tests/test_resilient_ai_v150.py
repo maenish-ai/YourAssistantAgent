@@ -6,12 +6,12 @@ from yaa_lite.ai.runtime import LocalAIRuntime, _parse_json_object
 def test_runtime_retries_twice_with_progressively_safer_modes(monkeypatch):
     runtime = LocalAIRuntime(context_tokens=768, threads=2, retry_count=2)
     calls=[]; stops=[]
-    def fake_post(profile,messages,max_tokens,timeout,status,safe_mode,tools=None):
+    def fake_post(profile,messages,tools,max_tokens,timeout,status,safe_mode):
         calls.append(int(safe_mode))
         if int(safe_mode) < 2:
             raise requests.ConnectionError("connection dropped")
-        return {"content":"تم"}
-    monkeypatch.setattr(runtime,"_post_completion",fake_post)
+        return '[{"name":"respond","arguments":{"message":"تم"}}]'
+    monkeypatch.setattr(runtime,"_hammer_completion",fake_post)
     monkeypatch.setattr(runtime,"stop",lambda wait=True: stops.append(wait))
     monkeypatch.setattr(runtime,"_write_log",lambda message:None)
     assert runtime.chat(HAMMER,[],128,30)=="تم"

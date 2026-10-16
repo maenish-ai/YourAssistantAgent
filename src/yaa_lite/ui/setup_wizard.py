@@ -122,6 +122,18 @@ class SetupWizard(tk.Toplevel):
         self.source_page.insert(0, self.settings.default_source_page)
         ttk.Label(fb, text=self.t("تسجيل الدخول يتم لاحقًا من صفحة Facebook وبشكل يدوي عند الحاجة.", "Login happens later from the Facebook page and remains manual when needed."), style="Muted.TLabel").grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
         self.next_btn.config(text=self.t("التالي", "Next"))
+        ttk.Button(
+            self.body,
+            text=self.t("تخطي الخدمات الآن", "Skip optional services for now"),
+            command=self._skip_services,
+        ).pack(anchor="e", pady=(8, 0))
+
+    def _skip_services(self):
+        self.settings.google_drive_client_id = ""
+        self.settings.default_source_page = ""
+        self.step = 3
+        self._render()
+
 
     def _finish_page(self):
         self._title(self.t("جاهز تقريبًا", "Almost ready"), self.t(

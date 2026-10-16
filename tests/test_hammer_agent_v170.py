@@ -61,18 +61,58 @@ def test_status_page_has_live_facebook_progress_events():
     assert "facebook_post_found" in service
 
 
-def test_runtime_normalizes_hammer_text_json(monkeypatch):
+
+def test_hammer_prompt_uses_native_tool_shape_not_openai_wrapper():
+    from yaa_lite.ai.runtime import _hammer_prompt
+    prompt = _hammer_prompt(HAMMER, [{"role":"user","content":"كيف حالك"}], HammerAgentRouter.tool_schemas())
+    assert "[BEGIN OF AVAILABLE_TOOLS]" in prompt
+    assert '"name":"respond"' in prompt
+    assert '"function":{"name":"respond"' not in prompt
+    assert "<|im_start|>assistant" in prompt
+
+
+def test_runtime_normalizes_hammer_json_list(monkeypatch):
     from yaa_lite.ai.runtime import LocalAIRuntime
     rt = LocalAIRuntime(retry_count=0)
-    monkeypatch.setattr(rt, "_post_completion", lambda *a, **k: {"content": '```\n{"name":"count_facebook_groups","arguments":{"keyword":"خلدة"}}\n```'})
+    monkeypatch.setattr(rt, "_hammer_completion", lambda *a, **k: '[{"name":"count_facebook_groups","arguments":{"keyword":"خلدة"}}]')
     out = rt.tool_call(HAMMER, [], HammerAgentRouter.tool_schemas(), 128, 10)
     assert out["name"] == "count_facebook_groups"
     assert out["arguments"]["keyword"] == "خلدة"
 
 
-def test_runtime_normalizes_openai_tool_calls(monkeypatch):
+def test_runtime_chat_is_hammer_respond_tool_call(monkeypatch):
     from yaa_lite.ai.runtime import LocalAIRuntime
     rt = LocalAIRuntime(retry_count=0)
-    monkeypatch.setattr(rt, "_post_completion", lambda *a, **k: {"content": None, "tool_calls": [{"function": {"name": "facebook_status", "arguments": "{}"}}]})
-    out = rt.tool_call(HAMMER, [], HammerAgentRouter.tool_schemas(), 128, 10)
-    assert out["name"] == "facebook_status"
+    monkeypatch.setattr(rt, "_hammer_completion", lambda *a, **k: '[{"name":"respond","arguments":{"message":"تمام، الحمد لله"}}]')
+    out = rt.chat(HAMMER, [{"role":"user","content":"كيف حالك"}], 128, 10)
+    assert out == "تمام، الحمد لله"
+
+
+def test_hammer_completion_uses_raw_completion_endpoint(monkeypatch):
+    from yaa_lite.ai.runtime import LocalAIRuntime
+
+    class Proc:
+        def poll(self): return None
+
+    class Resp:
+        status_code = 200
+        ok = True
+        text = ''
+        def json(self): return {"content": '[{"name":"respond","arguments":{"message":"hi"}}]'}
+        def raise_for_status(self): return None
+
+    seen = {}
+    def fake_post(url, json, timeout):
+        seen["url"] = url; seen["json"] = json
+        return Resp()
+
+    rt = LocalAIRuntime(retry_count=0)
+    rt._port = 12345; rt._proc = Proc(); rt._profile_key = HAMMER.model_filename
+    monkeypatch.setattr(rt, "ensure_started", lambda *a, **k: None)
+    import yaa_lite.ai.runtime as runtime_module
+    monkeypatch.setattr(runtime_module.requests, "post", fake_post)
+    text = rt._hammer_completion(HAMMER, [{"role":"user","content":"hi"}], HammerAgentRouter.tool_schemas(), 128, 10, None, 0)
+    assert seen["url"].endswith("/completion")
+    assert "prompt" in seen["json"]
+    assert "tools" not in seen["json"] and "messages" not in seen["json"]
+    assert "respond" in text

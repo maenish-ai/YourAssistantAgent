@@ -1,72 +1,65 @@
-# Your Assistant Agent v2.0.1 — Hammer OS Foundation
+# Your Assistant Agent v2.2.0 — Direct Qwen Personal Assistant
 
-A lightweight Windows desktop assistant built around **one local AI brain: Hammer 2.1 0.5B**. The desktop app is the interface, state store, permission boundary and tool host; Hammer handles all conversation and decides when an allow-listed application tool should be used.
+A lightweight Windows desktop personal assistant with **one local AI brain: Qwen3 1.7B Q4_K_M**.
 
-## Core v2 behavior
+The app is no longer designed as “router first, chat second”. In v2.2, ordinary conversation is ordinary Qwen chat. When the user asks for something the app can actually do, Qwen uses its native function/tool-calling format through llama.cpp and the desktop app executes only allow-listed tools.
 
-- **Hammer only**: greetings, casual chat and work commands all go through Hammer. There is no hidden Arabic/General fallback model and no hard-coded greeting reply path.
-- **Resilient local runtime**: initial attempt + up to two automatic restarts (low-memory, then ultra-safe) with persistent `local_ai.log` diagnostics.
-- **4 GB friendly**: one ~398 MB Q4 model, lazy loading, idle unload, Eco/Balanced/Performance modes, max 2 CPU threads and max 1024 context by default.
-- **One-language UI**: first run asks for Arabic or English. Arabic mode is Arabic-only; English mode is English-only. The language can be changed later from Settings.
-- **ChatGPT-like shell**: left navigation rail with Home, Chat, Status, Facebook, Tasks, Backup and Settings. Telegram/GitHub stay under Advanced until enabled.
-- **Live status**: current Facebook task, progress bar, pause/resume/stop and a timestamped activity timeline.
+## Core architecture
 
-## Security and backup
+`User text/voice -> Qwen3 -> (normal answer OR application tool) -> tool result -> Qwen3 -> user`
 
-First run creates the app security layer. The user chooses whether a password is requested every launch, once per Windows session, or not at all. A separate **Recovery Key** wraps the same random master encryption key.
+There is no `respond` function in the main personal-assistant tool list. If no tool is needed, Qwen answers normally.
 
-Backups use AES-GCM and are encrypted **before** Google Drive upload. v2 backup files include only encrypted key-wrapping metadata outside the ciphertext, so the original password or Recovery Key can unlock a backup on a new computer. Google Drive uses the official OAuth flow with `drive.appdata`; a real Desktop OAuth Client ID must be supplied by the user/package owner.
+The desktop application remains the permission and safety boundary. Qwen never receives arbitrary Python or shell execution.
 
-Facebook browser-profile/session material is excluded from backups by default. Credential syncing is opt-in per service.
+## Facebook personal-assistant flow
 
-## Normal-browser bridge
+Qwen can now chain safe Facebook operations in one request, for example:
 
-`browser_extension/` contains the optional browser bridge. It connects the user's **normal open browser** to the desktop app through localhost `127.0.0.1:8765`. The bridge has an allow-listed command channel for opening pages and interacting with the active tab.
+- open the Facebook login page if the account needs manual sign-in;
+- verify the Facebook connection;
+- refresh joined groups;
+- select groups by include keywords;
+- exclude groups by keyword or exact name;
+- remember the latest group selection inside the current chat when chat memory is enabled;
+- draft a campaign and show a deterministic preview;
+- after explicit approval, save/run the campaign.
 
-In v2.0.1 the extension is the preferred path for opening Facebook/manual login and lightweight browser status work. The mature Facebook sharing engine still has a managed-browser fallback for operations that have not yet been migrated to the extension command channel. CAPTCHA and Facebook checkpoints are always manual.
+Example natural instruction:
 
-## Facebook Smart Agent
+> حدّث الجروبات، اختار كل جروب فيه كلمة الفحص، واستثني الجروب اسمه الفحص التجارية.
 
-Hammer exposes safe tools for:
-- app/Facebook/backup status
-- task listing
-- group counting
-- group discovery (approval-gated)
-- preparing Facebook campaigns
-- running saved Facebook rules (approval-gated)
+The application turns that into a structured group filter rather than relying on brittle string parsing.
 
-The app never exposes arbitrary Python execution to Hammer. Publishing/external actions remain behind the approval boundary. Scheduled sharing keeps no-repeat checks and records published/pending/failed outcomes.
+Publishing/immediate campaign execution still requires explicit approval. Facebook passwords, 2FA, CAPTCHA and checkpoints remain manual and are never bypassed.
+
+## Native Qwen tool calling
+
+The bundled llama.cpp server starts with `--jinja`, allowing the Qwen chat template to expose OpenAI-compatible tool calls. Qwen may either:
+
+1. return normal assistant text; or
+2. request one allow-listed application function.
+
+Safe tools can be executed and fed back to Qwen for another step, with a hard five-step cap per user turn to prevent accidental loops.
 
 ## Voice
 
-The microphone button can use Windows' built-in **System.Speech** locally when local voice is enabled. TTS also uses installed Windows voices. Voice quality/available female voices therefore depend on Windows language/voice packs. Cloud voice, wake-word continuous listening and premium voice packs are represented in Settings but require optional skills/providers; they are not silently enabled.
+Push-to-talk remains fully local:
 
-## Features staged behind the v2 architecture
+`Microphone -> whisper.cpp -> Qwen3 -> optional app tools -> Piper -> speakers`
 
-The UI/settings/data model now have foundations for Telegram, GitHub, Skills, proactive learning, advanced reports, multi-device conflict resolution and richer browser-extension automation. These are **not all production-complete in v2.0.1**. In particular, do not treat the current Telegram/GitHub connector placeholders or the browser extension as equivalent to a fully migrated production connector yet.
+The build bundles whisper.cpp, a multilingual Whisper base model, Piper, and the Jordanian Arabic `ar_JO-kareem-medium` voice. Windows SAPI remains a fallback for speech output.
 
-## Hammer model and license
+## Local AI model
 
-- Original: `MadeAgents/Hammer2.1-0.5b`
-- GGUF: `Melvin56/Hammer2.1-0.5b-GGUF` / `hammer2.1-0.5b-Q4_K_M.gguf`
-- SHA256: `190676fe7ac430ac6680b32c216d4eb7413002e2af0c140b8280a0f74fcc6a4d`
-- Declared model license: **CC BY-NC 4.0**
+- Base model: `Qwen/Qwen3-1.7B`
+- GGUF: `ggml-org/Qwen3-1.7B-GGUF`
+- File: `Qwen3-1.7B-Q4_K_M.gguf`
+- SHA256: `d2387ca2dbfee2ffabce7120d3770dadca0b293052bc2f0e138fdc940d9bc7b5`
+- License: Apache-2.0
 
-Because of the Hammer model license, this packaged build is intended for personal/non-commercial use unless the model is replaced or separately licensed.
+Legacy source/database names containing `hammer` remain only as compatibility aliases so existing chats and tasks continue to open. The shipped model is Qwen, not Hammer.
 
 ## Build
 
-Push the complete project to `main`. The single workflow `.github/workflows/build-windows.yml`:
-1. installs dependencies,
-2. runs the source self-test and all tests,
-3. downloads and SHA-verifies Hammer,
-4. downloads llama.cpp Windows CPU runtime,
-5. builds the PyInstaller one-folder application,
-6. smoke-tests the packaged EXE,
-7. builds the Inno Setup installer,
-8. optionally Authenticode-signs the EXE/Setup when signing secrets are configured,
-9. uploads the Setup artifact and SHA256.
-
-
-## v2.0.1 Hammer runtime note
-Hammer requests are rendered with the model's native function-calling prompt and sent through llama.cpp raw completion. Google Drive OAuth is optional and unrelated to local chat.
+Push the overlay to `main`. The single `.github/workflows/build-windows.yml` workflow downloads and verifies Qwen, llama.cpp, whisper.cpp and Piper, runs tests, builds the PyInstaller app, smoke-tests it, creates the Inno Setup installer and uploads the installer artifact plus SHA256.

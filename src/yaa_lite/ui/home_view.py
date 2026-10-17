@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import socket
-from datetime import datetime, timedelta
 from tkinter import ttk
 
 from ..agent.facebook_service import FacebookService
@@ -39,7 +38,7 @@ class HomeView(ttk.Frame):
         cards.grid(row=2, column=0, sticky="ew")
         for i in range(4):
             cards.columnconfigure(i, weight=1)
-        self.hammer = self._card(cards, 0, "Hammer", "—")
+        self.agent = self._card(cards, 0, "Qwen3", "—")
         self.fb = self._card(cards, 1, "Facebook", "—")
         self.backup_card = self._card(cards, 2, self.t("النسخ الاحتياطي", "Backup"), "—")
         self.net = self._card(cards, 3, self.t("الإنترنت", "Internet"), "—")
@@ -57,7 +56,7 @@ class HomeView(ttk.Frame):
         middle.columnconfigure(1, weight=1)
         self.tasks_box = ttk.LabelFrame(middle, text=self.t("المهام القادمة", "Upcoming tasks"), padding=14)
         self.tasks_box.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
-        self.suggestions_box = ttk.LabelFrame(middle, text=self.t("اقتراحات Hammer", "Hammer suggestions"), padding=14)
+        self.suggestions_box = ttk.LabelFrame(middle, text=self.t("اقتراحات Qwen", "Qwen suggestions"), padding=14)
         self.suggestions_box.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
 
     def _card(self, parent, col, title, value):
@@ -82,7 +81,7 @@ class HomeView(ttk.Frame):
             self.db.add_activity("backup_error", f"{type(exc).__name__}: {exc}")
 
     def refresh(self):
-        self.hammer.config(text=self.t("جاهز" if self.runtime.loaded_profile else "جاهز عند الطلب", "Ready" if self.runtime.loaded_profile else "Ready on demand"))
+        self.agent.config(text=self.t("جاهز" if self.runtime.loaded_profile else "يتم التجهيز", "Ready" if self.runtime.loaded_profile else "Preparing"))
         self.fb.config(text=self.facebook.status_text())
         st = self.backup.status()
         self.backup_card.config(text=self.t("متصل" if st.connected else "محلي فقط", "Connected" if st.connected else "Local only"))
@@ -107,7 +106,7 @@ class HomeView(ttk.Frame):
             if not st.last_backup:
                 suggestions.append(self.t("ما في نسخة احتياطية بعد. اعمل أول Backup.", "No backup exists yet. Create the first backup."))
             if not rules:
-                suggestions.append(self.t("إذا عندك شغل متكرر، احكيه لـHammer وحوله لمهمة مجدولة.", "Tell Hammer about recurring work and turn it into a scheduled task."))
+                suggestions.append(self.t("إذا عندك شغل متكرر، احكيه لـQwen وحوله لمهمة مجدولة.", "Tell Qwen about recurring work and turn it into a scheduled task."))
         if not suggestions:
             suggestions = [self.t("كل شيء هادئ حاليًا.", "Everything looks quiet right now.")]
         for s in suggestions[:4]:

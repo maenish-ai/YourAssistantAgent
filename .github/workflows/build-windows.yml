@@ -11,18 +11,14 @@ concurrency:
 
 jobs:
   build:
-    name: Build signed-ready Windows Setup
+    name: Build Direct Qwen Personal Assistant Windows Setup
     permissions:
       contents: read
     runs-on: windows-latest
-    timeout-minutes: 75
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
-      # Important: a workflow run checks out the exact commit that triggered it.
-      # If that historical commit still contained the legacy workflow, remove it
-      # from THIS checkout before the packaging tests run. The repository itself
-      # is already cleaned and now contains only build-windows.yml.
       - name: Ignore legacy workflow from triggering commit
         shell: pwsh
         run: |
@@ -44,11 +40,11 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
 
-      - name: Verify Smart Agent dependencies
+      - name: Verify primary-agent and voice dependencies
         shell: pwsh
         run: |
           $env:PYTHONPATH = "$PWD\src"
-          python -c "import playwright; from yaa_lite.agent.hammer_agent import HammerAgentRouter; from yaa_lite.agent.tools import ToolRegistry; print('Hammer Smart Agent dependencies OK')"
+          python -c "import sounddevice, playwright; from yaa_lite.agent.hammer_agent import HammerAgentRouter, PRIMARY_MODEL_LABEL; print(PRIMARY_MODEL_LABEL); print('Qwen + voice dependencies OK')"
 
       - name: Run source startup self-test
         shell: pwsh
@@ -56,7 +52,7 @@ jobs:
           $env:PYTHONPATH = "$PWD\src"
           python launcher.py --self-test
 
-      - name: Download and verify local AI models
+      - name: Download and verify Qwen local AI model
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force models | Out-Null
@@ -73,9 +69,6 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force runtime | Out-Null
           $headers = @{ 'User-Agent' = 'YourAssistantAgent-Build' }
-          # Pinned on purpose: v2.0.0 followed latest pre-releases, so a llama.cpp
-          # tool-parser regression could change behavior between builds. Hammer
-          # v2.0.1 renders its native prompt itself, and the runtime is fixed too.
           $downloadUrl = 'https://github.com/ggml-org/llama.cpp/releases/download/b11635/llama-b11635-bin-win-cpu-x64.zip'
           Invoke-WebRequest -Headers $headers -Uri $downloadUrl -OutFile llama.zip -UseBasicParsing
           Remove-Item llama_tmp -Recurse -Force -ErrorAction SilentlyContinue
@@ -85,11 +78,69 @@ jobs:
           Copy-Item $server.FullName runtime\llama-server.exe -Force
           Get-ChildItem llama_tmp -Recurse -Filter '*.dll' | ForEach-Object { Copy-Item $_.FullName runtime\ -Force }
 
+      - name: Download whisper.cpp and Arabic speech model
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force runtime\whisper | Out-Null
+          New-Item -ItemType Directory -Force models\voice | Out-Null
+          $headers = @{ 'User-Agent' = 'YourAssistantAgent-Build' }
+          $whisperUrl = 'https://github.com/ggml-org/whisper.cpp/releases/download/v1.8.3/whisper-bin-x64.zip'
+          Invoke-WebRequest -Headers $headers -Uri $whisperUrl -OutFile whisper.zip -UseBasicParsing
+          $whisperZipHash = (Get-FileHash whisper.zip -Algorithm SHA256).Hash.ToLower()
+          if ($whisperZipHash -ne 'd824b1e37599f882b396e73f1ee0bfd5d0529f700314c48311dcbd00b803321d') {
+            throw "whisper.cpp runtime SHA256 mismatch: $whisperZipHash"
+          }
+          Remove-Item whisper_tmp -Recurse -Force -ErrorAction SilentlyContinue
+          Expand-Archive whisper.zip -DestinationPath whisper_tmp -Force
+          $cli = Get-ChildItem whisper_tmp -Recurse -Filter 'whisper-cli.exe' | Select-Object -First 1
+          if (-not $cli) { throw 'whisper-cli.exe is missing' }
+          Copy-Item $cli.FullName runtime\whisper\whisper-cli.exe -Force
+          Get-ChildItem whisper_tmp -Recurse -Filter '*.dll' | ForEach-Object { Copy-Item $_.FullName runtime\whisper\ -Force }
+
+          $wm = 'models\voice\ggml-base.bin'
+          Invoke-WebRequest -Uri 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin?download=true' -OutFile $wm -UseBasicParsing
+          $wh = (Get-FileHash $wm -Algorithm SHA256).Hash.ToLower()
+          if ($wh -ne '60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe') {
+            throw "Whisper model SHA256 mismatch: $wh"
+          }
+
+      - name: Download Piper and Jordanian Arabic voice
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force runtime\piper | Out-Null
+          New-Item -ItemType Directory -Force models\voice | Out-Null
+          $headers = @{ 'User-Agent' = 'YourAssistantAgent-Build' }
+          Invoke-WebRequest -Headers $headers -Uri 'https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_windows_amd64.zip' -OutFile piper.zip -UseBasicParsing
+          Remove-Item piper_tmp -Recurse -Force -ErrorAction SilentlyContinue
+          Expand-Archive piper.zip -DestinationPath piper_tmp -Force
+          $piper = Get-ChildItem piper_tmp -Recurse -Filter 'piper.exe' | Select-Object -First 1
+          if (-not $piper) { throw 'piper.exe is missing' }
+          Copy-Item (Join-Path $piper.Directory.FullName '*') runtime\piper\ -Recurse -Force
+
+          $voice = 'models\voice\ar_JO-kareem-medium.onnx'
+          $voiceJson = 'models\voice\ar_JO-kareem-medium.onnx.json'
+          Invoke-WebRequest -Uri 'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/ar/ar_JO/kareem/medium/ar_JO-kareem-medium.onnx?download=true' -OutFile $voice -UseBasicParsing
+          Invoke-WebRequest -Uri 'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/ar/ar_JO/kareem/medium/ar_JO-kareem-medium.onnx.json?download=true' -OutFile $voiceJson -UseBasicParsing
+          $vsha = (Get-FileHash $voice -Algorithm SHA256).Hash.ToLower()
+          $jmd5 = (Get-FileHash $voiceJson -Algorithm MD5).Hash.ToLower()
+          if ($vsha -ne '9e95cab07b679da603bba17c4dec7ab3111320571964ee95c0379603c086491e') { throw "Piper voice SHA256 mismatch: $vsha" }
+          if ($jmd5 -ne 'dd70b31eb5a395907241b1e5367ace3a') { throw "Piper voice config MD5 mismatch: $jmd5" }
+
       - name: Run current tests
         shell: pwsh
         run: |
           $env:PYTHONPATH = "$PWD\src"
           python -m pytest -q
+
+      - name: Verify runtime payload
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'models\Qwen3-1.7B-Q4_K_M.gguf')) { throw 'Qwen model missing' }
+          if (-not (Test-Path 'runtime\llama-server.exe')) { throw 'llama-server missing' }
+          if (-not (Test-Path 'runtime\whisper\whisper-cli.exe')) { throw 'whisper-cli missing' }
+          if (-not (Test-Path 'models\voice\ggml-base.bin')) { throw 'Whisper model missing' }
+          if (-not (Test-Path 'runtime\piper\piper.exe')) { throw 'Piper missing' }
+          if (-not (Test-Path 'models\voice\ar_JO-kareem-medium.onnx')) { throw 'Arabic Piper voice missing' }
 
       - name: Build app folder
         shell: pwsh
@@ -161,7 +212,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: YourAssistantAgent-Windows-Setup
+          name: YourAssistantAgent-Windows-Setup-v2.2.0
           path: |
             output/*.exe
             output/*.sha256.txt

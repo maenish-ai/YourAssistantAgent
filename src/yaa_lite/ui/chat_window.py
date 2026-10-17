@@ -10,7 +10,7 @@ from tkinter import filedialog, ttk, messagebox
 from ..agent.facebook_service import FacebookService
 from ..agent.orchestrator import SmartAgentController, AgentResponse
 from ..ai.engine import ChatEngine
-from ..ai.profiles import HAMMER
+from ..ai.profiles import QWEN
 from ..ai.runtime import LocalAIError, LocalAIRuntime
 from ..backup.service import BackupService
 from ..config import Settings
@@ -27,7 +27,7 @@ class ChatWindow(ttk.Frame):
                  on_activity=None, on_session_title_changed=None, on_voice_request=None):
         super().__init__(master, padding=0)
         self.settings = settings
-        self.profile = HAMMER
+        self.profile = QWEN
         self.session_id = int(session_id)
         self.on_activity = on_activity
         self.on_session_title_changed = on_session_title_changed
@@ -45,13 +45,14 @@ class ChatWindow(ttk.Frame):
 
     def t(self, ar: str, en: str) -> str: return ui_text(ar, en, self.settings.interface_language)
     @property
-    def agent_key(self) -> str: return "hammer"
+    def agent_key(self) -> str: return "hammer"  # database compatibility key
 
     def _build(self):
         self.columnconfigure(0, weight=1); self.rowconfigure(1, weight=1)
         top=ttk.Frame(self,padding=(28,12,28,4));top.grid(row=0,column=0,sticky="ew");top.columnconfigure(0,weight=1)
         ttk.Label(top,text=self.settings.assistant_name or "Your Assistant Agent",style="CardTitle.TLabel").grid(row=0,column=0,sticky="w")
-        self.model_state=ttk.Label(top,text=self.t("Hammer • جاهز عند الطلب","Hammer • ready on demand"),style="Muted.TLabel");self.model_state.grid(row=0,column=1,sticky="e")
+        initial = self.t("Qwen3 • جاهز","Qwen3 • ready") if self.runtime.loaded_profile else self.t("Qwen3 • يتم التجهيز بالخلفية","Qwen3 • preparing in background")
+        self.model_state=ttk.Label(top,text=initial,style="Muted.TLabel");self.model_state.grid(row=0,column=1,sticky="e")
 
         body=ttk.Frame(self,padding=(28,4,28,0));body.grid(row=1,column=0,sticky="nsew");body.columnconfigure(0,weight=1);body.rowconfigure(0,weight=1)
         self.chat=tk.Text(body,wrap="word",state="disabled",relief="flat",borderwidth=0,highlightthickness=0,bg=theme.BG,fg=theme.TEXT,font=("Segoe UI",10),padx=18,pady=14,spacing1=2,spacing3=6)
@@ -74,13 +75,13 @@ class ChatWindow(ttk.Frame):
         ttk.Button(composer,text="＋",width=3,command=self._attach).grid(row=1,column=0,sticky="w",padx=(8,2),pady=(0,8))
         ttk.Button(composer,text="🎙",width=3,command=self._voice).grid(row=1,column=1,sticky="w",padx=2,pady=(0,8))
         self.status=ttk.Label(composer,text=self.t("جاهز","Ready"),style="Muted.TLabel");self.status.grid(row=1,column=2,sticky="e",padx=8,pady=(0,8))
-        ttk.Button(composer,text=self.t("إيقاف Hammer","Stop Hammer"),command=self.stop_ai).grid(row=1,column=3,sticky="e",padx=4,pady=(0,8))
+        ttk.Button(composer,text=self.t("إيقاف Qwen","Stop Qwen"),command=self.stop_ai).grid(row=1,column=3,sticky="e",padx=4,pady=(0,8))
         self.send_btn=ttk.Button(composer,text=self.t("إرسال ➤","Send ➤"),style="Accent.TButton",command=self.send);self.send_btn.grid(row=1,column=4,sticky="e",padx=(4,8),pady=(0,8))
-        ttk.Label(composer_outer,text=self.t("كل الرسائل تمر عبر Hammer • Enter للإرسال • Shift+Enter لسطر جديد","Every message goes through Hammer • Enter sends • Shift+Enter for new line"),style="Muted.TLabel").grid(row=1,column=0,sticky="w",pady=(6,0))
+        ttk.Label(composer_outer,text=self.t("اكتب أو اضغط الميكروفون وتكلم • Enter للإرسال • Shift+Enter لسطر جديد","Type or press the microphone and speak • Enter sends • Shift+Enter for new line"),style="Muted.TLabel").grid(row=1,column=0,sticky="w",pady=(6,0))
 
     def _load_history(self):
         history=self.db.recent_messages("hammer",80,session_id=self.session_id)
-        if not history:self._append_hint(self.t("احكي معي طبيعي. Hammer هو العقل الوحيد للمحادثة والمهام.","Talk naturally. Hammer is the only AI brain for chat and tasks."))
+        if not history:self._append_hint(self.t("احكي معي طبيعي أو اضغط الميكروفون. Qwen هو العقل المحلي للمحادثة والمهام.","Talk naturally or press the microphone. Qwen is the local brain for chat and tasks."))
         for m in history:self._append(m["role"],m["content"])
 
     def _append_hint(self,text):
@@ -101,12 +102,22 @@ class ChatWindow(ttk.Frame):
         if paths:self.attachments.extend(paths);self.status.config(text=self.t(f"{len(self.attachments)} مرفق",f"{len(self.attachments)} attachment(s)"))
 
     def _voice(self):
+        if self.busy:
+            return
         self._voice_turn_started = True
+        self.status.config(text=self.t("🎙 أسمعك… تكلم الآن","🎙 Listening… speak now"))
         if self.on_voice_request:self.on_voice_request(self)
-        else:messagebox.showinfo(self.t("الصوت","Voice"),self.t("فعّل مهارة الصوت من Settings > Voice.","Enable the voice skill from Settings > Voice."),parent=self)
+        else:
+            self._voice_turn_started = False
+            messagebox.showinfo(self.t("الصوت","Voice"),self.t("خدمة الصوت غير متاحة في هذه النسخة.","Voice service is unavailable in this build."),parent=self)
 
     def prefill_and_send(self,text:str):
         self.input.delete("1.0","end");self.input.insert("1.0",text);self.send()
+
+    def voice_failed(self, message: str):
+        self._voice_turn_started = False
+        self.status.config(text=self.t("تعذر فهم الصوت","Voice failed"))
+        messagebox.showerror(self.t("الصوت","Voice"), message, parent=self)
 
     def send(self):
         if self.busy:return
@@ -116,16 +127,16 @@ class ChatWindow(ttk.Frame):
         self.input.delete("1.0","end");self._append("user",text);self.db.add_message("user",text,"hammer",self.session_id);self.db.rename_session_from_first_message(self.session_id,text)
         if self.on_session_title_changed:self.on_session_title_changed()
         self.db.add_activity("chat_request",f"session={self.session_id}; {text[:500]}")
-        history=self.db.recent_messages("hammer",10,session_id=self.session_id);self.busy=True;self.send_btn.state(["disabled"]);self.status.config(text=self.t("Hammer يحلل…","Hammer is analyzing…"));self.detail_btn.pack_forget();self.detail_box.pack_forget()
+        history=self.db.recent_messages("hammer",10,session_id=self.session_id);self.busy=True;self.send_btn.state(["disabled"]);self.status.config(text=self.t("Qwen يحلل…","Qwen is analyzing…"));self.detail_btn.pack_forget();self.detail_box.pack_forget()
 
         def work():
             try:
-                reply=self.controller.handle(HAMMER,history[:-1],text_for_ai,self.session_id,self.settings.max_response_tokens,self.settings.ai_timeout_seconds,status=lambda s:self.result_q.put(("status",s)))
+                reply=self.controller.handle(QWEN,history[:-1],text_for_ai,self.session_id,self.settings.max_response_tokens,self.settings.ai_timeout_seconds,status=lambda s:self.result_q.put(("status",s)))
                 self.result_q.put(("reply",reply))
             except LocalAIError as e:
                 detail=f"{type(e.__cause__).__name__ if e.__cause__ else 'LocalAIError'}: {e.__cause__ or e}";self.result_q.put(("ai_error",detail))
             except Exception as e:self.result_q.put(("ai_error",f"{type(e).__name__}: {e}"))
-        threading.Thread(target=work,daemon=True,name="yaa-hammer-worker").start()
+        threading.Thread(target=work,daemon=True,name="yaa-qwen-worker").start()
 
     def _poll_results(self):
         try:
@@ -133,29 +144,31 @@ class ChatWindow(ttk.Frame):
                 kind,value=self.result_q.get_nowait()
                 if kind=="status":
                     mapping={
-                        "Starting Hammer 2.1…":self.t("تشغيل Hammer 2.1…","Starting Hammer 2.1…"),
-                        "Hammer 2.1 ready":self.t("Hammer جاهز","Hammer ready"),
-                        "Hammer is choosing an action…":self.t("Hammer يختار الأداة…","Hammer is choosing a tool…"),
-                        "Hammer is thinking…":self.t("Hammer يفكر…","Hammer is thinking…"),
-                        "Hammer failed — retrying in low-memory mode…":self.t("تعطل Hammer — إعادة تشغيل بوضع خفيف…","Hammer failed — restarting in low-memory mode…"),
-                        "Hammer failed again — final ultra-safe retry…":self.t("تعطل مرة ثانية — آخر محاولة آمنة…","Hammer failed again — final safe retry…"),
+                        "Starting Qwen3…":self.t("تشغيل Qwen3…","Starting Qwen3…"),
+                        "Qwen3 ready":self.t("Qwen جاهز","Qwen ready"),
+                        "Qwen3 is choosing an action…":self.t("Qwen يختار الأداة…","Qwen is choosing a tool…"),
+                        "Qwen3 is thinking…":self.t("Qwen يفكر…","Qwen is thinking…"),
+                        "Qwen3 is handling the request…":self.t("Qwen ينفذ الطلب…","Qwen is handling the request…"),
+                        "Qwen3 failed — retrying in low-memory mode…":self.t("تعطل Qwen — إعادة تشغيل بوضع خفيف…","Qwen failed — restarting in low-memory mode…"),
+                        "Qwen3 failed again — final ultra-safe retry…":self.t("تعطل مرة ثانية — آخر محاولة آمنة…","Qwen failed again — final safe retry…"),
                     };self.status.config(text=mapping.get(value,value));self.model_state.config(text=mapping.get(value,value))
                 elif kind=="reply":
                     reply:AgentResponse=value;self._append("assistant",reply.text);self.db.add_message("assistant",reply.text,"hammer",self.session_id);self.db.add_activity("chat_reply",f"session={self.session_id}; {reply.text[:500]}");self.last_detail=reply.detail or ""
                     if self.last_detail:self.detail_btn.pack(side="right")
-                    self._finish(self.t("جاهز","Ready"));self.attachments.clear();self.model_state.config(text=self.t("Hammer • جاهز","Hammer • ready"));
+                    self._finish(self.t("جاهز","Ready"));self.attachments.clear();self.model_state.config(text=self.t("Qwen3 • جاهز","Qwen3 • ready"));
                     self._maybe_speak_reply(reply.text)
                     if self.on_activity:self.on_activity()
                 elif kind=="ai_error":
-                    self.db.add_activity("ai_error",value);self._append("assistant",self.t("Hammer لم يستطع إكمال الرد بعد محاولات إعادة التشغيل. افتح الحالة لرؤية التفاصيل التقنية.","Hammer could not complete the reply after automatic restart attempts. Open Status for technical details."));self.last_detail=value;self.detail_btn.pack(side="right");self._finish(self.t("راجع الحالة","See Status"));
+                    self.db.add_activity("ai_error",value);self._append("assistant",self.t("Qwen لم يستطع إكمال الرد بعد محاولات إعادة التشغيل. افتح الحالة لرؤية التفاصيل التقنية.","Qwen could not complete the reply after automatic restart attempts. Open Status for technical details."));self.last_detail=value;self.detail_btn.pack(side="right");self._finish(self.t("راجع الحالة","See Status"));
                     if self.on_activity:self.on_activity()
         except queue.Empty:pass
         if self.winfo_exists():self.after(100,self._poll_results)
 
-
     def _maybe_speak_reply(self, text: str):
-        mode=getattr(self.settings,"voice_reply_mode","text")
-        should=bool(getattr(self.settings,"voice_enabled",False)) and (mode=="always" or (mode=="voice_if_started" and self._voice_turn_started))
+        mode=getattr(self.settings,"voice_reply_mode","voice_if_started")
+        explicit_voice_turn=self._voice_turn_started
+        enabled=bool(getattr(self.settings,"voice_enabled",True))
+        should=explicit_voice_turn or (enabled and mode=="always")
         self._voice_turn_started=False
         if not should:return
         def work():
@@ -171,7 +184,7 @@ class ChatWindow(ttk.Frame):
         self.detail_box.configure(state="normal");self.detail_box.delete("1.0","end");self.detail_box.insert("1.0",self.last_detail);self.detail_box.configure(state="disabled");self.detail_box.pack(fill="x",pady=4)
 
     def _finish(self,status):self.busy=False;self.send_btn.state(["!disabled"]);self.status.config(text=status);self.input.focus_set()
-    def stop_ai(self):threading.Thread(target=lambda:self.runtime.stop(wait=True),daemon=True,name="yaa-stop-ai").start();self.status.config(text=self.t("جاري إيقاف Hammer…","Stopping Hammer…"));self.db.add_activity("ai_stop","hammer")
+    def stop_ai(self):threading.Thread(target=lambda:self.runtime.stop(wait=True),daemon=True,name="yaa-stop-ai").start();self.status.config(text=self.t("جاري إيقاف Qwen…","Stopping Qwen…"));self.db.add_activity("ai_stop","qwen")
     def apply_settings(self,settings:Settings):
         self.settings=settings;self.runtime.reconfigure(settings.context_tokens,settings.threads,retry_count=settings.hammer_retry_count,performance_mode=settings.performance_mode);self.controller.update_settings(settings);self.status.config(text=self.t("تم تطبيق الإعدادات","Settings applied"))
-    def shutdown(self):pass  # runtime is owned by App in v2.0
+    def shutdown(self):pass

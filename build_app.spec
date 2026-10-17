@@ -1,5 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_all
 
 root = Path(SPECPATH)
 datas = []
@@ -7,17 +8,23 @@ for folder in ("models", "runtime", "assets", "licenses", "browser_extension"):
     p = root / folder
     if p.exists():
         datas.append((str(p), folder))
-for file_name in ("THIRD_PARTY_SMOLAGENTS.md", "THIRD_PARTY_HAMMER.md"):
+for file_name in ("THIRD_PARTY_SMOLAGENTS.md", "THIRD_PARTY_HAMMER.md", "THIRD_PARTY_QWEN.md", "THIRD_PARTY_VOICE.md"):
     p = root / file_name
     if p.exists():
         datas.append((str(p), "."))
 
+sd_datas, sd_binaries, sd_hidden = collect_all("sounddevice")
+datas += sd_datas
+binaries = list(sd_binaries)
+
 hiddenimports = [
     "yaa_lite",
     "yaa_lite.main",
+    "yaa_lite.personal_assistant_v220",
     "yaa_lite.ui.app",
     "PIL",
     "pystray",
+    "sounddevice",
     "yaa_lite.startup",
     "yaa_lite.voice.service",
     "yaa_lite.browser_bridge.server",
@@ -52,12 +59,12 @@ hiddenimports = [
     "yaa_lite.facebook_backend.share_outcome",
     "yaa_lite.agent.smol_contract",
     "playwright.sync_api",
-]
+] + list(sd_hidden)
 
 a = Analysis(
     [str(root / "launcher.py")],
     pathex=[str(root / "src")],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],

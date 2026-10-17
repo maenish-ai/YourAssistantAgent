@@ -3,11 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from ..ai.profiles import HAMMER
+from ..ai.profiles import QWEN
 from ..ai.runtime import LocalAIRuntime
 
-HAMMER_MODEL_LABEL = "Hammer 2.1 0.5B Q4_K_M"
-HAMMER_LICENSE = "CC-BY-NC-4.0"
+PRIMARY_MODEL_LABEL = "Qwen3 1.7B Q4_K_M"
+PRIMARY_MODEL_LICENSE = "Apache-2.0"
+# Compatibility names retained for older imports.
+HAMMER_MODEL_LABEL = PRIMARY_MODEL_LABEL
+HAMMER_LICENSE = PRIMARY_MODEL_LICENSE
 
 
 @dataclass
@@ -18,11 +21,11 @@ class HammerDecision:
 
 
 class HammerAgentRouter:
-    """Hammer is the only conversational/reasoning model in v2.0.
+    """Compatibility-named router backed by Qwen3.
 
-    It never receives arbitrary Python execution. It chooses one item from an
-    explicit allow-list and the application remains the safety/permission
-    boundary around external actions.
+    The application remains the safety and permission boundary. Qwen chooses
+    from an explicit allow-list; arbitrary Python or shell execution is never
+    exposed to the model.
     """
 
     def __init__(self, runtime: LocalAIRuntime):
@@ -35,10 +38,10 @@ class HammerAgentRouter:
                 "type": "function",
                 "function": {
                     "name": "respond",
-                    "description": "Use for normal conversation, greetings, explanations, and any request that does not require an application tool. Reply naturally in the user's language.",
+                    "description": "Normal conversation, greetings, explanations, and requests that need no application action. Reply naturally in the user's language.",
                     "parameters": {
                         "type": "object",
-                        "properties": {"message": {"type": "string", "description": "The final natural-language reply"}},
+                        "properties": {"message": {"type": "string", "description": "Final natural-language reply"}},
                         "required": ["message"],
                     },
                 },
@@ -47,7 +50,7 @@ class HammerAgentRouter:
                 "type": "function",
                 "function": {
                     "name": "app_status",
-                    "description": "Read a compact status summary for Hammer, Facebook, saved groups, tasks and backup.",
+                    "description": "Read compact status for the AI, Facebook, saved groups, tasks and backup.",
                     "parameters": {"type": "object", "properties": {}, "required": []},
                 },
             },
@@ -55,7 +58,7 @@ class HammerAgentRouter:
                 "type": "function",
                 "function": {
                     "name": "list_tasks",
-                    "description": "List saved scheduled tasks and their next run state.",
+                    "description": "List saved scheduled tasks and their next-run state.",
                     "parameters": {"type": "object", "properties": {}, "required": []},
                 },
             },
@@ -71,7 +74,7 @@ class HammerAgentRouter:
                 "type": "function",
                 "function": {
                     "name": "prepare_facebook_campaign",
-                    "description": "Prepare or edit a Facebook group-sharing campaign from the user's natural-language instruction. Do not claim it executed. The app previews sensitive actions before approval.",
+                    "description": "Prepare or edit a Facebook group-sharing campaign from natural language. Do not claim it executed; the app previews sensitive actions before approval.",
                     "parameters": {
                         "type": "object",
                         "properties": {"instruction": {"type": "string", "description": "Complete instruction preserving time, source page and group filter wording"}},
@@ -95,7 +98,7 @@ class HammerAgentRouter:
                 "type": "function",
                 "function": {
                     "name": "facebook_status",
-                    "description": "Read Facebook connection status without performing a publish action.",
+                    "description": "Read Facebook connection status without publishing anything.",
                     "parameters": {"type": "object", "properties": {}, "required": []},
                 },
             },
@@ -103,7 +106,7 @@ class HammerAgentRouter:
                 "type": "function",
                 "function": {
                     "name": "discover_facebook_groups",
-                    "description": "Refresh joined Facebook groups. This opens/uses the Facebook browser connection and requires approval.",
+                    "description": "Refresh joined Facebook groups. This uses the Facebook connection and requires approval.",
                     "parameters": {"type": "object", "properties": {}, "required": []},
                 },
             },
@@ -122,9 +125,11 @@ class HammerAgentRouter:
         ]
 
     def decide(self, history: list[dict], user_text: str, max_tokens: int, timeout: int, status=None) -> HammerDecision:
-        messages = history[-8:] + [{"role": "user", "content": user_text[:3500]}]
+        # Tool routing gets a shorter history than normal chat so the schemas fit
+        # comfortably in the low-memory context window.
+        messages = history[-5:] + [{"role": "user", "content": user_text[:2800]}]
         raw = self.runtime.tool_call(
-            HAMMER, messages, tools=self.tool_schemas(), max_tokens=max_tokens, timeout=timeout, status=status
+            QWEN, messages, tools=self.tool_schemas(), max_tokens=max_tokens, timeout=timeout, status=status
         )
         name = str(raw.get("name") or "respond")
         args = raw.get("arguments") if isinstance(raw.get("arguments"), dict) else {}

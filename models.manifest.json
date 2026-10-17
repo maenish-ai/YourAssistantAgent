@@ -1,15 +1,15 @@
 {
-  "version": 2,
+  "version": 3,
   "models": [
     {
-      "key": "hammer",
-      "name": "Hammer 2.1 0.5B Q4_K_M",
-      "filename": "hammer2.1-0.5b-Q4_K_M.gguf",
-      "url": "https://huggingface.co/Melvin56/Hammer2.1-0.5b-GGUF/resolve/main/hammer2.1-0.5b-Q4_K_M.gguf?download=true",
-      "sha256": "190676fe7ac430ac6680b32c216d4eb7413002e2af0c140b8280a0f74fcc6a4d",
-      "size_bytes": 397544192,
-      "base_model": "MadeAgents/Hammer2.1-0.5b",
-      "license": "CC-BY-NC-4.0"
+      "key": "qwen",
+      "name": "Qwen3 1.7B Q4_K_M",
+      "filename": "Qwen3-1.7B-Q4_K_M.gguf",
+      "url": "https://huggingface.co/ggml-org/Qwen3-1.7B-GGUF/resolve/daeb8e2d528a760970442092f6bf1e55c3b659eb/Qwen3-1.7B-Q4_K_M.gguf?download=true",
+      "sha256": "d2387ca2dbfee2ffabce7120d3770dadca0b293052bc2f0e138fdc940d9bc7b5",
+      "size_bytes": 1282439264,
+      "base_model": "Qwen/Qwen3-1.7B",
+      "license": "Apache-2.0"
     }
   ]
 }

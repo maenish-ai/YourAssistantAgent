@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "your-assistant-agent-lite"
-version = "2.0.1"
-description = "ChatGPT-like lightweight desktop assistant powered by Hammer 2.1 local Smart Agent tool routing."
+version = "2.2.0"
+description = "Lightweight Windows desktop assistant powered locally by Qwen3 1.7B with offline voice and safe application tools."
 requires-python = ">=3.11"
 dependencies = [
   "cryptography>=43,<46",
@@ -14,6 +14,7 @@ dependencies = [
   "playwright>=1.49,<2",
   "pystray>=0.19,<0.20",
   "Pillow>=10,<12",
+  "sounddevice>=0.5,<0.6",
 ]
 
 [project.scripts]

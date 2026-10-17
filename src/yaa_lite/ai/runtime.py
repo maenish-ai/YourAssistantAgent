@@ -14,11 +14,11 @@ from typing import Callable
 import requests
 
 from ..config import data_dir
-from .profiles import AgentProfile
+from .profiles import AgentProfile, QWEN
 
 
 class LocalAIError(RuntimeError):
-    """User-facing local AI failure. The technical detail is written to the AI log."""
+    """User-facing local AI failure. Technical details are written to the AI log."""
 
 
 def bundle_root() -> Path:
@@ -64,29 +64,38 @@ def _free_port() -> int:
     return port
 
 
-def _parse_json_object(text: str) -> dict | None:
-    """Normalize Hammer's textual tool-call format to the first call object.
+def _strip_reasoning(text: str) -> str:
+    text = str(text or "")
+    while "<think>" in text and "</think>" in text:
+        a = text.find("<think>")
+        b = text.find("</think>", a)
+        if b < 0:
+            break
+        text = (text[:a] + text[b + len("</think>"):]).strip()
+    return text.strip()
 
-    Hammer's native template normally emits a JSON *list* of tool calls, while
-    some llama.cpp builds return one object or wrap JSON in a Markdown fence.
-    Supporting all three keeps the app independent of a specific parser build.
-    """
-    if not text:
+
+def _parse_json_object(text: str) -> dict | None:
+    """Parse one JSON object from plain, fenced, listed, or lightly wrapped output."""
+    cleaned = _strip_reasoning(text).strip()
+    if not cleaned:
         return None
-    cleaned = text.strip()
     cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.I)
     cleaned = re.sub(r"\s*```$", "", cleaned)
     try:
         parsed = json.loads(cleaned)
         if isinstance(parsed, dict):
             return parsed
-        if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict):
-            return parsed[0]
-        if isinstance(parsed, list) and not parsed:
-            return None
+        if isinstance(parsed, list):
+            if parsed and isinstance(parsed[0], dict):
+                return parsed[0]
+            # Some tool-tuned models legitimately emit [] when no tool is needed.
+            if not parsed:
+                return {"name": "respond", "arguments": {}}
     except Exception:
         pass
-    # Last-resort compatibility for models that surround one object with prose.
+
+    # Support wrappers such as <tool_call>{...}</tool_call> or prose around JSON.
     first, last = cleaned.find("{"), cleaned.rfind("}")
     if first >= 0 and last > first:
         try:
@@ -98,15 +107,87 @@ def _parse_json_object(text: str) -> dict | None:
 
 
 
-def _hammer_simple_tools(tools: list[dict]) -> list[dict]:
-    """Convert OpenAI-style function schemas to Hammer's native tool list.
 
-    Hammer 2.1 was trained with ``[{name, description, parameters}, ...]``
-    inside its chat template. Sending OpenAI ``tools`` directly to llama.cpp
-    makes llama.cpp choose/execute a server-side tool parser which is not
-    Hammer's native parser and can crash on some builds. We therefore render
-    Hammer's own template ourselves and use the raw completion endpoint.
-    """
+def _compact_messages(messages: list[dict], *, total_chars: int, per_message: int, max_messages: int) -> list[dict]:
+    """Bound local prompt size while preserving preferences and recent turns."""
+    systems: list[dict] = []
+    normal: list[dict] = []
+    for m in messages or []:
+        role = str(m.get("role") or "user")
+        content = str(m.get("content") or "")
+        item = {"role": role, "content": content[-per_message:]}
+        if role == "system":
+            systems.append(item)
+        else:
+            normal.append(item)
+
+    selected: list[dict] = []
+    used = 0
+    for m in systems[-2:]:
+        text = m["content"][-min(per_message, 800):]
+        if used + len(text) <= total_chars:
+            selected.append({"role": "system", "content": text})
+            used += len(text)
+
+    tail: list[dict] = []
+    for m in reversed(normal):
+        text = m["content"][-per_message:]
+        if tail and used + len(text) > total_chars:
+            break
+        if used + len(text) > total_chars:
+            text = text[-max(0, total_chars - used):]
+        if not text:
+            break
+        tail.append({"role": m["role"], "content": text})
+        used += len(text)
+        if len(tail) >= max_messages:
+            break
+    selected.extend(reversed(tail))
+    return selected
+
+def _compact_native_messages(messages: list[dict], *, total_chars: int = 5600, max_messages: int = 10) -> list[dict]:
+    """Compact messages without dropping system context or tool protocol fields."""
+    systems: list[dict] = []
+    normal: list[dict] = []
+    for raw in messages or []:
+        role = str(raw.get("role") or "user")
+        (systems if role == "system" else normal).append(raw)
+
+    out: list[dict] = []
+    used = 0
+    for raw in systems[-2:]:
+        content = str(raw.get("content") or "")[-900:]
+        if used + len(content) > total_chars and out:
+            break
+        item = {"role": "system", "content": content}
+        out.append(item)
+        used += len(content)
+
+    tail: list[dict] = []
+    slots = max(1, max_messages - len(out))
+    for raw in reversed(normal):
+        if len(tail) >= slots:
+            break
+        role = str(raw.get("role") or "user")
+        content = str(raw.get("content") or "")
+        remaining = max(0, total_chars - used)
+        if remaining <= 0 and tail:
+            break
+        clipped = content[-min(1400, remaining):] if content else ""
+        item: dict = {"role": role, "content": clipped}
+        if isinstance(raw.get("tool_calls"), list):
+            item["tool_calls"] = raw["tool_calls"]
+        if raw.get("tool_call_id"):
+            item["tool_call_id"] = str(raw["tool_call_id"])
+        if raw.get("name"):
+            item["name"] = str(raw["name"])
+        tail.append(item)
+        used += len(clipped)
+    out.extend(reversed(tail))
+    return out
+
+
+def _simple_tools(tools: list[dict]) -> list[dict]:
     out: list[dict] = []
     for item in tools or []:
         if not isinstance(item, dict):
@@ -124,86 +205,90 @@ def _hammer_simple_tools(tools: list[dict]) -> list[dict]:
     return out
 
 
-def _hammer_prompt(profile: AgentProfile, messages: list[dict], tools: list[dict]) -> str:
-    """Render the native Hammer 2.1 function-calling prompt.
-
-    This intentionally mirrors the model's tokenizer chat template instead of
-    delegating tool rendering to llama.cpp. It keeps behavior stable across
-    llama.cpp releases and avoids the ConnectionReset/500 failure seen with
-    server-side tool parsing on some Windows builds.
-    """
-    system_parts = [profile.system_prompt.strip()]
-    loop_messages: list[dict] = []
-    for m in messages or []:
-        role = str(m.get("role") or "user")
-        content = str(m.get("content") or "")
-        if role == "system":
-            if content.strip():
-                system_parts.append(content.strip())
-        else:
-            loop_messages.append({"role": role, "content": content})
-
-    simple_tools = _hammer_simple_tools(tools)
-    task_instruction = (
-        "You are a tool calling assistant. Select the appropriate tool and fill in its parameters. "
-        "For ordinary conversation, greetings, explanations, or anything that does not need an external action, "
-        "use the respond tool. Never invent tool results."
-    )
-    format_instruction = (
-        "Output ONLY a JSON list and no other text. The format must be exactly: "
-        '[{"name":"tool_name","arguments":{"key":"value"}}]. '
-        "Choose exactly one tool for this turn."
-    )
-    tool_text = json.dumps(simple_tools, ensure_ascii=False, separators=(",", ":"))
-    parts = [
-        "<|im_start|>system\n" + "\n".join(system_parts) + "<|im_end|>\n",
-        "<|im_start|>user\n[BEGIN OF TASK INSTRUCTION]\n" + task_instruction +
-        "\n[END OF TASK INSTRUCTION]\n\n[BEGIN OF AVAILABLE_TOOLS]\n" + tool_text +
-        "\n[END OF AVAILABLE_TOOLS]\n\n[BEGIN OF FORMAT INSTRUCTION]\n" + format_instruction +
-        "\n[END OF FORMAT INSTRUCTION]\n<|im_end|>\n",
-    ]
-    for m in loop_messages[-8:]:
-        role = m["role"] if m["role"] in {"user", "assistant", "tool"} else "user"
-        parts.append(f"<|im_start|>{role}\n{m['content']}<|im_end|>\n")
-    parts.append("<|im_start|>assistant\n")
-    return "".join(parts)
-
-
 class LocalAIRuntime:
-    """Lazy llama.cpp runtime tuned for 4 GB Windows laptops.
+    """Long-lived local llama.cpp runtime for Qwen3 on low-memory Windows PCs.
 
-    v1.7 ships only one model (Hammer 2.1 0.5B), so the same process handles
-    ordinary chat and structured tool routing. This avoids keeping two models in
-    RAM and fixes the old Arabic/General model switching overhead.
+    Qwen handles natural conversation through llama.cpp's normal chat endpoint.
+    Tool routing is intentionally performed as a constrained JSON classification
+    prompt rather than relying on llama.cpp's model-specific server-side tool
+    parser. This makes the desktop app the stable permission/tool boundary.
     """
 
-    def __init__(self, context_tokens: int = 2048, threads: int = 2, retry_once: bool = True, retry_count: int | None = None, performance_mode: str = "balanced"):
-        self.performance_mode = performance_mode if performance_mode in {"eco","balanced","performance"} else "balanced"
-        self.context_tokens = max(768, min(int(context_tokens), 2048))
-        self.threads = max(1, min(int(threads), 2))
+    def __init__(
+        self,
+        context_tokens: int = 3072,
+        threads: int = 2,
+        retry_once: bool = True,
+        retry_count: int | None = None,
+        performance_mode: str = "balanced",
+        prewarm: bool = True,
+    ):
+        self.performance_mode = performance_mode if performance_mode in {"eco", "balanced", "performance"} else "balanced"
+        self.context_tokens = max(1536, min(int(context_tokens), 4096))
+        self.threads = max(1, min(int(threads), 4))
         if self.performance_mode == "eco":
-            self.context_tokens = 1024; self.threads = 1
+            self.context_tokens = min(self.context_tokens, 2048)
+            self.threads = 1
         self.retry_count = max(0, min(int(retry_count if retry_count is not None else (1 if retry_once else 0)), 2))
-        self.retry_once = self.retry_count > 0  # backward-compatible attribute
+        self.retry_once = self.retry_count > 0
         self.last_used_monotonic = 0.0
         self._proc: subprocess.Popen | None = None
         self._profile_key: str | None = None
         self._port: int | None = None
-        self._safe_mode = False
+        self._safe_mode = 0
         self._lock = threading.RLock()
+        self._start_lock = threading.Lock()
         self._log_handle = None
+        self._prewarm_thread: threading.Thread | None = None
+
+        # The user's main complaint was first-request hangs. If the packaged model
+        # and runtime exist, warm Qwen quietly as soon as the app services start.
+        if prewarm and self._can_prewarm():
+            self._prewarm_thread = threading.Thread(
+                target=self._prewarm_worker,
+                daemon=True,
+                name="yaa-qwen-prewarm",
+            )
+            self._prewarm_thread.start()
+
+    def _can_prewarm(self) -> bool:
+        try:
+            find_llama_server()
+            model_path(QWEN)
+            return True
+        except Exception:
+            return False
+
+    def _prewarm_worker(self) -> None:
+        try:
+            self.ensure_started(QWEN)
+            self._write_log("Qwen prewarm completed")
+        except Exception as exc:
+            # Startup must never be blocked by AI warm-up. The normal retry path
+            # will show a user-facing error if the first request also fails.
+            self._write_log(f"Qwen prewarm failed: {type(exc).__name__}: {exc}")
 
     @property
     def loaded_profile(self) -> str | None:
         return self._profile_key
 
-    def reconfigure(self, context_tokens: int, threads: int, retry_once: bool = True, retry_count: int | None = None, performance_mode: str | None = None) -> None:
-        new_mode = performance_mode if performance_mode in {"eco","balanced","performance"} else self.performance_mode
-        new_context = max(768, min(int(context_tokens), 2048))
-        new_threads = max(1, min(int(threads), 2))
-        if new_mode == "eco": new_context, new_threads = 1024, 1
+    def reconfigure(
+        self,
+        context_tokens: int,
+        threads: int,
+        retry_once: bool = True,
+        retry_count: int | None = None,
+        performance_mode: str | None = None,
+    ) -> None:
+        new_mode = performance_mode if performance_mode in {"eco", "balanced", "performance"} else self.performance_mode
+        new_context = max(1536, min(int(context_tokens), 4096))
+        new_threads = max(1, min(int(threads), 4))
+        if new_mode == "eco":
+            new_context, new_threads = min(new_context, 2048), 1
         new_retries = max(0, min(int(retry_count if retry_count is not None else (1 if retry_once else 0)), 2))
-        changed = (new_context, new_threads, new_retries, new_mode) != (self.context_tokens, self.threads, self.retry_count, self.performance_mode)
+        changed = (new_context, new_threads, new_retries, new_mode) != (
+            self.context_tokens, self.threads, self.retry_count, self.performance_mode
+        )
         self.context_tokens = new_context
         self.threads = new_threads
         self.performance_mode = new_mode
@@ -211,6 +296,8 @@ class LocalAIRuntime:
         self.retry_once = new_retries > 0
         if changed:
             self.stop(wait=False)
+            if self._can_prewarm():
+                threading.Thread(target=self._prewarm_worker, daemon=True, name="yaa-qwen-rewarm").start()
 
     def _write_log(self, message: str) -> None:
         try:
@@ -225,7 +312,7 @@ class LocalAIRuntime:
             proc, self._proc = self._proc, None
             self._profile_key = None
             self._port = None
-            self._safe_mode = False
+            self._safe_mode = 0
             handle, self._log_handle = self._log_handle, None
         if proc and proc.poll() is None:
             try:
@@ -246,39 +333,40 @@ class LocalAIRuntime:
             except Exception:
                 pass
 
-    def ensure_started(
+    def _ensure_started_unlocked(
         self,
         profile: AgentProfile,
         status: Callable[[str], None] | None = None,
         safe_mode: int | bool = 0,
     ) -> None:
+        level = int(safe_mode)
         with self._lock:
             if (
                 self._proc
                 and self._proc.poll() is None
                 and self._profile_key == profile.model_filename
-                and self._safe_mode == safe_mode
+                and self._safe_mode == level
             ):
                 self.last_used_monotonic = time.monotonic()
                 return
+
         self.stop(wait=False)
-        level = int(safe_mode)
         if status:
             if level == 0:
-                status("Starting Hammer 2.1…")
+                status("Starting Qwen3…")
             elif level == 1:
-                status("Restarting Hammer in low-memory mode…")
+                status("Restarting Qwen3 in low-memory mode…")
             else:
-                status("Restarting Hammer in ultra-safe mode…")
+                status("Restarting Qwen3 in ultra-safe mode…")
 
         server = find_llama_server()
         model = model_path(profile)
         port = _free_port()
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
-        ctx = self.context_tokens if level == 0 else (1536 if level == 1 else 1024)
+        ctx = self.context_tokens if level == 0 else (2048 if level == 1 else 1536)
         threads = self.threads if level == 0 else 1
-        normal_batch = 16 if self.performance_mode == "eco" else (48 if self.performance_mode == "performance" else 32)
-        batch = normal_batch if level == 0 else (16 if level == 1 else 8)
+        normal_batch = 12 if self.performance_mode == "eco" else (32 if self.performance_mode == "performance" else 24)
+        batch = normal_batch if level == 0 else (12 if level == 1 else 8)
         cmd = [
             str(server),
             "--model", str(model),
@@ -289,11 +377,12 @@ class LocalAIRuntime:
             "--batch-size", str(batch),
             "--ubatch-size", str(batch),
             "--parallel", "1",
+            "--jinja",
         ]
 
         log_file = log_path().open("a", encoding="utf-8", errors="replace")
         self._write_log(
-            f"Starting Hammer model={profile.model_filename} safe_mode={level} ctx={ctx} threads={threads} batch={batch}"
+            f"Starting Qwen model={profile.model_filename} safe_mode={level} ctx={ctx} threads={threads} batch={batch}"
         )
         try:
             proc = subprocess.Popen(
@@ -306,7 +395,7 @@ class LocalAIRuntime:
             log_file.close()
             raise
 
-        deadline = time.monotonic() + (65 if level else 50)
+        deadline = time.monotonic() + (85 if level else 70)
         url = f"http://127.0.0.1:{port}/health"
         while time.monotonic() < deadline:
             if proc.poll() is not None:
@@ -314,7 +403,7 @@ class LocalAIRuntime:
                 self._write_log(f"llama-server exited during startup with code {proc.returncode}")
                 raise RuntimeError(f"Local AI process stopped during startup (exit {proc.returncode})")
             try:
-                r = requests.get(url, timeout=0.8)
+                r = requests.get(url, timeout=0.9)
                 if r.status_code < 500:
                     with self._lock:
                         self._proc = proc
@@ -324,7 +413,7 @@ class LocalAIRuntime:
                         self._log_handle = log_file
                     self.last_used_monotonic = time.monotonic()
                     if status:
-                        status("Hammer 2.1 ready")
+                        status("Qwen3 ready")
                     return
             except requests.RequestException:
                 pass
@@ -335,26 +424,32 @@ class LocalAIRuntime:
         except Exception:
             pass
         log_file.close()
-        self._write_log("Hammer startup timed out")
+        self._write_log("Qwen startup timed out")
         raise TimeoutError("Local AI did not become ready in time")
 
-    def _hammer_completion(
+    def ensure_started(
+        self,
+        profile: AgentProfile,
+        status: Callable[[str], None] | None = None,
+        safe_mode: int | bool = 0,
+    ) -> None:
+        # Prewarm and an immediate user request may arrive at the same time.
+        # Serialize the whole stop/spawn/health-check sequence so they cannot
+        # start competing llama-server processes or kill each other's server.
+        with self._start_lock:
+            self._ensure_started_unlocked(profile, status=status, safe_mode=safe_mode)
+
+    def _chat_completion(
         self,
         profile: AgentProfile,
         messages: list[dict],
-        tools: list[dict],
         max_tokens: int,
         timeout: int,
         status: Callable[[str], None] | None,
         safe_mode: int | bool,
+        temperature: float = 0.25,
+        system_prompt: str | None = None,
     ) -> str:
-        """Run Hammer through llama.cpp's raw completion endpoint.
-
-        We deliberately do not send the OpenAI ``tools`` field. Hammer has its
-        own function-calling chat template; rendering it here avoids depending
-        on llama.cpp's model-specific tool parser and fixes the Windows server
-        reset seen in v2.0.0.
-        """
         self.ensure_started(profile, status=status, safe_mode=safe_mode)
         with self._lock:
             port = self._port
@@ -362,102 +457,174 @@ class LocalAIRuntime:
         if not port or not proc or proc.poll() is not None:
             raise RuntimeError("Local AI server is unavailable")
 
-        prompt = _hammer_prompt(profile, messages, tools)
-        limit = max(64, min(int(max_tokens), 256 if int(safe_mode) == 0 else 160))
+        system = system_prompt if system_prompt is not None else profile.system_prompt
         payload = {
-            "prompt": prompt,
-            "n_predict": limit,
-            "temperature": 0.0,
+            "model": "local",
+            "messages": [{"role": "system", "content": system}] + [
+                {"role": str(m.get("role") or "user"), "content": str(m.get("content") or "")}
+                for m in messages
+            ],
+            "temperature": float(temperature),
+            "max_tokens": max(64, min(int(max_tokens), 384 if int(safe_mode) == 0 else 224)),
             "stream": False,
-            "stop": ["<|im_end|>"],
-            "cache_prompt": True,
         }
         if status:
-            status("Hammer is choosing an action…")
-
-        url = f"http://127.0.0.1:{port}/completion"
+            status("Qwen3 is thinking…")
         try:
-            r = requests.post(url, json=payload, timeout=timeout)
-            # Some llama.cpp builds can expose only the OpenAI completions path.
-            if r.status_code == 404:
-                r = requests.post(
-                    f"http://127.0.0.1:{port}/v1/completions",
-                    json={
-                        "model": "local",
-                        "prompt": prompt,
-                        "max_tokens": limit,
-                        "temperature": 0.0,
-                        "stream": False,
-                        "stop": ["<|im_end|>"],
-                    },
-                    timeout=timeout,
-                )
+            r = requests.post(
+                f"http://127.0.0.1:{port}/v1/chat/completions",
+                json=payload,
+                timeout=timeout,
+            )
             if not r.ok:
-                body = (r.text or "")[:2000]
-                self._write_log(f"Hammer HTTP {r.status_code}: {body}")
+                self._write_log(f"Qwen HTTP {r.status_code}: {(r.text or '')[:2000]}")
                 r.raise_for_status()
             data = r.json()
         except requests.RequestException:
             code = proc.poll()
             if code is not None:
-                self._write_log(f"llama-server stopped during Hammer request with exit code {code}")
+                self._write_log(f"llama-server stopped during Qwen request with exit code {code}")
             raise
 
-        if isinstance(data, dict) and "content" in data:
-            text = str(data.get("content") or "")
+        choice = (data.get("choices") or [{}])[0] if isinstance(data, dict) else {}
+        message = choice.get("message") if isinstance(choice, dict) else None
+        if isinstance(message, dict):
+            text = str(message.get("content") or "")
         else:
-            choices = data.get("choices") if isinstance(data, dict) else None
-            text = str((choices or [{}])[0].get("text") or "")
-        text = text.strip()
+            text = str(choice.get("text") or "") if isinstance(choice, dict) else ""
+        text = _strip_reasoning(text)
         if not text:
-            raise RuntimeError("Hammer returned an empty completion")
+            raise RuntimeError("Qwen returned an empty completion")
         self.last_used_monotonic = time.monotonic()
-        self._write_log(f"Hammer raw reply: {text[:1200]}")
+        self._write_log(f"Qwen raw reply: {text[:1200]}")
         return text
 
-    def _post_completion(
+    @staticmethod
+    def _api_message(message: dict) -> dict:
+        """Preserve OpenAI-compatible chat fields needed by native tool loops."""
+        out = {"role": str(message.get("role") or "user")}
+        if "content" in message:
+            out["content"] = message.get("content")
+        else:
+            out["content"] = ""
+        if isinstance(message.get("tool_calls"), list):
+            out["tool_calls"] = message["tool_calls"]
+        if message.get("tool_call_id"):
+            out["tool_call_id"] = str(message["tool_call_id"])
+        if message.get("name"):
+            out["name"] = str(message["name"])
+        return out
+
+    def native_turn(
         self,
         profile: AgentProfile,
         messages: list[dict],
+        tools: list[dict] | None,
         max_tokens: int,
         timeout: int,
-        status: Callable[[str], None] | None,
-        safe_mode: int | bool,
-        tools: list[dict] | None = None,
+        status: Callable[[str], None] | None = None,
     ) -> dict:
-        self.ensure_started(profile, status=status, safe_mode=safe_mode)
-        with self._lock:
-            port = self._port
-            proc = self._proc
-        if not port or not proc or proc.poll() is not None:
-            raise RuntimeError("Local AI server is unavailable")
-        payload: dict = {
-            "model": "local",
-            "messages": [{"role": "system", "content": profile.system_prompt}] + messages,
-            "temperature": 0.0 if tools else 0.35,
-            "max_tokens": max(64, min(int(max_tokens), 256 if int(safe_mode) == 0 else 160)),
-            "stream": False,
-        }
-        if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = "auto"
-        if status:
-            status("Hammer is choosing an action…" if tools else "Hammer is thinking…")
-        r = requests.post(
-            f"http://127.0.0.1:{port}/v1/chat/completions",
-            json=payload,
-            timeout=timeout,
-        )
-        r.raise_for_status()
-        data = r.json()
-        self.last_used_monotonic = time.monotonic()
-        return data["choices"][0]["message"]
+        """Run one native Qwen chat/tool turn through llama.cpp.
+
+        Normal conversation returns ``content`` directly. When Qwen needs an
+        application capability, llama.cpp parses Qwen's embedded Jinja/Hermes
+        tool format and returns OpenAI-style ``tool_calls``. No synthetic
+        ``respond`` function is required.
+        """
+        compact = _compact_native_messages(messages, total_chars=5600, max_messages=10)
+
+        def run(safe_mode: int):
+            self.ensure_started(profile, status=status, safe_mode=safe_mode)
+            with self._lock:
+                port = self._port
+                proc = self._proc
+            if not port or not proc or proc.poll() is not None:
+                raise RuntimeError("Local AI server is unavailable")
+
+            payload: dict = {
+                "model": "local",
+                "messages": [{"role": "system", "content": profile.system_prompt}] + [self._api_message(m) for m in compact],
+                "temperature": 0.15,
+                "max_tokens": max(64, min(int(max_tokens), 384 if int(safe_mode) == 0 else 224)),
+                "stream": False,
+            }
+            if tools:
+                payload["tools"] = tools
+                payload["tool_choice"] = "auto"
+                payload["parallel_tool_calls"] = False
+            if status:
+                status("Qwen3 is handling the request…")
+
+            try:
+                r = requests.post(
+                    f"http://127.0.0.1:{port}/v1/chat/completions",
+                    json=payload,
+                    timeout=timeout,
+                )
+                if not r.ok:
+                    self._write_log(f"Qwen native HTTP {r.status_code}: {(r.text or '')[:2000]}")
+                    r.raise_for_status()
+                data = r.json()
+            except requests.RequestException:
+                code = proc.poll()
+                if code is not None:
+                    self._write_log(f"llama-server stopped during native Qwen request with exit code {code}")
+                raise
+
+            choice = (data.get("choices") or [{}])[0] if isinstance(data, dict) else {}
+            message = choice.get("message") if isinstance(choice, dict) else None
+            if not isinstance(message, dict):
+                text = _strip_reasoning(str(choice.get("text") or "")) if isinstance(choice, dict) else ""
+                if not text:
+                    raise RuntimeError("Qwen returned an empty native completion")
+                message = {"role": "assistant", "content": text, "tool_calls": []}
+
+            content = _strip_reasoning(str(message.get("content") or "")).strip()
+            normalized_calls: list[dict] = []
+            for index, call in enumerate(message.get("tool_calls") or []):
+                if not isinstance(call, dict):
+                    continue
+                fn = call.get("function") if isinstance(call.get("function"), dict) else {}
+                name = str(fn.get("name") or call.get("name") or "").strip()
+                if not name:
+                    continue
+                raw_args = fn.get("arguments", call.get("arguments", {}))
+                if isinstance(raw_args, str):
+                    try:
+                        args = json.loads(raw_args) if raw_args.strip() else {}
+                    except Exception:
+                        args = {"value": raw_args}
+                elif isinstance(raw_args, dict):
+                    args = raw_args
+                else:
+                    args = {}
+                call_id = str(call.get("id") or f"call_{index}_{int(time.time()*1000)}")
+                normalized_calls.append({
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": json.dumps(args, ensure_ascii=False, separators=(",", ":")),
+                    },
+                    "name": name,
+                    "arguments": args,
+                })
+
+            if not content and not normalized_calls:
+                raise RuntimeError("Qwen returned neither text nor a tool call")
+            self.last_used_monotonic = time.monotonic()
+            self._write_log(
+                f"Qwen native turn: content={content[:500]!r}; tools={[c['name'] for c in normalized_calls]}"
+            )
+            return {"content": content, "tool_calls": normalized_calls}
+
+        return self._run_with_retry(run, status=status)
 
     def _run_with_retry(self, fn, status=None):
         attempts = 1 + self.retry_count
         last_error: Exception | None = None
         for attempt in range(attempts):
-            level = attempt  # 0 normal, 1 low-memory, 2 ultra-safe
+            level = attempt
             try:
                 return fn(level)
             except (requests.RequestException, OSError, RuntimeError, TimeoutError, KeyError, ValueError) as exc:
@@ -466,20 +633,22 @@ class LocalAIRuntime:
                 self.stop(wait=True)
                 if attempt + 1 < attempts and status:
                     if attempt == 0:
-                        status("Hammer failed — retrying in low-memory mode…")
+                        status("Qwen3 failed — retrying in low-memory mode…")
                     else:
-                        status("Hammer failed again — final ultra-safe retry…")
+                        status("Qwen3 failed again — final ultra-safe retry…")
                 time.sleep(0.45)
-        raise LocalAIError("Hammer could not complete the request after automatic restart attempts. Check Status for details.") from last_error
+        raise LocalAIError(
+            "Qwen3 could not complete the request after automatic restart attempts. Check Status for details."
+        ) from last_error
 
     def unload_if_idle(self, idle_minutes: int) -> bool:
-        """Unload Hammer after an idle period. Returns True when a running model was stopped."""
+        """Unload the model after an idle period; zero means keep it ready."""
         idle_minutes = max(0, int(idle_minutes))
         if idle_minutes == 0 or not self.loaded_profile or not self.last_used_monotonic:
             return False
         if time.monotonic() - self.last_used_monotonic < idle_minutes * 60:
             return False
-        self._write_log(f"Unloading Hammer after {idle_minutes} idle minute(s)")
+        self._write_log(f"Unloading Qwen after {idle_minutes} idle minute(s)")
         self.stop(wait=False)
         return True
 
@@ -491,36 +660,18 @@ class LocalAIRuntime:
         timeout: int,
         status: Callable[[str], None] | None = None,
     ) -> str:
-        """Conversation is also a Hammer tool call (``respond``), not generic chat."""
-        respond_tool = [{
-            "type": "function",
-            "function": {
-                "name": "respond",
-                "description": "Reply naturally to the user in the user's language.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"message": {"type": "string"}},
-                    "required": ["message"],
-                },
-            },
-        }]
+        compact = _compact_messages(messages, total_chars=3800, per_message=1100, max_messages=6)
 
         def run(safe_mode: int):
-            raw = self._hammer_completion(
-                profile, messages, respond_tool, max_tokens, timeout, status, safe_mode
+            return self._chat_completion(
+                profile,
+                compact,
+                max_tokens=max_tokens,
+                timeout=timeout,
+                status=status,
+                safe_mode=safe_mode,
+                temperature=0.28,
             )
-            obj = _parse_json_object(_strip_reasoning(raw))
-            if obj:
-                args = obj.get("arguments") if isinstance(obj.get("arguments"), dict) else {}
-                text = str(args.get("message") or "").strip()
-                if text:
-                    return text
-            # Compatibility for a conversion that emits plain text despite the
-            # strict prompt: keep it usable instead of showing a blank reply.
-            plain = _strip_reasoning(raw).strip()
-            if plain and not plain.startswith("[") and not plain.startswith("{"):
-                return plain
-            raise RuntimeError("Hammer did not return a valid respond tool call")
 
         return self._run_with_retry(run, status=status)
 
@@ -533,38 +684,24 @@ class LocalAIRuntime:
         timeout: int,
         status: Callable[[str], None] | None = None,
     ) -> dict:
-        """Ask Hammer for one native structured tool choice.
-
-        Hammer's JSON-list output is parsed locally. No llama.cpp tool parser is
-        involved, which is intentional for stability on older Windows laptops.
-        """
-        def run(safe_mode: int):
-            content = _strip_reasoning(self._hammer_completion(
-                profile, messages, tools, max_tokens, timeout, status, safe_mode
-            )).strip()
-            obj = _parse_json_object(content)
-            if not obj or not (obj.get("name") or obj.get("tool")):
-                raise RuntimeError(f"Hammer returned invalid tool JSON: {content[:400]}")
-            args = obj.get("arguments", obj.get("params", {}))
-            if isinstance(args, str):
-                try:
-                    args = json.loads(args)
-                except Exception:
-                    args = {"value": args}
+        """Backward-compatible single-tool adapter over native Qwen tool use."""
+        turn = self.native_turn(
+            profile, messages, tools=tools, max_tokens=max_tokens, timeout=timeout, status=status
+        )
+        calls = turn.get("tool_calls") if isinstance(turn.get("tool_calls"), list) else []
+        if calls:
+            call = calls[0]
             return {
-                "name": str(obj.get("name") or obj.get("tool")),
-                "arguments": args if isinstance(args, dict) else {},
-                "content": content,
+                "name": str(call.get("name") or ""),
+                "arguments": call.get("arguments") if isinstance(call.get("arguments"), dict) else {},
+                "content": str(turn.get("content") or ""),
             }
+        # Native chat text is the normal no-tool response. Keep the old return
+        # shape only for legacy callers; the personal-agent path uses content
+        # directly and does not expose a synthetic respond tool to Qwen.
+        return {
+            "name": "respond",
+            "arguments": {"message": str(turn.get("content") or "")},
+            "content": str(turn.get("content") or ""),
+        }
 
-        return self._run_with_retry(run, status=status)
-
-
-def _strip_reasoning(text: str) -> str:
-    while "<think>" in text and "</think>" in text:
-        a = text.find("<think>")
-        b = text.find("</think>", a)
-        if b == -1:
-            break
-        text = (text[:a] + text[b + len("</think>"):]).strip()
-    return text.strip()

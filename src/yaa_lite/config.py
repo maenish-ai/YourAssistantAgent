@@ -23,30 +23,32 @@ def data_dir() -> Path:
 
 @dataclass
 class Settings:
-    # v2.0: one assistant only. Older values are migrated to Hammer.
-    selected_agent: str = "hammer"
+    # v2.1: Qwen3 is the primary local assistant. Older Hammer session IDs are
+    # still accepted by the DB layer for upgrade compatibility.
+    selected_agent: str = "qwen"
     remember_agent: bool = True
-    smart_agent_framework: str = "hammer2.1-primary-agent"
+    smart_agent_framework: str = "qwen3-1.7b-primary-agent"
 
-    # First run / UI. No bilingual runtime UI: Arabic OR English.
+    # First run / UI.
     first_run_complete: bool = False
     interface_language: str = "ar"
-    appearance: str = "system"  # system | light | dark
-    startup_page: str = "home"  # home | chat | last
+    appearance: str = "system"
+    startup_page: str = "home"
     last_page: str = "home"
-    close_behavior: str = "tray"  # tray | exit | ask
-    start_with_windows: str = "tray"  # off | tray | window
+    close_behavior: str = "tray"
+    start_with_windows: str = "tray"
 
-    # Hammer is the only reasoning/chat model.
+    # Local AI. 3072 context gives Qwen enough room for tool schemas while still
+    # staying reasonable on the 4 GB target machine.
     smart_agent_enabled: bool = True
-    ai_timeout_seconds: int = 90
-    context_tokens: int = 2048
-    max_response_tokens: int = 160
+    ai_timeout_seconds: int = 120
+    context_tokens: int = 3072
+    max_response_tokens: int = 240
     threads: int = 2
-    hammer_retry_count: int = 2  # retries after the initial attempt
-    hammer_idle_minutes: int = 15  # 0 = never unload automatically
-    performance_mode: str = "balanced"  # eco | balanced | performance
-    reply_language: str = "message"  # message | interface | ar | en
+    hammer_retry_count: int = 2  # legacy field name; applies to Qwen retries
+    hammer_idle_minutes: int = 0  # 0 = keep Qwen warm; avoids first-request stalls
+    performance_mode: str = "balanced"
+    reply_language: str = "message"
     arabic_dialect: str = "jordanian"
     assistant_name: str = "Assistant"
     personality_style: str = "friendly"
@@ -54,18 +56,18 @@ class Settings:
     suggestion_level: str = "medium"
 
     # Security / approvals.
-    password_mode: str = "every_launch"  # every_launch | windows_session | none
+    password_mode: str = "every_launch"
     approval_timeout_minutes: int = 30
-    confirmation_policy: str = "always"  # always | threshold | auto
+    confirmation_policy: str = "always"
     confirmation_group_threshold: int = 10
     confirm_external_actions: bool = True
 
     # Facebook / browser.
     default_source_page: str = ""
     facebook_auto_check: bool = True
-    facebook_browser_choice: str = "auto"  # auto/default/edge/chrome/firefox/custom
+    facebook_browser_choice: str = "auto"
     facebook_browser_custom_path: str = ""
-    facebook_browser_mode: str = "extension_first"  # extension_first | managed_profile
+    facebook_browser_mode: str = "extension_first"
     facebook_interval_min_seconds: int = 50
     facebook_interval_max_seconds: int = 90
     facebook_hourly_limit: int = 30
@@ -92,10 +94,11 @@ class Settings:
     telegram_enabled: bool = False
     github_enabled: bool = False
 
-    # Voice. Runtime is optional/lazy so the 4 GB machine stays light.
-    voice_enabled: bool = False
-    voice_backend: str = "local"  # local | cloud
-    voice_reply_mode: str = "voice_if_started"  # always | voice_if_started | text
+    # Offline voice: push-to-talk uses whisper.cpp; replies use Piper first and
+    # Windows SAPI as fallback. Explicit mic use always enables the voice turn.
+    voice_enabled: bool = True
+    voice_backend: str = "local"
+    voice_reply_mode: str = "voice_if_started"
     wake_word_enabled: bool = False
     wake_word: str = "Hey Assistant"
     voice_style: str = "soft_friendly"
@@ -104,7 +107,7 @@ class Settings:
     voice_volume: int = 90
 
     # Memory / logs / skills.
-    audit_retention: str = "30d"  # 7d | 30d | 90d | forever | size
+    audit_retention: str = "30d"
     learning_enabled: bool = True
     skills_enabled: bool = True
     allow_github_skills: bool = True
@@ -117,22 +120,32 @@ class Settings:
             return cls()
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
+            legacy_framework = str(raw.get("smart_agent_framework") or "")
             safe = {k: v for k, v in raw.items() if k in cls.__dataclass_fields__}
             obj = cls(**safe)
         except Exception:
             return cls()
 
-        # Safe migration/clamping from previous builds.
-        obj.selected_agent = "hammer"
+        # Migration from Hammer builds: switch the brain, keep it warm, and make
+        # push-to-talk available without forcing the user through Settings first.
+        migrating_from_hammer = not legacy_framework.startswith("qwen3-")
+        obj.selected_agent = "qwen"
         obj.remember_agent = True
-        obj.smart_agent_framework = "hammer2.1-primary-agent"
+        obj.smart_agent_framework = "qwen3-1.7b-primary-agent"
+        if migrating_from_hammer:
+            obj.hammer_idle_minutes = 0
+            obj.voice_enabled = True
+            if obj.voice_reply_mode == "text":
+                obj.voice_reply_mode = "voice_if_started"
+
         if obj.interface_language not in {"ar", "en"}:
-            # v1.7 had bilingual mode; migrate it to Arabic instead of mixed UI.
             obj.interface_language = "ar"
-        obj.context_tokens = max(768, min(int(obj.context_tokens), 2048))
-        obj.max_response_tokens = max(96, min(int(obj.max_response_tokens), 256))
-        obj.threads = max(1, min(int(obj.threads), 2))
-        obj.ai_timeout_seconds = max(30, min(int(obj.ai_timeout_seconds), 180))
+        obj.context_tokens = max(1536, min(int(obj.context_tokens), 4096))
+        if migrating_from_hammer and obj.context_tokens <= 2048:
+            obj.context_tokens = 3072
+        obj.max_response_tokens = max(96, min(int(obj.max_response_tokens), 384))
+        obj.threads = max(1, min(int(obj.threads), 4))
+        obj.ai_timeout_seconds = max(45, min(int(obj.ai_timeout_seconds), 240))
         obj.hammer_retry_count = max(0, min(int(obj.hammer_retry_count), 2))
         obj.hammer_idle_minutes = max(0, min(int(obj.hammer_idle_minutes), 60))
         obj.approval_timeout_minutes = max(5, min(int(obj.approval_timeout_minutes), 1440))
@@ -140,9 +153,9 @@ class Settings:
         return obj
 
     def save(self) -> None:
-        self.selected_agent = "hammer"
+        self.selected_agent = "qwen"
         self.remember_agent = True
-        self.smart_agent_framework = "hammer2.1-primary-agent"
+        self.smart_agent_framework = "qwen3-1.7b-primary-agent"
         if self.interface_language not in {"ar", "en"}:
             self.interface_language = "ar"
         path = config_dir() / "settings.json"

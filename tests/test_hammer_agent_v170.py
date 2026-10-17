@@ -1,118 +1,84 @@
 import json
 from pathlib import Path
 
-from yaa_lite.agent.hammer_agent import HAMMER_MODEL_LABEL, HammerAgentRouter
-from yaa_lite.ai.profiles import HAMMER, get_profile
+from yaa_lite.agent.hammer_agent import PRIMARY_MODEL_LABEL
+from yaa_lite.ai.profiles import QWEN, HAMMER, get_profile
 from yaa_lite.config import Settings
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-class FakeRuntime:
-    def __init__(self, response=None):
-        self.response = response or {"name": "respond", "arguments": {"message": "hello"}, "content": ""}
-        self.last_tools = None
-    def tool_call(self, profile, messages, tools, max_tokens, timeout, status=None):
-        self.last_tools = tools
-        return self.response
-
-
-def test_only_hammer_model_is_shipped_in_manifest():
+def test_only_qwen_model_is_shipped_in_manifest():
     data = json.loads((ROOT / "models.manifest.json").read_text(encoding="utf-8"))
     assert len(data["models"]) == 1
     model = data["models"][0]
-    assert model["key"] == "hammer"
-    assert "Hammer2.1" in model["base_model"]
-    assert model["filename"] == "hammer2.1-0.5b-Q4_K_M.gguf"
-    assert model["sha256"] == "190676fe7ac430ac6680b32c216d4eb7413002e2af0c140b8280a0f74fcc6a4d"
-    assert model["license"] == "CC-BY-NC-4.0"
+    assert model["key"] == "qwen"
+    assert model["base_model"] == "Qwen/Qwen3-1.7B"
+    assert model["filename"] == "Qwen3-1.7B-Q4_K_M.gguf"
+    assert model["sha256"] == "d2387ca2dbfee2ffabce7120d3770dadca0b293052bc2f0e138fdc940d9bc7b5"
+    assert model["license"] == "Apache-2.0"
 
 
-def test_old_profile_aliases_resolve_to_same_hammer_model():
-    assert get_profile("arabic").model_filename == HAMMER.model_filename
-    assert get_profile("general").model_filename == HAMMER.model_filename
-    assert get_profile("hammer").model_filename == HAMMER.model_filename
+def test_old_profile_aliases_resolve_to_qwen_model():
+    assert get_profile("arabic").model_filename == QWEN.model_filename
+    assert get_profile("general").model_filename == QWEN.model_filename
+    assert get_profile("hammer").model_filename == QWEN.model_filename
+    assert HAMMER.model_filename == QWEN.model_filename
 
 
-def test_hammer_router_exposes_safe_tools_and_respond():
-    rt = FakeRuntime(); router = HammerAgentRouter(rt)
-    result = router.decide([], "كيف حالك", 128, 10)
-    assert result.name == "respond"
-    names = {x["function"]["name"] for x in rt.last_tools}
-    assert {"respond", "prepare_facebook_campaign", "discover_facebook_groups", "run_facebook_rule_now"} <= names
+def test_primary_personal_agent_has_no_respond_tool():
+    from yaa_lite.personal_assistant_v220 import _tool_schemas
+    names = {x["function"]["name"] for x in _tool_schemas()}
+    assert "respond" not in names
+    assert {"discover_facebook_groups", "search_facebook_groups", "draft_facebook_campaign"} <= names
     assert "python" not in " ".join(names).lower()
 
 
-def test_settings_default_to_single_hammer_and_single_language_ui():
+def test_settings_default_to_qwen_and_voice_ready():
     s = Settings()
-    assert s.selected_agent == "hammer"
+    assert s.selected_agent == "qwen"
     assert s.interface_language in {"ar", "en"}
-    assert s.smart_agent_framework == "hammer2.1-primary-agent"
+    assert s.smart_agent_framework == "qwen3-1.7b-primary-agent"
     assert s.hammer_retry_count == 2
-    assert "Hammer 2.1" in HAMMER_MODEL_LABEL
+    assert s.hammer_idle_minutes == 0
+    assert s.voice_enabled
+    assert "Qwen3" in PRIMARY_MODEL_LABEL
 
 
-def test_status_page_has_live_facebook_progress_events():
-    activity = (ROOT / "src" / "yaa_lite" / "ui" / "activity_view.py").read_text(encoding="utf-8")
-    service = (ROOT / "src" / "yaa_lite" / "agent" / "facebook_service.py").read_text(encoding="utf-8")
-    assert "facebook_group_share_start" in activity
-    assert "facebook_group_share_start" in service
-    assert "facebook_source_post_search" in service
-    assert "facebook_post_found" in service
+def test_runtime_uses_jinja_for_qwen_native_tools():
+    runtime = (ROOT / "src" / "yaa_lite" / "ai" / "runtime.py").read_text(encoding="utf-8")
+    assert '"--jinja"' in runtime
+    assert 'payload["tools"] = tools' in runtime
+    assert 'payload["tool_choice"] = "auto"' in runtime
+    assert 'payload["parallel_tool_calls"] = False' in runtime
 
 
-
-def test_hammer_prompt_uses_native_tool_shape_not_openai_wrapper():
-    from yaa_lite.ai.runtime import _hammer_prompt
-    prompt = _hammer_prompt(HAMMER, [{"role":"user","content":"كيف حالك"}], HammerAgentRouter.tool_schemas())
-    assert "[BEGIN OF AVAILABLE_TOOLS]" in prompt
-    assert '"name":"respond"' in prompt
-    assert '"function":{"name":"respond"' not in prompt
-    assert "<|im_start|>assistant" in prompt
-
-
-def test_runtime_normalizes_hammer_json_list(monkeypatch):
+def test_runtime_tool_call_is_legacy_adapter_over_native_turn(monkeypatch):
     from yaa_lite.ai.runtime import LocalAIRuntime
-    rt = LocalAIRuntime(retry_count=0)
-    monkeypatch.setattr(rt, "_hammer_completion", lambda *a, **k: '[{"name":"count_facebook_groups","arguments":{"keyword":"خلدة"}}]')
-    out = rt.tool_call(HAMMER, [], HammerAgentRouter.tool_schemas(), 128, 10)
-    assert out["name"] == "count_facebook_groups"
-    assert out["arguments"]["keyword"] == "خلدة"
+    rt = LocalAIRuntime(retry_count=0, prewarm=False)
+    monkeypatch.setattr(rt, "native_turn", lambda *a, **k: {
+        "content": "",
+        "tool_calls": [{"name": "facebook_status", "arguments": {}, "id": "call1"}],
+    })
+    out = rt.tool_call(QWEN, [], [], 128, 10)
+    assert out["name"] == "facebook_status"
+    assert out["arguments"] == {}
 
 
-def test_runtime_chat_is_hammer_respond_tool_call(monkeypatch):
+def test_runtime_tool_call_legacy_adapter_maps_plain_text_to_respond(monkeypatch):
     from yaa_lite.ai.runtime import LocalAIRuntime
-    rt = LocalAIRuntime(retry_count=0)
-    monkeypatch.setattr(rt, "_hammer_completion", lambda *a, **k: '[{"name":"respond","arguments":{"message":"تمام، الحمد لله"}}]')
-    out = rt.chat(HAMMER, [{"role":"user","content":"كيف حالك"}], 128, 10)
+    rt = LocalAIRuntime(retry_count=0, prewarm=False)
+    monkeypatch.setattr(rt, "native_turn", lambda *a, **k: {
+        "content": "أهلًا! كيف أقدر أساعدك؟", "tool_calls": []
+    })
+    out = rt.tool_call(QWEN, [], [], 128, 10)
+    assert out["name"] == "respond"
+    assert "أساعدك" in out["arguments"]["message"]
+
+
+def test_runtime_chat_uses_normal_chat_completion(monkeypatch):
+    from yaa_lite.ai.runtime import LocalAIRuntime
+    rt = LocalAIRuntime(retry_count=0, prewarm=False)
+    monkeypatch.setattr(rt, "_chat_completion", lambda *a, **k: "تمام، الحمد لله")
+    out = rt.chat(QWEN, [{"role":"user","content":"كيف حالك"}], 128, 10)
     assert out == "تمام، الحمد لله"
-
-
-def test_hammer_completion_uses_raw_completion_endpoint(monkeypatch):
-    from yaa_lite.ai.runtime import LocalAIRuntime
-
-    class Proc:
-        def poll(self): return None
-
-    class Resp:
-        status_code = 200
-        ok = True
-        text = ''
-        def json(self): return {"content": '[{"name":"respond","arguments":{"message":"hi"}}]'}
-        def raise_for_status(self): return None
-
-    seen = {}
-    def fake_post(url, json, timeout):
-        seen["url"] = url; seen["json"] = json
-        return Resp()
-
-    rt = LocalAIRuntime(retry_count=0)
-    rt._port = 12345; rt._proc = Proc(); rt._profile_key = HAMMER.model_filename
-    monkeypatch.setattr(rt, "ensure_started", lambda *a, **k: None)
-    import yaa_lite.ai.runtime as runtime_module
-    monkeypatch.setattr(runtime_module.requests, "post", fake_post)
-    text = rt._hammer_completion(HAMMER, [{"role":"user","content":"hi"}], HammerAgentRouter.tool_schemas(), 128, 10, None, 0)
-    assert seen["url"].endswith("/completion")
-    assert "prompt" in seen["json"]
-    assert "tools" not in seen["json"] and "messages" not in seen["json"]
-    assert "respond" in text

@@ -3,12 +3,15 @@ from __future__ import annotations
 import time
 from tkinter import ttk
 
-from ..agent.hammer_agent import HAMMER_MODEL_LABEL
+from ..agent.hammer_agent import PRIMARY_MODEL_LABEL
 from ..storage.db import ChatDB
 from .i18n import ui_text
 
 FRIENDLY = {
-    "hammer_analyzing": ("🧠", "Hammer يحلل الطلب", "Hammer is analyzing"),
+    "qwen_analyzing": ("🧠", "Qwen يفهم الطلب", "Qwen is handling the request"),
+    "qwen_tool_selected": ("🧭", "Qwen اختار أداة", "Qwen selected a tool"),
+    "qwen_tool_result": ("✅", "نتيجة أداة Qwen", "Qwen tool result"),
+    "hammer_analyzing": ("🧠", "Qwen يحلل الطلب", "Qwen is analyzing"),
     "hammer_decision": ("🧭", "اختيار أداة", "Tool selected"),
     "hammer_tool_result": ("✅", "نتيجة الأداة", "Tool result"),
     "hammer_unknown_tool": ("⚠", "أداة غير معروفة", "Unknown tool"),
@@ -39,16 +42,14 @@ FRIENDLY = {
     "drive_connected": ("☁", "Google Drive متصل", "Google Drive connected"),
     "drive_sync": ("☁", "تمت مزامنة Drive", "Drive synced"),
     "chat_request": ("💬", "رسالة جديدة", "New message"),
-    "chat_reply": ("🤖", "رد Hammer", "Hammer reply"),
-    "ai_error": ("⚠", "خطأ Hammer", "Hammer error"),
-    "hammer_idle_unload": ("💤", "تم إخراج Hammer من الذاكرة", "Hammer unloaded from memory"),
+    "chat_reply": ("🤖", "رد Qwen", "Qwen reply"),
+    "ai_error": ("⚠", "خطأ Qwen", "Qwen error"),
+    "hammer_idle_unload": ("💤", "تم إخراج Qwen من الذاكرة", "Qwen unloaded from memory"),
     "settings_saved": ("⚙", "تم حفظ الإعدادات", "Settings saved"),
 }
 
 
 class ActivityView(ttk.Frame):
-    """Live Status page: current step + progress + timeline + task controls."""
-
     def __init__(self, master, facebook=None, settings=None, runtime=None, backup=None, browser_bridge=None):
         super().__init__(master, padding=20)
         self.db = ChatDB()
@@ -69,7 +70,7 @@ class ActivityView(ttk.Frame):
 
         cards=ttk.Frame(self); cards.grid(row=2,column=0,sticky="ew",pady=(0,10))
         for i in range(4):cards.columnconfigure(i,weight=1)
-        self.agent_card=self._card(cards,0,"Hammer",HAMMER_MODEL_LABEL)
+        self.agent_card=self._card(cards,0,"Qwen3",PRIMARY_MODEL_LABEL)
         self.fb_card=self._card(cards,1,"Facebook","—")
         self.groups_card=self._card(cards,2,self.t("الجروبات","Groups"),"0")
         self.backup_card=self._card(cards,3,self.t("النسخ الاحتياطي","Backup"),"—")
@@ -112,7 +113,7 @@ class ActivityView(ttk.Frame):
         for iid in self.tree.get_children():self.tree.delete(iid)
         for row in rows:
             state,detail=self._friendly(row);self.tree.insert("","end",values=(row["created_at"],state,detail))
-        self.agent_card.config(text=self.t("جاهز" if self.runtime and self.runtime.loaded_profile else "جاهز عند الطلب","Ready" if self.runtime and self.runtime.loaded_profile else "Ready on demand"))
+        self.agent_card.config(text=self.t("جاهز" if self.runtime and self.runtime.loaded_profile else "يتم التجهيز","Ready" if self.runtime and self.runtime.loaded_profile else "Preparing"))
         if self.facebook:
             self.fb_card.config(text=self.facebook.status_text());st=self.facebook.current_status()
             if st["running"]:

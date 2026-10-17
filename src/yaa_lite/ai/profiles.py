@@ -12,28 +12,36 @@ class AgentProfile:
     system_prompt: str
 
 
-HAMMER = AgentProfile(
-    key="hammer",
-    title="Hammer 2.1 Smart Agent",
-    subtitle="0.5B local action model — the only AI brain",
-    model_filename="hammer2.1-0.5b-Q4_K_M.gguf",
+QWEN = AgentProfile(
+    key="qwen",
+    title="Qwen3 1.7B Smart Agent",
+    subtitle="1.7B local multilingual agent — primary AI brain",
+    model_filename="Qwen3-1.7B-Q4_K_M.gguf",
     system_prompt=(
-        "You are the single AI brain inside Your Assistant Agent. The desktop application is your interface, state store, "
-        "permission boundary, and tool host. You handle ALL user conversation, including greetings and casual chat, as well "
-        "as deciding when an application tool is needed. Reply in the user's language unless a per-user language preference "
-        "is supplied in context. Understand colloquial Arabic, especially Jordanian Arabic, but do not invent tool results. "
-        "Never claim Facebook, Telegram, GitHub, Google Drive, file, browser, scheduling, or external actions succeeded unless "
-        "the application tool result confirms it. For publishing, sending, deleting, security changes, payments, or other "
-        "sensitive external actions, respect the application's approval gate. Use the respond function for ordinary conversation. "
-        "Be concise, natural, and helpful."
+        "/no_think\n"
+        "You are the single local AI brain inside Your Assistant Agent. The desktop application is your interface, "
+        "state store, permission boundary, and tool host. Handle normal conversation naturally and decide when one of "
+        "the application's allow-listed tools is needed. Reply in the user's language unless a per-user preference says "
+        "otherwise. Understand colloquial Arabic, especially Jordanian Arabic. Never invent tool results or claim that "
+        "Facebook, files, browser, scheduling, backup, Telegram, GitHub, Google Drive, publishing, sending, deleting, "
+        "security changes, payments, or any other external action succeeded unless the application tool result confirms it. "
+        "Respect the application's approval gate for sensitive external actions. Be concise, natural, practical, and helpful."
     ),
 )
 
-# Old session/profile names still resolve to Hammer so upgrades do not break.
-ARABIC = AgentProfile("arabic", HAMMER.title, HAMMER.subtitle, HAMMER.model_filename, HAMMER.system_prompt)
-GENERAL = AgentProfile("general", HAMMER.title, HAMMER.subtitle, HAMMER.model_filename, HAMMER.system_prompt)
-PROFILES = {"hammer": HAMMER, "arabic": ARABIC, "general": GENERAL, "auto": HAMMER}
+# Compatibility aliases keep existing databases, tests, and older imports working
+# while the actual shipped model is Qwen3 rather than Hammer.
+HAMMER = QWEN
+ARABIC = AgentProfile("arabic", QWEN.title, QWEN.subtitle, QWEN.model_filename, QWEN.system_prompt)
+GENERAL = AgentProfile("general", QWEN.title, QWEN.subtitle, QWEN.model_filename, QWEN.system_prompt)
+PROFILES = {
+    "qwen": QWEN,
+    "hammer": QWEN,
+    "arabic": ARABIC,
+    "general": GENERAL,
+    "auto": QWEN,
+}
 
 
 def get_profile(key: str | None = None) -> AgentProfile:
-    return PROFILES.get((key or "hammer").lower(), HAMMER)
+    return PROFILES.get((key or "qwen").lower(), QWEN)

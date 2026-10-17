@@ -41,16 +41,15 @@ def test_personal_controller_has_multistep_cap_and_approval_gate():
     assert "for _step in range(5)" in src
     assert '"approve_facebook_campaign"' in src
     assert "Preview" in src or "preview" in src
-    assert "Passwords" not in src  # never adds a password-entry tool
+    assert "Passwords" not in src
 
 
-def test_native_turn_parses_openai_style_qwen_tool_call(monkeypatch):
+def test_native_turn_parses_openai_style_cloud_tool_call(monkeypatch):
     from yaa_lite.ai.profiles import QWEN
     from yaa_lite.ai.runtime import LocalAIRuntime
     import yaa_lite.ai.runtime as runtime_module
 
-    class Proc:
-        def poll(self): return None
+    monkeypatch.setenv("GROQ_API_KEY", "test-only-key")
 
     class Resp:
         ok = True
@@ -69,19 +68,16 @@ def test_native_turn_parses_openai_style_qwen_tool_call(monkeypatch):
             }}]}
 
     seen = {}
-    def fake_post(url, json, timeout):
+    def fake_post(url, headers=None, json=None, timeout=None, **kwargs):
         seen["url"] = url
         seen["payload"] = json
         return Resp()
 
     rt = LocalAIRuntime(retry_count=0, prewarm=False)
-    rt._port = 1234
-    rt._proc = Proc()
-    rt._profile_key = QWEN.model_filename
-    monkeypatch.setattr(rt, "ensure_started", lambda *a, **k: None)
     monkeypatch.setattr(runtime_module.requests, "post", fake_post)
     turn = rt.native_turn(QWEN, [{"role":"user","content":"افحص فيسبوك"}], _tool_schemas(), 128, 10)
     assert turn["tool_calls"][0]["name"] == "facebook_status"
-    assert seen["url"].endswith("/v1/chat/completions")
+    assert seen["url"].endswith("/openai/v1/chat/completions")
+    assert seen["payload"]["model"] == "openai/gpt-oss-120b"
     assert seen["payload"]["tool_choice"] == "auto"
     assert seen["payload"]["parallel_tool_calls"] is False

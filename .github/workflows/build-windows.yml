@@ -11,11 +11,11 @@ concurrency:
 
 jobs:
   build:
-    name: Build Direct Qwen Personal Assistant Windows Setup
+    name: Build GroqCloud Personal Assistant Windows Setup
     permissions:
       contents: read
     runs-on: windows-latest
-    timeout-minutes: 120
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -40,69 +40,17 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
 
-      - name: Verify primary-agent and voice dependencies
+      - name: Verify cloud-agent and voice dependencies
         shell: pwsh
         run: |
           $env:PYTHONPATH = "$PWD\src"
-          python -c "import sounddevice, playwright; from yaa_lite.agent.hammer_agent import HammerAgentRouter, PRIMARY_MODEL_LABEL; print(PRIMARY_MODEL_LABEL); print('Qwen + voice dependencies OK')"
+          python -c "import requests, sounddevice, playwright; from yaa_lite.ai.runtime import GROQ_MODEL; print(GROQ_MODEL); print('GroqCloud + voice dependencies OK')"
 
       - name: Run source startup self-test
         shell: pwsh
         run: |
           $env:PYTHONPATH = "$PWD\src"
           python launcher.py --self-test
-
-      - name: Download and verify Qwen local AI model
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force models | Out-Null
-          $m = Get-Content models.manifest.json | ConvertFrom-Json
-          foreach ($x in $m.models) {
-            $dest = Join-Path models $x.filename
-            Invoke-WebRequest -Uri $x.url -OutFile $dest -UseBasicParsing
-            $hash = (Get-FileHash $dest -Algorithm SHA256).Hash.ToLower()
-            if ($hash -ne $x.sha256.ToLower()) { throw "SHA256 mismatch: $($x.filename)" }
-          }
-
-      - name: Download pinned llama.cpp Windows x64 CPU runtime
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force runtime | Out-Null
-          $headers = @{ 'User-Agent' = 'YourAssistantAgent-Build' }
-          $downloadUrl = 'https://github.com/ggml-org/llama.cpp/releases/download/b11635/llama-b11635-bin-win-cpu-x64.zip'
-          Invoke-WebRequest -Headers $headers -Uri $downloadUrl -OutFile llama.zip -UseBasicParsing
-          Remove-Item llama_tmp -Recurse -Force -ErrorAction SilentlyContinue
-          Expand-Archive llama.zip -DestinationPath llama_tmp -Force
-          $server = Get-ChildItem llama_tmp -Recurse -Filter 'llama-server.exe' | Select-Object -First 1
-          if (-not $server) { throw 'llama-server.exe is missing from downloaded llama.cpp archive' }
-          Copy-Item $server.FullName runtime\llama-server.exe -Force
-          Get-ChildItem llama_tmp -Recurse -Filter '*.dll' | ForEach-Object { Copy-Item $_.FullName runtime\ -Force }
-
-      - name: Download whisper.cpp and Arabic speech model
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force runtime\whisper | Out-Null
-          New-Item -ItemType Directory -Force models\voice | Out-Null
-          $headers = @{ 'User-Agent' = 'YourAssistantAgent-Build' }
-          $whisperUrl = 'https://github.com/ggml-org/whisper.cpp/releases/download/v1.8.3/whisper-bin-x64.zip'
-          Invoke-WebRequest -Headers $headers -Uri $whisperUrl -OutFile whisper.zip -UseBasicParsing
-          $whisperZipHash = (Get-FileHash whisper.zip -Algorithm SHA256).Hash.ToLower()
-          if ($whisperZipHash -ne 'd824b1e37599f882b396e73f1ee0bfd5d0529f700314c48311dcbd00b803321d') {
-            throw "whisper.cpp runtime SHA256 mismatch: $whisperZipHash"
-          }
-          Remove-Item whisper_tmp -Recurse -Force -ErrorAction SilentlyContinue
-          Expand-Archive whisper.zip -DestinationPath whisper_tmp -Force
-          $cli = Get-ChildItem whisper_tmp -Recurse -Filter 'whisper-cli.exe' | Select-Object -First 1
-          if (-not $cli) { throw 'whisper-cli.exe is missing' }
-          Copy-Item $cli.FullName runtime\whisper\whisper-cli.exe -Force
-          Get-ChildItem whisper_tmp -Recurse -Filter '*.dll' | ForEach-Object { Copy-Item $_.FullName runtime\whisper\ -Force }
-
-          $wm = 'models\voice\ggml-base.bin'
-          Invoke-WebRequest -Uri 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin?download=true' -OutFile $wm -UseBasicParsing
-          $wh = (Get-FileHash $wm -Algorithm SHA256).Hash.ToLower()
-          if ($wh -ne '60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe') {
-            throw "Whisper model SHA256 mismatch: $wh"
-          }
 
       - name: Download Piper and Jordanian Arabic voice
         shell: pwsh
@@ -135,12 +83,11 @@ jobs:
       - name: Verify runtime payload
         shell: pwsh
         run: |
-          if (-not (Test-Path 'models\Qwen3-1.7B-Q4_K_M.gguf')) { throw 'Qwen model missing' }
-          if (-not (Test-Path 'runtime\llama-server.exe')) { throw 'llama-server missing' }
-          if (-not (Test-Path 'runtime\whisper\whisper-cli.exe')) { throw 'whisper-cli missing' }
-          if (-not (Test-Path 'models\voice\ggml-base.bin')) { throw 'Whisper model missing' }
           if (-not (Test-Path 'runtime\piper\piper.exe')) { throw 'Piper missing' }
           if (-not (Test-Path 'models\voice\ar_JO-kareem-medium.onnx')) { throw 'Arabic Piper voice missing' }
+          if (Test-Path 'models\Qwen3-1.7B-Q4_K_M.gguf') { throw 'Local Qwen model must not be packaged in cloud build' }
+          if (Test-Path 'runtime\llama-server.exe') { throw 'llama.cpp must not be packaged in cloud build' }
+          if (Test-Path 'runtime\whisper\whisper-cli.exe') { throw 'local Whisper must not be packaged in cloud build' }
 
       - name: Build app folder
         shell: pwsh
@@ -212,7 +159,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: YourAssistantAgent-Windows-Setup-v2.2.0
+          name: YourAssistantAgent-Windows-Setup-GroqCloud
           path: |
             output/*.exe
             output/*.sha256.txt

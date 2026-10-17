@@ -12,7 +12,7 @@ def _set_windows_app_id() -> None:
         return
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-            "YourAssistantAgent.Desktop.2.1.0"
+            "YourAssistantAgent.Desktop.2.3.0"
         )
     except Exception:
         pass
@@ -29,6 +29,7 @@ def _self_test() -> int:
     from .backup.service import BackupService  # noqa: F401
     from .browser_bridge.server import BrowserBridge  # noqa: F401
     from .voice.service import VoiceService  # noqa: F401
+    from .ai.runtime import GROQ_MODEL  # noqa: F401
 
     required = (
         "icon.ico",
@@ -42,19 +43,25 @@ def _self_test() -> int:
     return 0
 
 
-def _replace_visible_hammer_labels(widget) -> None:
-    """Upgrade old shell labels without duplicating the large App class."""
+def _replace_visible_ai_labels(widget) -> None:
+    """Keep old database/internal names but show the real cloud brain in the UI."""
     try:
         text = widget.cget("text")
-        if isinstance(text, str) and text.strip() == "Hammer":
-            widget.configure(text="Qwen")
-        elif isinstance(text, str) and text.strip() == "Hammer 2.1":
-            widget.configure(text="Qwen3 1.7B")
+        if isinstance(text, str) and text:
+            new = text
+            new = new.replace("Qwen3 1.7B", "GroqCloud • GPT-OSS 120B")
+            new = new.replace("Qwen3", "GroqCloud")
+            new = new.replace("Qwen", "GroqCloud")
+            new = new.replace("Hammer 2.1", "GroqCloud • GPT-OSS 120B")
+            if new.strip() == "Hammer":
+                new = "GroqCloud"
+            if new != text:
+                widget.configure(text=new)
     except Exception:
         pass
     try:
         for child in widget.winfo_children():
-            _replace_visible_hammer_labels(child)
+            _replace_visible_ai_labels(child)
     except Exception:
         pass
 
@@ -67,21 +74,35 @@ def main() -> int:
     from .ui.app import App
     from .voice.service import VoiceService
 
-    class QwenApp(App):
+    class GroqApp(App):
+        def __init__(self):
+            super().__init__()
+            # Old source files/database keys still contain Qwen/Hammer compatibility
+            # names. Sweep only visible widget text so the user sees the real brain.
+            self.after(120, self._cloud_label_sweep)
+
+        def _cloud_label_sweep(self):
+            try:
+                _replace_visible_ai_labels(self)
+            finally:
+                try:
+                    self.after(700, self._cloud_label_sweep)
+                except Exception:
+                    pass
+
         def _build_header(self):
             super()._build_header()
             try:
-                self.header_agent.config(text="Qwen3 1.7B")
+                self.header_agent.config(text="GroqCloud • GPT-OSS 120B")
             except Exception:
                 pass
 
         def _build_sidebar(self):
             super()._build_sidebar()
-            _replace_visible_hammer_labels(self.sidebar)
+            _replace_visible_ai_labels(self.sidebar)
 
         def _voice_request(self, chat):
-            # Pressing the microphone is explicit user intent; do not require a
-            # separate enable toggle before the first voice conversation.
+            # Pressing the microphone is explicit user intent.
             try:
                 svc = VoiceService(self.settings_obj)
             except Exception as exc:
@@ -99,7 +120,7 @@ def main() -> int:
 
             threading.Thread(target=work, daemon=True, name="yaa-voice-listen").start()
 
-    app = QwenApp()
+    app = GroqApp()
     app.mainloop()
     return 0
 

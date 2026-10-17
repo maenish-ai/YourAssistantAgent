@@ -4,11 +4,22 @@ from PyInstaller.utils.hooks import collect_all
 
 root = Path(SPECPATH)
 datas = []
-for folder in ("models", "runtime", "assets", "licenses", "browser_extension"):
+
+# Cloud AI: never package local GGUF/Qwen/llama.cpp/whisper.cpp payloads.
+# Keep only branding, browser extension, licenses, and local Piper TTS assets.
+for folder in ("assets", "licenses", "browser_extension"):
     p = root / folder
     if p.exists():
         datas.append((str(p), folder))
-for file_name in ("THIRD_PARTY_SMOLAGENTS.md", "THIRD_PARTY_HAMMER.md", "THIRD_PARTY_QWEN.md", "THIRD_PARTY_VOICE.md"):
+
+for src, dest in (
+    (root / "runtime" / "piper", "runtime/piper"),
+    (root / "models" / "voice", "models/voice"),
+):
+    if src.exists():
+        datas.append((str(src), dest))
+
+for file_name in ("THIRD_PARTY_SMOLAGENTS.md", "THIRD_PARTY_VOICE.md"):
     p = root / file_name
     if p.exists():
         datas.append((str(p), "."))

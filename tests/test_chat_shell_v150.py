@@ -16,13 +16,12 @@ def test_ai_errors_are_logged_not_dumped_raw_into_chat():
     chat = (ROOT / "src" / "yaa_lite" / "ui" / "chat_window.py").read_text(encoding="utf-8")
     assert 'self.db.add_activity("ai_error"' in chat
     assert "technical details" in chat
-    assert "Qwen3 could not complete" in chat
+    assert "could not complete the reply after automatic" in chat
 
 
-def test_runtime_has_two_safe_retries_and_diagnostics():
+def test_cloud_runtime_has_retries_and_diagnostics():
     runtime = (ROOT / "src" / "yaa_lite" / "ai" / "runtime.py").read_text(encoding="utf-8")
     assert '"local_ai.log"' in runtime
-    assert "low-memory mode" in runtime
-    assert "ultra-safe" in runtime
-    assert "performance_mode" in runtime
-    assert "Qwen prewarm completed" in runtime
+    assert "GroqCloud attempt" in runtime
+    assert "retry_count" in runtime
+    assert "openai/gpt-oss-120b" in runtime

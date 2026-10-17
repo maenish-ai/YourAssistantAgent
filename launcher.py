@@ -1,9 +1,4 @@
-"""Stable PyInstaller entry point for Your Assistant Agent.
-
-This file deliberately imports the application by its absolute package name.
-Building src/yaa_lite/main.py directly makes Python treat that file as a loose
-script, which breaks its relative imports in a frozen EXE.
-"""
+"""Stable PyInstaller entry point for Your Assistant Agent."""
 from __future__ import annotations
 
 import sys
@@ -14,15 +9,16 @@ if not getattr(sys, "frozen", False):
     if src.exists():
         sys.path.insert(0, str(src))
 
-# Keep the v2.0.2 normal-browser/Facebook compatibility fixes. The v2.1 hotfix
-# module deliberately no longer patches the AI runtime; Qwen3 owns it natively.
 from yaa_lite.hotfix_v202 import apply_hotfixes
 apply_hotfixes()
 
-# v2.2: Qwen is the direct personal assistant. Normal chat is plain text;
-# application capabilities are exposed through native Qwen/llama.cpp tools.
 from yaa_lite.personal_assistant_v220 import apply_personal_assistant
 apply_personal_assistant()
+
+# v2.4: cloud-first voice, live waveform/voice loop, deterministic Facebook
+# connection checks, and removal of stale visible local-Qwen wording.
+from yaa_lite.cloud_voice_v240 import apply_cloud_voice_v240
+apply_cloud_voice_v240()
 
 from yaa_lite.main import main
 

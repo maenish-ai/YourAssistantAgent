@@ -44,7 +44,16 @@ jobs:
         shell: pwsh
         run: |
           $env:PYTHONPATH = "$PWD\src"
-          python -c "import requests, sounddevice, playwright; from yaa_lite.ai.runtime import GROQ_MODEL; print(GROQ_MODEL); print('GroqCloud + voice dependencies OK')"
+          python -c "import requests, sounddevice, playwright; from yaa_lite.ai.runtime import GROQ_MODEL; from yaa_lite.voice.cloud_service import CloudVoiceService; print(GROQ_MODEL); print(CloudVoiceService.STT_MODEL, CloudVoiceService.TTS_MODEL_AR, CloudVoiceService.TTS_VOICE_AR); print('GroqCloud + cloud voice dependencies OK')"
+
+      - name: Remove legacy local AI and voice payloads
+        shell: pwsh
+        run: |
+          Remove-Item runtime\piper -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item models\voice -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item runtime\whisper -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item runtime\llama-server.exe -Force -ErrorAction SilentlyContinue
+          Remove-Item models\Qwen3-1.7B-Q4_K_M.gguf -Force -ErrorAction SilentlyContinue
 
       - name: Run source startup self-test
         shell: pwsh
@@ -52,39 +61,17 @@ jobs:
           $env:PYTHONPATH = "$PWD\src"
           python launcher.py --self-test
 
-      - name: Download Piper and Jordanian Arabic voice
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force runtime\piper | Out-Null
-          New-Item -ItemType Directory -Force models\voice | Out-Null
-          $headers = @{ 'User-Agent' = 'YourAssistantAgent-Build' }
-          Invoke-WebRequest -Headers $headers -Uri 'https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_windows_amd64.zip' -OutFile piper.zip -UseBasicParsing
-          Remove-Item piper_tmp -Recurse -Force -ErrorAction SilentlyContinue
-          Expand-Archive piper.zip -DestinationPath piper_tmp -Force
-          $piper = Get-ChildItem piper_tmp -Recurse -Filter 'piper.exe' | Select-Object -First 1
-          if (-not $piper) { throw 'piper.exe is missing' }
-          Copy-Item (Join-Path $piper.Directory.FullName '*') runtime\piper\ -Recurse -Force
-
-          $voice = 'models\voice\ar_JO-kareem-medium.onnx'
-          $voiceJson = 'models\voice\ar_JO-kareem-medium.onnx.json'
-          Invoke-WebRequest -Uri 'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/ar/ar_JO/kareem/medium/ar_JO-kareem-medium.onnx?download=true' -OutFile $voice -UseBasicParsing
-          Invoke-WebRequest -Uri 'https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/ar/ar_JO/kareem/medium/ar_JO-kareem-medium.onnx.json?download=true' -OutFile $voiceJson -UseBasicParsing
-          $vsha = (Get-FileHash $voice -Algorithm SHA256).Hash.ToLower()
-          $jmd5 = (Get-FileHash $voiceJson -Algorithm MD5).Hash.ToLower()
-          if ($vsha -ne '9e95cab07b679da603bba17c4dec7ab3111320571964ee95c0379603c086491e') { throw "Piper voice SHA256 mismatch: $vsha" }
-          if ($jmd5 -ne 'dd70b31eb5a395907241b1e5367ace3a') { throw "Piper voice config MD5 mismatch: $jmd5" }
-
       - name: Run current tests
         shell: pwsh
         run: |
           $env:PYTHONPATH = "$PWD\src"
           python -m pytest -q
 
-      - name: Verify runtime payload
+      - name: Verify cloud-only runtime payload
         shell: pwsh
         run: |
-          if (-not (Test-Path 'runtime\piper\piper.exe')) { throw 'Piper missing' }
-          if (-not (Test-Path 'models\voice\ar_JO-kareem-medium.onnx')) { throw 'Arabic Piper voice missing' }
+          if (Test-Path 'runtime\piper\piper.exe') { throw 'Piper must not be packaged in v2.4 cloud voice build' }
+          if (Test-Path 'models\voice\ar_JO-kareem-medium.onnx') { throw 'Local Piper voice must not be packaged in v2.4 cloud voice build' }
           if (Test-Path 'models\Qwen3-1.7B-Q4_K_M.gguf') { throw 'Local Qwen model must not be packaged in cloud build' }
           if (Test-Path 'runtime\llama-server.exe') { throw 'llama.cpp must not be packaged in cloud build' }
           if (Test-Path 'runtime\whisper\whisper-cli.exe') { throw 'local Whisper must not be packaged in cloud build' }
@@ -159,7 +146,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: YourAssistantAgent-Windows-Setup-GroqCloud
+          name: YourAssistantAgent-Windows-Setup-GroqCloud-Voice
           path: |
             output/*.exe
             output/*.sha256.txt

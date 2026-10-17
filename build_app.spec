@@ -5,19 +5,12 @@ from PyInstaller.utils.hooks import collect_all
 root = Path(SPECPATH)
 datas = []
 
-# Cloud AI: never package local GGUF/Qwen/llama.cpp/whisper.cpp payloads.
-# Keep only branding, browser extension, licenses, and local Piper TTS assets.
+# v2.4 cloud-only AI + cloud-only primary voice: package no local GGUF,
+# llama.cpp, whisper.cpp, Piper runtime, or voice model payload.
 for folder in ("assets", "licenses", "browser_extension"):
     p = root / folder
     if p.exists():
         datas.append((str(p), folder))
-
-for src, dest in (
-    (root / "runtime" / "piper", "runtime/piper"),
-    (root / "models" / "voice", "models/voice"),
-):
-    if src.exists():
-        datas.append((str(src), dest))
 
 for file_name in ("THIRD_PARTY_SMOLAGENTS.md", "THIRD_PARTY_VOICE.md"):
     p = root / file_name
@@ -32,12 +25,13 @@ hiddenimports = [
     "yaa_lite",
     "yaa_lite.main",
     "yaa_lite.personal_assistant_v220",
+    "yaa_lite.cloud_voice_v240",
+    "yaa_lite.voice.cloud_service",
     "yaa_lite.ui.app",
     "PIL",
     "pystray",
     "sounddevice",
     "yaa_lite.startup",
-    "yaa_lite.voice.service",
     "yaa_lite.browser_bridge.server",
     "yaa_lite.backup.google_drive",
     "yaa_lite.backup.service",

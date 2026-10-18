@@ -32,11 +32,11 @@ async function waitForTab(tabId, timeoutMs=20000) {
   return chrome.tabs.get(tabId);
 }
 
-async function discoverFacebookGroups(limit) {
+async function discoverFacebookGroups(limit, deep=false) {
   const tab = await chrome.tabs.create({url: "https://www.facebook.com/groups/joins/", active: false});
   try {
-    await waitForTab(tab.id, 25000);
-    const result = await inTab(tab.id, async (wanted) => {
+    await waitForTab(tab.id, deep ? 25000 : 8000);
+    const result = await inTab(tab.id, async (wanted, fullScan) => {
       const sleep = ms => new Promise(r => setTimeout(r, ms));
       const blocked = () => {
         const u = String(location.href || "").toLowerCase();
@@ -69,18 +69,18 @@ async function discoverFacebookGroups(limit) {
 
       let stagnant = 0;
       let previous = 0;
-      for (let round=0; round<24; round++) {
+      for (let round=0; round<(fullScan ? 24 : 5); round++) {
         if (scan()) break;
         if (found.size === previous) stagnant++; else stagnant = 0;
         previous = found.size;
-        if (stagnant >= 4) break;
+        if (stagnant >= (fullScan ? 4 : 2)) break;
         window.scrollBy(0, Math.max(1500, Math.floor(window.innerHeight * 1.8)));
-        await sleep(900);
+        await sleep(fullScan ? 900 : 350);
         if (blocked()) return {ok:false, error:"facebook_checkpoint_or_login", groups:[...found.values()], url:location.href};
       }
       scan();
       return {ok:true, groups:[...found.values()].slice(0,wanted), url:location.href};
-    }, [Math.max(1, Math.min(1000, Number(limit || 500)))]);
+    }, [Math.max(1, Math.min(1000, Number(limit || 500))), deep]);
     return result || {ok:false, error:"empty_discovery_result", groups:[]};
   } finally {
     try { await chrome.tabs.remove(tab.id); } catch (_) {}
@@ -100,7 +100,7 @@ async function execute(command) {
     return {ok: r.ok, status: r.status, url: r.url, text: text.slice(0, Number(x.max_chars || 5000))};
   }
   if (a === "discover_facebook_groups") {
-    return discoverFacebookGroups(x.limit);
+    return discoverFacebookGroups(x.limit, x.deep === true);
   }
   const tab = await activeTab();
   if (a === "active_page") {

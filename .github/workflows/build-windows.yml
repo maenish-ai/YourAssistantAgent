@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build GroqCloud Personal Assistant Windows Setup
+    name: Build GroqCloud v2.5 Fast Live Voice Windows Setup
     permissions:
       contents: read
     runs-on: windows-latest
@@ -60,6 +60,12 @@ jobs:
         run: |
           $env:PYTHONPATH = "$PWD\src"
           python launcher.py --self-test
+
+      - name: Verify Fast Live Voice and extension syntax
+        shell: pwsh
+        run: |
+          node --check browser_extension/background.js
+          python -m py_compile src/yaa_lite/fast_live_v250.py src/yaa_lite/fast_stream_v250.py src/yaa_lite/voice/cloud_service.py
 
       - name: Run current tests
         shell: pwsh

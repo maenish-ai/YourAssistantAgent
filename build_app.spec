@@ -26,6 +26,8 @@ hiddenimports = [
     "yaa_lite.main",
     "yaa_lite.personal_assistant_v220",
     "yaa_lite.cloud_voice_v240",
+    "yaa_lite.fast_live_v250",
+    "yaa_lite.fast_stream_v250",
     "yaa_lite.voice.cloud_service",
     "yaa_lite.ui.app",
     "PIL",

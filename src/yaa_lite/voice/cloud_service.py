@@ -49,6 +49,7 @@ class CloudVoiceService:
 
     STT_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
     STT_MODEL = "whisper-large-v3"
+    STT_MODEL_LIVE = "whisper-large-v3-turbo"
     STT_PROMPT_AR = (
         "المتحدث عربي باللهجة الأردنية/الشامية. اكتب الكلام كما قيل بالعربية. "
         "مصطلحات متوقعة: فيسبوك، جروبات، إعلان، منشور، آخر منشور، اعتمد، "
@@ -63,7 +64,7 @@ class CloudVoiceService:
 
     START_TIMEOUT = 10.0
     MAX_DURATION = 28.0
-    END_SILENCE = 0.85
+    END_SILENCE = 0.55
     CALIBRATION_BLOCKS = 6
     PREROLL_BLOCKS = 7
 
@@ -104,7 +105,6 @@ class CloudVoiceService:
         except Exception as exc:
             raise VoiceError(f"Microphone runtime is unavailable: {exc}") from exc
 
-        self.reset_cancel()
         started_at = time.monotonic()
         noise_samples: list[int] = []
         pre_roll: deque[bytes] = deque(maxlen=self.PREROLL_BLOCKS)
@@ -180,7 +180,7 @@ class CloudVoiceService:
             wf.setframerate(self.SAMPLE_RATE)
             wf.writeframes(b"".join(captured))
 
-    def listen_once(self, level_callback: LevelCallback | None = None) -> str:
+    def listen_once(self, level_callback: LevelCallback | None = None, mode: str = "dictation") -> str:
         key = get_groq_api_key(required=True)
         with tempfile.TemporaryDirectory(prefix="yaa_cloud_voice_") as td:
             wav = Path(td) / "input.wav"
@@ -193,17 +193,17 @@ class CloudVoiceService:
                         self.STT_URL,
                         headers={
                             "Authorization": f"Bearer {key}",
-                            "User-Agent": "YourAssistantAgent/2.4",
+                            "User-Agent": "YourAssistantAgent/2.5",
                         },
                         files={"file": ("input.wav", f, "audio/wav")},
                         data={
-                            "model": self.STT_MODEL,
+                            "model": self.STT_MODEL_LIVE if mode == "live" else self.STT_MODEL,
                             "language": "ar",
                             "prompt": self.STT_PROMPT_AR,
                             "response_format": "json",
                             "temperature": "0",
                         },
-                        timeout=(8, 45),
+                        timeout=(5, 20),
                     )
             except requests.RequestException as exc:
                 raise VoiceError(f"تعذر الاتصال بخدمة فهم الصوت: {exc}") from exc
@@ -276,7 +276,6 @@ class CloudVoiceService:
         chunks = self._split_tts_text(text)
         if not chunks:
             return True
-        self.reset_cancel()
         for chunk in chunks:
             if self.cancel_event.is_set():
                 raise VoiceCancelled("Voice playback cancelled.")
@@ -286,16 +285,15 @@ class CloudVoiceService:
                     headers={
                         "Authorization": f"Bearer {key}",
                         "Content-Type": "application/json",
-                        "User-Agent": "YourAssistantAgent/2.4",
+                        "User-Agent": "YourAssistantAgent/2.5",
                     },
                     json={
                         "model": self.TTS_MODEL_AR,
                         "voice": self.TTS_VOICE_AR,
                         "input": chunk,
                         "response_format": "wav",
-                        "speed": self.TTS_SPEED,
                     },
-                    timeout=(8, 40),
+                    timeout=(5, 15),
                 )
             except requests.RequestException:
                 return False
@@ -312,8 +310,7 @@ class CloudVoiceService:
                     return False
         return True
 
-    @staticmethod
-    def _sapi_fallback(text: str) -> None:
+    def _sapi_fallback(self, text: str) -> None:
         if os.name != "nt":
             return
         payload = json.dumps(str(text or ""), ensure_ascii=False)
@@ -323,7 +320,8 @@ class CloudVoiceService:
 Add-Type -AssemblyName System.Speech
 $s = New-Object System.Speech.Synthesis.SpeechSynthesizer
 $voices = @($s.GetInstalledVoices() | ForEach-Object {{ $_.VoiceInfo }})
-$female = $voices | Where-Object {{ $_.Gender -eq 'Female' }} | Select-Object -First 1
+$female = $voices | Where-Object {{ $_.Gender -eq 'Female' -and $_.Culture.Name -like 'ar-*' }} | Select-Object -First 1
+if (-not $female) {{ $female = $voices | Where-Object {{ $_.Gender -eq 'Female' }} | Select-Object -First 1 }}
 if ($female) {{ $s.SelectVoice($female.Name) }}
 $s.Volume = 90
 $s.Rate = -1
@@ -333,13 +331,21 @@ $txt = ConvertFrom-Json @'
 $s.Speak([string]$txt)
 $s.Dispose()
 """
-        subprocess.run(
+        proc = subprocess.Popen(
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
-            capture_output=True,
-            text=True,
-            timeout=45,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
+        deadline = time.monotonic() + 12
+        while proc.poll() is None:
+            if self.cancel_event.is_set() or time.monotonic() >= deadline:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                return
+            time.sleep(0.05)
 
     def speak(self, text: str) -> None:
         text = str(text or "").strip()

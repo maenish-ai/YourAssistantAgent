@@ -26,6 +26,12 @@ apply_stream_v250()
 from yaa_lite.fast_live_v250 import apply_fast_live_v250
 apply_fast_live_v250()
 
+from yaa_lite.stability_v260 import apply_stability_v260
+apply_stability_v260()
+
+from yaa_lite.review_voice_v270 import apply_review_voice_v270
+apply_review_voice_v270()
+
 from yaa_lite.main import main
 
 

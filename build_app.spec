@@ -12,14 +12,15 @@ for folder in ("assets", "licenses", "browser_extension"):
     if p.exists():
         datas.append((str(p), folder))
 
-for file_name in ("THIRD_PARTY_SMOLAGENTS.md", "THIRD_PARTY_VOICE.md"):
+for file_name in ("THIRD_PARTY_SMOLAGENTS.md", "THIRD_PARTY_VOICE.md", "THIRD_PARTY_EDGE_TTS.md"):
     p = root / file_name
     if p.exists():
         datas.append((str(p), "."))
 
 sd_datas, sd_binaries, sd_hidden = collect_all("sounddevice")
-datas += sd_datas
-binaries = list(sd_binaries)
+edge_datas, edge_binaries, edge_hidden = collect_all("edge_tts")
+datas += sd_datas + edge_datas
+binaries = list(sd_binaries) + list(edge_binaries)
 
 hiddenimports = [
     "yaa_lite",
@@ -27,6 +28,10 @@ hiddenimports = [
     "yaa_lite.personal_assistant_v220",
     "yaa_lite.cloud_voice_v240",
     "yaa_lite.fast_live_v250",
+    "yaa_lite.stability_v260",
+    "yaa_lite.review_voice_v270",
+    "yaa_lite.voice.provider_v270",
+    "edge_tts",
     "yaa_lite.fast_stream_v250",
     "yaa_lite.voice.cloud_service",
     "yaa_lite.ui.app",
@@ -66,7 +71,7 @@ hiddenimports = [
     "yaa_lite.facebook_backend.share_outcome",
     "yaa_lite.agent.smol_contract",
     "playwright.sync_api",
-] + list(sd_hidden)
+] + list(sd_hidden) + list(edge_hidden)
 
 a = Analysis(
     [str(root / "launcher.py")],

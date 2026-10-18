@@ -288,6 +288,8 @@ def _install_voice_ui() -> None:
                             if overlay: overlay.set_state(self.t("فهمت عليك…", "Got it…"), self.t("بجهز الرد", "Preparing reply"))
                             self._voice_turn_started = True
                             self.prefill_and_send(str(value))
+                    elif kind == "voice_fallback":
+                        self.status.config(text=str(value)[:170])
                     elif kind == "listen_error":
                         self._stop_fast_voice()
                         self.status.config(text=str(value)[:160])

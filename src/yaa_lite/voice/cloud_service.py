@@ -62,9 +62,9 @@ class CloudVoiceService:
     TTS_SPEED = 0.92
     TTS_CHUNK_LIMIT = 190  # Orpheus Arabic input limit is 200 chars.
 
-    START_TIMEOUT = 10.0
-    MAX_DURATION = 28.0
-    END_SILENCE = 0.55
+    START_TIMEOUT = 6.0
+    MAX_DURATION = 16.0
+    END_SILENCE = 0.6
     CALIBRATION_BLOCKS = 6
     PREROLL_BLOCKS = 7
 
@@ -203,7 +203,7 @@ class CloudVoiceService:
                             "response_format": "json",
                             "temperature": "0",
                         },
-                        timeout=(5, 20),
+                        timeout=(4, 12) if mode == "live" else (5, 20),
                     )
             except requests.RequestException as exc:
                 raise VoiceError(f"تعذر الاتصال بخدمة فهم الصوت: {exc}") from exc
@@ -293,7 +293,7 @@ class CloudVoiceService:
                         "input": chunk,
                         "response_format": "wav",
                     },
-                    timeout=(5, 15),
+                    timeout=(4, 12),
                 )
             except requests.RequestException:
                 return False
@@ -310,9 +310,9 @@ class CloudVoiceService:
                     return False
         return True
 
-    def _sapi_fallback(self, text: str) -> None:
+    def _sapi_fallback(self, text: str) -> bool:
         if os.name != "nt":
-            return
+            return False
         payload = json.dumps(str(text or ""), ensure_ascii=False)
         # Prefer a female Windows voice if one exists. This fallback downloads
         # nothing and is only used when cloud TTS is unavailable.
@@ -321,8 +321,9 @@ Add-Type -AssemblyName System.Speech
 $s = New-Object System.Speech.Synthesis.SpeechSynthesizer
 $voices = @($s.GetInstalledVoices() | ForEach-Object {{ $_.VoiceInfo }})
 $female = $voices | Where-Object {{ $_.Gender -eq 'Female' -and $_.Culture.Name -like 'ar-*' }} | Select-Object -First 1
-if (-not $female) {{ $female = $voices | Where-Object {{ $_.Gender -eq 'Female' }} | Select-Object -First 1 }}
-if ($female) {{ $s.SelectVoice($female.Name) }}
+if (-not $female) {{ $female = $voices | Where-Object {{ $_.Culture.Name -like 'ar-*' }} | Select-Object -First 1 }}
+if (-not $female) {{ exit 4 }}
+$s.SelectVoice($female.Name)
 $s.Volume = 90
 $s.Rate = -1
 $txt = ConvertFrom-Json @'
@@ -344,19 +345,23 @@ $s.Dispose()
                     proc.wait(timeout=1)
                 except subprocess.TimeoutExpired:
                     proc.kill()
-                return
+                return False
             time.sleep(0.05)
+        return proc.returncode == 0
 
-    def speak(self, text: str) -> None:
+    def speak(self, text: str) -> str:
         text = str(text or "").strip()
         if not text:
-            return
+            return "none"
         try:
             if self._speak_cloud_arabic(text):
-                return
+                return "noura"
         except VoiceCancelled:
             raise
         except Exception:
             pass
-        if not self.cancel_event.is_set():
-            self._sapi_fallback(text)
+        if self.cancel_event.is_set():
+            raise VoiceCancelled("Voice was stopped.")
+        if self._sapi_fallback(text):
+            return "windows"
+        raise VoiceError("صوت نورا السحابي غير متاح الآن، وما لقيت صوت عربي احتياطي على ويندوز. راجع حدود Groq المجانية أو الاتصال بالإنترنت.")

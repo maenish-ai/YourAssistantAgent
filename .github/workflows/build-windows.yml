@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build GroqCloud v2.5 Fast Live Voice Windows Setup
+    name: Build GroqCloud v2.7 Private Approval and Voice Windows Setup
     permissions:
       contents: read
     runs-on: windows-latest
@@ -44,7 +44,7 @@ jobs:
         shell: pwsh
         run: |
           $env:PYTHONPATH = "$PWD\src"
-          python -c "import requests, sounddevice, playwright; from yaa_lite.ai.runtime import GROQ_MODEL; from yaa_lite.voice.cloud_service import CloudVoiceService; print(GROQ_MODEL); print(CloudVoiceService.STT_MODEL, CloudVoiceService.TTS_MODEL_AR, CloudVoiceService.TTS_VOICE_AR); print('GroqCloud + cloud voice dependencies OK')"
+          python -c "import requests, sounddevice, playwright, edge_tts; from yaa_lite.ai.runtime import GROQ_MODEL; from yaa_lite.voice.cloud_service import CloudVoiceService; from yaa_lite.voice.provider_v270 import VOICE_CHOICES; print(GROQ_MODEL); print(VOICE_CHOICES); print(CloudVoiceService.STT_MODEL, CloudVoiceService.TTS_MODEL_AR, CloudVoiceService.TTS_VOICE_AR); print('GroqCloud + cloud voice dependencies OK')"
 
       - name: Remove legacy local AI and voice payloads
         shell: pwsh
@@ -54,6 +54,13 @@ jobs:
           Remove-Item runtime\whisper -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item runtime\llama-server.exe -Force -ErrorAction SilentlyContinue
           Remove-Item models\Qwen3-1.7B-Q4_K_M.gguf -Force -ErrorAction SilentlyContinue
+
+      - name: Preserve edge-tts LGPL license notice
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force licenses | Out-Null
+          Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/rany2/edge-tts/master/LICENSE' -OutFile 'licenses/edge-tts-LICENSE.txt' -UseBasicParsing
+          if (-not (Test-Path 'licenses/edge-tts-LICENSE.txt')) { throw 'edge-tts upstream license missing' }
 
       - name: Run source startup self-test
         shell: pwsh
@@ -65,7 +72,7 @@ jobs:
         shell: pwsh
         run: |
           node --check browser_extension/background.js
-          python -m py_compile src/yaa_lite/fast_live_v250.py src/yaa_lite/fast_stream_v250.py src/yaa_lite/voice/cloud_service.py
+          python -m py_compile src/yaa_lite/fast_live_v250.py src/yaa_lite/fast_stream_v250.py src/yaa_lite/stability_v260.py src/yaa_lite/review_voice_v270.py src/yaa_lite/voice/cloud_service.py src/yaa_lite/voice/provider_v270.py
 
       - name: Run current tests
         shell: pwsh
@@ -152,7 +159,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: YourAssistantAgent-Windows-Setup-GroqCloud-Voice
+          name: YourAssistantAgent-Windows-Setup-v2.7-PrivateVoice
           path: |
             output/*.exe
             output/*.sha256.txt

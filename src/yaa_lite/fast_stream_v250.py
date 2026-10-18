@@ -90,7 +90,7 @@ def apply_stream_v250():
             "messages": [{"role": "system", "content": profile.system_prompt}] +
                         [self._api_message(m) for m in compact],
             "temperature": 0.15,
-            "max_completion_tokens": max(1024, min(int(max_tokens), 2048)),
+            "max_completion_tokens": max(300, min(int(max_tokens), 2048)),
             "reasoning_effort": "low",
             "stream": True,
         }

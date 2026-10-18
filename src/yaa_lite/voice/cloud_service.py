@@ -100,93 +100,21 @@ class CloudVoiceService:
             return 0
 
     def _record_wav(self, path: Path, level_callback: LevelCallback | None = None) -> None:
+        from .capture_v280 import capture_wav
         try:
-            import sounddevice as sd
-        except Exception as exc:
-            raise VoiceError(f"Microphone runtime is unavailable: {exc}") from exc
-
-        started_at = time.monotonic()
-        noise_samples: list[int] = []
-        pre_roll: deque[bytes] = deque(maxlen=self.PREROLL_BLOCKS)
-        captured: list[bytes] = []
-        speech_started = False
-        silent_for = 0.0
-        threshold = 220
-
-        try:
-            with sd.RawInputStream(
-                samplerate=self.SAMPLE_RATE,
-                blocksize=self.BLOCK_FRAMES,
-                dtype="int16",
-                channels=self.CHANNELS,
-            ) as stream:
-                while True:
-                    if self.cancel_event.is_set():
-                        raise VoiceCancelled("Voice listening cancelled.")
-
-                    data, overflowed = stream.read(self.BLOCK_FRAMES)
-                    raw = bytes(data)
-                    if not raw:
-                        continue
-                    rms = self._rms(raw)
-
-                    if len(noise_samples) < self.CALIBRATION_BLOCKS:
-                        noise_samples.append(rms)
-                        pre_roll.append(raw)
-                        if level_callback:
-                            level_callback(min(1.0, rms / 1200.0))
-                        continue
-
-                    baseline = max(55, int(sum(noise_samples) / len(noise_samples)))
-                    threshold = max(180, min(2200, int(baseline * 2.15 + 70)))
-                    level = min(1.0, max(0.015, rms / max(420.0, threshold * 2.8)))
-                    if overflowed:
-                        level = max(level, 0.35)
-                    if level_callback:
-                        level_callback(level)
-
-                    block_seconds = self.BLOCK_FRAMES / self.SAMPLE_RATE
-                    if rms >= threshold:
-                        if not speech_started:
-                            captured.extend(pre_roll)
-                            pre_roll.clear()
-                        speech_started = True
-                        silent_for = 0.0
-                        captured.append(raw)
-                    elif speech_started:
-                        captured.append(raw)
-                        silent_for += block_seconds
-                    else:
-                        pre_roll.append(raw)
-
-                    elapsed = time.monotonic() - started_at
-                    if not speech_started and elapsed >= self.START_TIMEOUT:
-                        raise VoiceError("ما سمعت كلام واضح. قرّب شوي من الميكروفون وجرب مرة ثانية.")
-                    if speech_started and silent_for >= self.END_SILENCE and len(captured) >= 10:
-                        break
-                    if elapsed >= self.MAX_DURATION:
-                        break
-        except (VoiceError, VoiceCancelled):
+            capture_wav(path, self.settings, self.cancel_event, level_callback)
+        except VoiceCancelled:
             raise
         except Exception as exc:
-            raise VoiceError(f"تعذر فتح الميكروفون: {exc}") from exc
-
-        if not speech_started or not captured:
-            raise VoiceError("ما قدرت ألتقط صوت واضح من الميكروفون.")
-
-        with wave.open(str(path), "wb") as wf:
-            wf.setnchannels(self.CHANNELS)
-            wf.setsampwidth(self.SAMPLE_WIDTH)
-            wf.setframerate(self.SAMPLE_RATE)
-            wf.writeframes(b"".join(captured))
+            raise VoiceError(str(exc)) from exc
 
     def listen_once(self, level_callback: LevelCallback | None = None, mode: str = "dictation") -> str:
-        key = get_groq_api_key(required=True)
         with tempfile.TemporaryDirectory(prefix="yaa_cloud_voice_") as td:
             wav = Path(td) / "input.wav"
             self._record_wav(wav, level_callback=level_callback)
             if self.cancel_event.is_set():
                 raise VoiceCancelled("Voice listening cancelled.")
+            key = get_groq_api_key(required=True)
             try:
                 with wav.open("rb") as f:
                     response = requests.post(

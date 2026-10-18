@@ -97,6 +97,7 @@ class Settings:
     # Offline voice: push-to-talk uses whisper.cpp; replies use Piper first and
     # Windows SAPI as fallback. Explicit mic use always enables the voice turn.
     voice_enabled: bool = True
+    voice_input_device: str = "auto"  # exact device label; auto means Windows default input
     voice_backend: str = "local"
     voice_reply_mode: str = "voice_if_started"
     wake_word_enabled: bool = False

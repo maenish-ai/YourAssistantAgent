@@ -36,7 +36,7 @@ def test_original_branding_is_packaged_everywhere():
 def test_windows_version_metadata_is_present():
     version_info = (ROOT / "version_info.txt").read_text(encoding="utf-8")
     assert "Your Assistant Agent" in version_info
-    assert "2.7.0.0" in version_info
+    assert "2.8.0.0" in version_info
     spec = (ROOT / "build_app.spec").read_text(encoding="utf-8")
     assert "version_info.txt" in spec
 

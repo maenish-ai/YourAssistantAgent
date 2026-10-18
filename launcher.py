@@ -32,6 +32,9 @@ apply_stability_v260()
 from yaa_lite.review_voice_v270 import apply_review_voice_v270
 apply_review_voice_v270()
 
+from yaa_lite.repair_v280 import apply_repair_v280
+apply_repair_v280()
+
 from yaa_lite.main import main
 
 

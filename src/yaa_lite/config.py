@@ -23,8 +23,8 @@ def data_dir() -> Path:
 
 @dataclass
 class Settings:
-    # v2.1: Qwen3 is the primary local assistant. Older Hammer session IDs are
-    # still accepted by the DB layer for upgrade compatibility.
+    # Legacy profile labels remain for database/backward compatibility.
+    # Actual reasoning is performed by GroqCloud; no local model is loaded.
     selected_agent: str = "qwen"
     remember_agent: bool = True
     smart_agent_framework: str = "qwen3-1.7b-primary-agent"
@@ -35,18 +35,17 @@ class Settings:
     appearance: str = "system"
     startup_page: str = "home"
     last_page: str = "home"
-    close_behavior: str = "tray"
-    start_with_windows: str = "tray"
+    close_behavior: str = "exit"
+    start_with_windows: str = "off"
 
-    # Local AI. 3072 context gives Qwen enough room for tool schemas while still
-    # staying reasonable on the 4 GB target machine.
+    # Cloud-model request settings; these fields keep legacy names for migration.
     smart_agent_enabled: bool = True
     ai_timeout_seconds: int = 120
     context_tokens: int = 3072
     max_response_tokens: int = 240
     threads: int = 2
     hammer_retry_count: int = 2  # legacy field name; applies to Qwen retries
-    hammer_idle_minutes: int = 0  # 0 = keep Qwen warm; avoids first-request stalls
+    hammer_idle_minutes: int = 0  # cloud mode; no local AI process to keep warm
     performance_mode: str = "balanced"
     reply_language: str = "message"
     arabic_dialect: str = "jordanian"
@@ -64,7 +63,7 @@ class Settings:
 
     # Facebook / browser.
     default_source_page: str = ""
-    facebook_auto_check: bool = True
+    facebook_auto_check: bool = False
     facebook_browser_choice: str = "auto"
     facebook_browser_custom_path: str = ""
     facebook_browser_mode: str = "extension_first"
@@ -76,7 +75,9 @@ class Settings:
     facebook_pending_check_minutes: int = 60
 
     # Backup / Google Drive.
-    auto_backup: bool = True
+    background_tasks_enabled: bool = False  # v2.9: explicit opt-in for unattended tasks
+    lightweight_defaults_v290: bool = True
+    auto_backup: bool = False
     drive_sync_enabled: bool = False
     drive_sync_interval_minutes: int = 60
     drive_sync_attachments: bool = True
@@ -94,8 +95,7 @@ class Settings:
     telegram_enabled: bool = False
     github_enabled: bool = False
 
-    # Offline voice: push-to-talk uses whisper.cpp; replies use Piper first and
-    # Windows SAPI as fallback. Explicit mic use always enables the voice turn.
+    # Cloud STT/TTS are provided by v2.8 voice service; legacy options preserved.
     voice_enabled: bool = True
     voice_input_device: str = "auto"  # exact device label; auto means Windows default input
     voice_backend: str = "local"
@@ -124,6 +124,16 @@ class Settings:
             legacy_framework = str(raw.get("smart_agent_framework") or "")
             safe = {k: v for k, v in raw.items() if k in cls.__dataclass_fields__}
             obj = cls(**safe)
+            # v2.9 one-time SAFE migration: persistent tasks and backups are
+            # preserved, but unattended work stays off until explicitly enabled.
+            # This is intentional after reports of Windows freezing during idle.
+            if not raw.get("lightweight_defaults_v290", False):
+                obj.close_behavior = "exit"
+                obj.start_with_windows = "off"
+                obj.facebook_auto_check = False
+                obj.auto_backup = False
+                obj.background_tasks_enabled = False
+                obj.lightweight_defaults_v290 = True
         except Exception:
             return cls()
 

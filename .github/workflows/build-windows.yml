@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build GroqCloud v2.8 Voice & Tasks Repair Windows Setup
+    name: Build GroqCloud v2.9 Cloud-first Lightweight Windows Setup
     permissions:
       contents: read
     runs-on: windows-latest
@@ -72,7 +72,7 @@ jobs:
         shell: pwsh
         run: |
           node --check browser_extension/background.js
-          python -m py_compile src/yaa_lite/fast_live_v250.py src/yaa_lite/fast_stream_v250.py src/yaa_lite/stability_v260.py src/yaa_lite/review_voice_v270.py src/yaa_lite/voice/cloud_service.py src/yaa_lite/voice/provider_v270.py
+          python -m py_compile src/yaa_lite/fast_live_v250.py src/yaa_lite/lightweight_v290.py src/yaa_lite/config.py src/yaa_lite/fast_stream_v250.py src/yaa_lite/stability_v260.py src/yaa_lite/lightweight_v290.py src/yaa_lite/review_voice_v270.py src/yaa_lite/voice/cloud_service.py src/yaa_lite/voice/provider_v270.py
 
       - name: Run current tests
         shell: pwsh
@@ -159,7 +159,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: YourAssistantAgent-Windows-Setup-v2.8-VoiceTasks
+          name: YourAssistantAgent-Windows-Setup-v2.9-Lightweight
           path: |
             output/*.exe
             output/*.sha256.txt

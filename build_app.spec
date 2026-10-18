@@ -29,6 +29,7 @@ hiddenimports = [
     "yaa_lite.cloud_voice_v240",
     "yaa_lite.fast_live_v250",
     "yaa_lite.stability_v260",
+    "yaa_lite.lightweight_v290",
     "yaa_lite.review_voice_v270",
     "yaa_lite.voice.provider_v270",
     "edge_tts",

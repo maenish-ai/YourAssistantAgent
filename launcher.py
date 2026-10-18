@@ -35,6 +35,10 @@ apply_review_voice_v270()
 from yaa_lite.repair_v280 import apply_repair_v280
 apply_repair_v280()
 
+# v2.9: make idle behavior truly lightweight; keep all execution opt-in.
+from yaa_lite.lightweight_v290 import apply_lightweight_v290
+apply_lightweight_v290()
+
 from yaa_lite.main import main
 
 

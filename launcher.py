@@ -37,6 +37,10 @@ apply_v410_ui()
 from yaa_lite.v420_ui import apply_v420_ui
 apply_v420_ui()
 
+# v4.3: reviewed, approved ZIP-to-GitHub publishing via local Git checkout.
+from yaa_lite.github_upload_v430 import apply_v430_ui
+apply_v430_ui()
+
 from yaa_lite.main import main
 if __name__ == '__main__':
     raise SystemExit(main())

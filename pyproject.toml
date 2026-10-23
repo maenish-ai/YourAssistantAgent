@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "your-assistant-agent-lite"
-version = "4.2.0"
+version = "4.3.0"
 description = "Lightweight Windows desktop assistant with GroqCloud and opt-in local tools."
 requires-python = ">=3.11"
 dependencies = [

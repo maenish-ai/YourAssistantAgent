@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build GroqCloud v3.0 Text-first Modern Windows Setup
+    name: Build GroqCloud v3.0.1 Arabic Display Fix Windows Setup
     permissions:
       contents: read
     runs-on: windows-latest
@@ -152,7 +152,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: YourAssistantAgent-Windows-Setup-v3.0-TextFirst
+          name: YourAssistantAgent-Windows-Setup-v3.0.1-ArabicFix
           path: |
             output/*.exe
             output/*.sha256.txt

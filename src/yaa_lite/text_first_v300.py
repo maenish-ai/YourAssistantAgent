@@ -52,20 +52,15 @@ def requires_local_tools(text: str) -> bool:
 
 
 def _visual_arabic(value: str) -> str:
-    """Render Arabic safely in Tk 8.6 without changing stored or sent text.
+    """Return original Unicode text for native Windows/Tk font rendering.
 
-    The original text is always used for the database, tool calls and copied
-    messages. Shaping is display-only, and optional if dependency unavailable.
+    v3.0 pre-applied arabic_reshaper + python-bidi *before* Tk Text had
+    wrapped a message, which scrambled words and broke Arabic letter joining.
+    Pre-reordered Unicode also interferes with mixed Arabic/Latin content.
+    Keep logical text in the widget; justify RTL by the existing message tag.
+    Stored, shown and copied strings are now consistent.
     """
-    original = str(value or '')
-    if not re.search(r'[\u0600-\u06ff]', original):
-        return original
-    try:
-        import arabic_reshaper
-        from bidi.algorithm import get_display
-        return '\n'.join(get_display(arabic_reshaper.reshape(line)) for line in original.split('\n'))
-    except (ImportError, ValueError, TypeError):
-        return original
+    return str(value or '')
 
 
 def _btn(master, label, action, *, primary=False, quiet=False, width=None):

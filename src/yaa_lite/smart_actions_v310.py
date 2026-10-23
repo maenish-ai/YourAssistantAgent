@@ -119,18 +119,18 @@ class Workspace:
                 continue
             rel = src.relative_to(staged)
             if any(p.lower() in BLOCKED_NAMES or p.lower().endswith(('.pem', '.key')) for p in rel.parts):
-                blocked.append(str(rel))
+                blocked.append(rel.as_posix())
                 continue
             dst = destination / rel
             self.check(dst)
             if dst.exists() and (not dst.is_file() or dst.is_symlink()):
-                blocked.append(str(rel))
+                blocked.append(rel.as_posix())
             elif not dst.exists():
-                added.append(str(rel))
+                added.append(rel.as_posix())
             elif _sha(src) == _sha(dst):
-                unchanged.append(str(rel))
+                unchanged.append(rel.as_posix())
             else:
-                changed.append(str(rel))
+                changed.append(rel.as_posix())
         return {'added': added, 'changed': changed, 'unchanged': unchanged, 'blocked': blocked,
                 'staging': str(staged), 'destination': str(destination)}
 

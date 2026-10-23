@@ -34,6 +34,9 @@ apply_text_first_v300()
 from yaa_lite.v410_ui import apply_v410_ui
 apply_v410_ui()
 
+from yaa_lite.v420_ui import apply_v420_ui
+apply_v420_ui()
+
 from yaa_lite.main import main
 if __name__ == '__main__':
     raise SystemExit(main())

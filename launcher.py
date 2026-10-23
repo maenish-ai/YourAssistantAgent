@@ -39,6 +39,10 @@ apply_repair_v280()
 from yaa_lite.lightweight_v290 import apply_lightweight_v290
 apply_lightweight_v290()
 
+# v3.0: modern text-first chat, optional speech-to-text only, no TTS playback.
+from yaa_lite.text_first_v300 import apply_text_first_v300
+apply_text_first_v300()
+
 from yaa_lite.main import main
 
 

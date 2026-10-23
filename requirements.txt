@@ -5,3 +5,6 @@ playwright>=1.49,<2
 pystray>=0.19,<0.20
 Pillow>=10,<12
 sounddevice>=0.5,<0.6
+# Tiny, UI-only Arabic text shaping; no ML model or local speech engine.
+arabic-reshaper>=3,<4
+python-bidi>=0.6,<1

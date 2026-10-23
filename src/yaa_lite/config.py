@@ -99,7 +99,7 @@ class Settings:
     voice_enabled: bool = True
     voice_input_device: str = "auto"  # exact device label; auto means Windows default input
     voice_backend: str = "local"
-    voice_reply_mode: str = "voice_if_started"
+    voice_reply_mode: str = "text"
     wake_word_enabled: bool = False
     wake_word: str = "Hey Assistant"
     voice_style: str = "soft_friendly"
@@ -146,8 +146,7 @@ class Settings:
         if migrating_from_hammer:
             obj.hammer_idle_minutes = 0
             obj.voice_enabled = True
-            if obj.voice_reply_mode == "text":
-                obj.voice_reply_mode = "voice_if_started"
+            # Text replies are mandatory in v3.0. Mic is dictation-only.
 
         if obj.interface_language not in {"ar", "en"}:
             obj.interface_language = "ar"
@@ -159,6 +158,8 @@ class Settings:
         obj.ai_timeout_seconds = max(45, min(int(obj.ai_timeout_seconds), 240))
         obj.hammer_retry_count = max(0, min(int(obj.hammer_retry_count), 2))
         obj.hammer_idle_minutes = max(0, min(int(obj.hammer_idle_minutes), 60))
+        # This release intentionally never reads responses aloud.
+        obj.voice_reply_mode = "text"
         obj.approval_timeout_minutes = max(5, min(int(obj.approval_timeout_minutes), 1440))
         obj.drive_sync_interval_minutes = max(15, min(int(obj.drive_sync_interval_minutes), 1440))
         return obj

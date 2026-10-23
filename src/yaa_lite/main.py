@@ -1,129 +1,82 @@
+"""GroqCloud-first desktop entrypoint; no periodic label sweeps or audio playback."""
 from __future__ import annotations
 
 import ctypes
 import os
 import sys
-import threading
-import tkinter as tk
 
 
 def _set_windows_app_id() -> None:
-    if os.name != "nt":
-        return
-    try:
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-            "YourAssistantAgent.Desktop.2.3.0"
-        )
-    except Exception:
-        pass
+    if os.name == 'nt':
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('YourAssistantAgent.Desktop.3.0.0')
+        except Exception:
+            pass
 
 
 def _self_test() -> int:
-    """Fast packaged-startup check used by CI before publishing the installer."""
+    """Lightweight packaged startup check; no window, credentials or network."""
     from .ui.app import App  # noqa: F401
     from .ui.resources import asset_path
     from .agent.orchestrator import SmartAgentController  # noqa: F401
     from .agent.tools import ToolRegistry  # noqa: F401
-    from .agent.hammer_agent import HammerAgentRouter, PRIMARY_MODEL_LABEL  # noqa: F401
     from .security.manager import SecurityManager  # noqa: F401
-    from .backup.service import BackupService  # noqa: F401
     from .browser_bridge.server import BrowserBridge  # noqa: F401
-    from .voice.service import VoiceService  # noqa: F401
     from .ai.runtime import GROQ_MODEL  # noqa: F401
-
-    required = (
-        "icon.ico",
-        "brand_mark_64.png",
-        "brand_mark_128.png",
-        "brand_mark_256.png",
-    )
-    missing = [name for name in required if not asset_path(name).exists()]
+    from .text_first_v300 import is_single_facebook_link  # noqa: F401
+    missing = [n for n in ('icon.ico', 'brand_mark_64.png', 'brand_mark_128.png', 'brand_mark_256.png')
+               if not asset_path(n).exists()]
     if missing:
-        raise RuntimeError("Missing branding assets: " + ", ".join(missing))
+        raise RuntimeError('Missing branding assets: ' + ', '.join(missing))
     return 0
 
 
-def _replace_visible_ai_labels(widget) -> None:
-    """Keep old database/internal names but show the real cloud brain in the UI."""
+def _upgrade_old_visible_labels(widget) -> None:
+    """One-shot text normalization; NEVER repeatedly scan the entire UI."""
     try:
-        text = widget.cget("text")
-        if isinstance(text, str) and text:
-            new = text
-            new = new.replace("Qwen3 1.7B", "GroqCloud • GPT-OSS 120B")
-            new = new.replace("Qwen3", "GroqCloud")
-            new = new.replace("Qwen", "GroqCloud")
-            new = new.replace("Hammer 2.1", "GroqCloud • GPT-OSS 120B")
-            if new.strip() == "Hammer":
-                new = "GroqCloud"
-            if new != text:
+        old = widget.cget('text')
+        if isinstance(old, str) and old:
+            new = old.replace('Qwen3 1.7B', 'GroqCloud • GPT-OSS 120B')
+            new = new.replace('Qwen3', 'GroqCloud').replace('Qwen', 'GroqCloud')
+            new = new.replace('Hammer 2.1', 'GroqCloud • GPT-OSS 120B')
+            if new != old:
                 widget.configure(text=new)
     except Exception:
         pass
     try:
         for child in widget.winfo_children():
-            _replace_visible_ai_labels(child)
+            _upgrade_old_visible_labels(child)
     except Exception:
         pass
 
 
 def main() -> int:
     _set_windows_app_id()
-    if "--self-test" in sys.argv:
+    if '--self-test' in sys.argv:
         return _self_test()
-
     from .ui.app import App
-    from .voice.service import VoiceService
 
     class GroqApp(App):
-        def __init__(self):
-            super().__init__()
-            # Old source files/database keys still contain Qwen/Hammer compatibility
-            # names. Sweep only visible widget text so the user sees the real brain.
-            self.after(120, self._cloud_label_sweep)
+        def _build_sidebar(self):
+            super()._build_sidebar()
+            _upgrade_old_visible_labels(self.sidebar)
 
-        def _cloud_label_sweep(self):
-            try:
-                _replace_visible_ai_labels(self)
-            finally:
-                try:
-                    self.after(700, self._cloud_label_sweep)
-                except Exception:
-                    pass
+        def navigate(self, view):
+            result = super().navigate(view)
+            # Run only on deliberate view navigation; no CPU-burning timer.
+            _upgrade_old_visible_labels(getattr(self, '_view_widget', None))
+            return result
 
         def _build_header(self):
             super()._build_header()
             try:
-                self.header_agent.config(text="GroqCloud • GPT-OSS 120B")
+                self.header_agent.configure(text='GroqCloud • GPT-OSS 120B')
             except Exception:
                 pass
 
-        def _build_sidebar(self):
-            super()._build_sidebar()
-            _replace_visible_ai_labels(self.sidebar)
-
-        def _voice_request(self, chat):
-            # Pressing the microphone is explicit user intent.
-            try:
-                svc = VoiceService(self.settings_obj)
-            except Exception as exc:
-                chat.voice_failed(str(exc))
-                return
-
-            def work():
-                try:
-                    text = svc.listen_once()
-                except Exception as exc:
-                    self.after(0, lambda: chat.voice_failed(str(exc)))
-                    return
-                if text:
-                    self.after(0, lambda: chat.prefill_and_send(text))
-
-            threading.Thread(target=work, daemon=True, name="yaa-voice-listen").start()
-
-    app = GroqApp()
-    app.mainloop()
+    GroqApp().mainloop()
     return 0
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     raise SystemExit(main())

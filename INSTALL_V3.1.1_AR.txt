@@ -1,0 +1,12 @@
+Your Assistant Agent v3.1.1 — ZIP Preview
+
+1. فك ضغط الحزمة بمجلد مستقل.
+2. افتح CMD داخل مجلد المشروع الحالي YourAssistantAgent.
+3. نفذ: python "مسار_الحزمة\APPLY_PATCH.py"
+   أو انسخ src/yaa_lite/action_preview_v311.py وأضف سطري الاستيراد والتفعيل في launcher.py بعد apply_text_first_v300().
+4. شغل: python -m pytest -q
+5. راجع التعديلات في GitHub Desktop، ثم Commit وPush إذا وافقت.
+
+تظهر في الواجهة أيقونة «فحص ZIP» أعلى المحادثة. تختار ملف ZIP ومجلد المشروع؛ الفحص بالخلفية ولا يستبدل ملفات المشروع ولا يرسل محتوياتها إلى Groq.
+ملاحظة: ملف launcher.py.v311.bak نسخة احتياطية محلية، لا ترفعه إلى GitHub.
+هذه خطوة معاينة فقط، وليست دمجًا تلقائيًا أو إدارة Git كاملة.

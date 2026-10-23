@@ -7,7 +7,7 @@ import zipfile
 import pytest
 
 from yaa_lite.github_upload_v430 import (
-    GitHubUploadError, _zip_members, describe_plan,
+    GitHubUploadError, _zip_members, _validate_name, describe_plan,
     is_upload_request, prepare_upload, publish_upload,
 )
 
@@ -86,12 +86,32 @@ def test_reject_wrong_origin(checkout, tmp_path):
 
 
 @pytest.mark.parametrize('bad', ['../escape.py', '/root/file.py', 'C:/windows/file.py',
-                                 '.git/config', 'src/../../evil', 'src\\evil',
+                                 '.git/config', 'src/../../evil',
                                  '.env', 'secrets.json', 'foo/CON.txt', 'foo/id_rsa'])
 def test_invalid_zip_path(tmp_path, bad):
     path = make_zip(tmp_path / 'patch.zip', {bad: 'bad'})
     with pytest.raises(GitHubUploadError):
         _zip_members(path)
+
+
+def test_reject_backslash_path_independent_of_zipfile_windows_normalization(tmp_path):
+    # zipfile.ZipInfo replaces backslashes with '/' on Windows. Testing the
+    # archive alone would silently test 'src/evil' (which is safe) instead of
+    # the intended raw 'src\\evil'. Assert the validator separately so
+    # this remains a meaningful cross-platform security regression test.
+    with pytest.raises(GitHubUploadError, match='unsafe path'):
+        _validate_name('src\\evil')
+
+    archive = make_zip(tmp_path / 'backslash.zip', {'src\\evil': 'bad'})
+    with zipfile.ZipFile(archive) as z:
+        parsed_name = z.namelist()[0]
+    if parsed_name == 'src/evil':
+        # Expected normalization on Windows, still confined to the repository.
+        assert _zip_members(archive)[0][1] == 'src/evil'
+    else:
+        assert parsed_name == 'src\\evil'
+        with pytest.raises(GitHubUploadError, match='unsafe path'):
+            _zip_members(archive)
 
 
 def test_reject_duplicate_case_insensitive(tmp_path):

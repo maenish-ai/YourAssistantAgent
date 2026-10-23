@@ -11,40 +11,29 @@ if not getattr(sys, "frozen", False):
 
 from yaa_lite.hotfix_v202 import apply_hotfixes
 apply_hotfixes()
-
 from yaa_lite.personal_assistant_v220 import apply_personal_assistant
 apply_personal_assistant()
-
-# v2.4: cloud-first voice, live waveform/voice loop, deterministic Facebook
-# connection checks, and removal of stale visible local-Qwen wording.
 from yaa_lite.cloud_voice_v240 import apply_cloud_voice_v240
 apply_cloud_voice_v240()
-
 from yaa_lite.fast_stream_v250 import apply_stream_v250
 apply_stream_v250()
-
 from yaa_lite.fast_live_v250 import apply_fast_live_v250
 apply_fast_live_v250()
-
 from yaa_lite.stability_v260 import apply_stability_v260
 apply_stability_v260()
-
 from yaa_lite.review_voice_v270 import apply_review_voice_v270
 apply_review_voice_v270()
-
 from yaa_lite.repair_v280 import apply_repair_v280
 apply_repair_v280()
-
-# v2.9: make idle behavior truly lightweight; keep all execution opt-in.
 from yaa_lite.lightweight_v290 import apply_lightweight_v290
 apply_lightweight_v290()
-
-# v3.0: modern text-first chat, optional speech-to-text only, no TTS playback.
 from yaa_lite.text_first_v300 import apply_text_first_v300
 apply_text_first_v300()
 
+# v4.1: on-demand Windows discovery and explicit background/exit choice.
+from yaa_lite.v410_ui import apply_v410_ui
+apply_v410_ui()
+
 from yaa_lite.main import main
-
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     raise SystemExit(main())

@@ -1,0 +1,4 @@
+38e373881abd1401dc5a4676c916693438543058e8b6e65a97f5ae5f0785f00f  YourAssistantAgent-v4.4.0-source.zip
+ea8dace2cb296d59e1cf9f1c038ea03a2a0057247926a3a16c27c1b39bfec1f0  YourAssistantAgent-Android-v1.0.0-debug.apk
+08dc37c926036eab98397781b6578b6e4e7a84e0c2ffcf9d343ac9ef4ea4b62d  YourAssistantAgent-v4.4-setup-AR.md
+9f8e7ed3546d426464fdc241edef31572afbc87e03a5f4ed4b261ffbee30bf3b  YourAssistantAgent-v4.4.0.patch

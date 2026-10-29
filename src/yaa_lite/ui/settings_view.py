@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
+from dataclasses import replace
+from pathlib import Path
 
 from ..agent.hammer_agent import HAMMER_LICENSE, HAMMER_MODEL_LABEL
 from ..config import Settings
@@ -12,11 +14,12 @@ from .i18n import ui_text
 class SettingsView(ttk.Frame):
     """ChatGPT-style Settings: category rail on the left, one-language content on the right."""
 
-    def __init__(self, master, settings: Settings, on_save, security: SecurityManager | None = None):
+    def __init__(self, master, settings: Settings, on_save, security: SecurityManager | None = None, remote_status=None):
         super().__init__(master, padding=0)
         self.settings = settings
         self.on_save = on_save
         self.security = security
+        self.remote_status = remote_status
         self.language = settings.interface_language
         self.vars: dict[str, tk.Variable] = {}
         self.entries: dict[str, ttk.Entry] = {}
@@ -33,6 +36,7 @@ class SettingsView(ttk.Frame):
         ttk.Label(left,text=self.t("الإعدادات","Settings"),style="Title.TLabel").pack(anchor="w",pady=(0,14))
         cats = [
             ("general",self.t("عام","General")), ("ai",self.t("Hammer والذكاء","AI & Hammer")),
+            ("remote",self.t("Android وGitHub","Android & GitHub")),
             ("facebook","Facebook"), ("backup",self.t("النسخ الاحتياطي","Backup")),
             ("security",self.t("الأمان والصلاحيات","Security & permissions")),
             ("notifications",self.t("التنبيهات","Notifications")), ("appearance",self.t("المظهر واللغة","Appearance & language")),
@@ -100,6 +104,7 @@ class SettingsView(ttk.Frame):
     def show_category(self,key):
         self.current=key;self._clear();titles={
             "general":self.t("عام","General"),"ai":self.t("Hammer والذكاء","AI & Hammer"),"facebook":"Facebook","backup":self.t("النسخ الاحتياطي","Backup"),
+            "remote":self.t("Android وGitHub","Android & GitHub"),
             "security":self.t("الأمان والصلاحيات","Security & permissions"),"notifications":self.t("التنبيهات","Notifications"),
             "appearance":self.t("المظهر واللغة","Appearance & language"),"voice":self.t("الصوت","Voice"),"memory":self.t("الذاكرة والتعلم","Memory & learning"),"advanced":self.t("متقدم","Advanced")}
         self.header.config(text=titles[key]);getattr(self,f"_page_{key}")()
@@ -126,6 +131,78 @@ class SettingsView(ttk.Frame):
         self._row_combo(p,2,"CPU threads","threads",self.settings.threads,[1,2])
         self._row_combo(p,3,self.t("حد الرد","Max reply tokens"),"max_response_tokens",self.settings.max_response_tokens,[96,128,160,220,256])
         self._row_combo(p,4,self.t("مهلة Hammer بالثواني","Hammer timeout seconds"),"ai_timeout_seconds",self.settings.ai_timeout_seconds,[45,60,90,120,150,180])
+
+    def _page_remote(self):
+        b=self._section(self.t("ربط تطبيق Android", "Connect the Android app"), self.t(
+            "فعّل الاتصال وأنشئ مفتاح اقتران. للوصول من خارج البيت، شغّل Tailscale على الكمبيوتر والهاتف وفعّل Tailscale Serve للبرنامج. أدخل عنوان HTTPS ومفتاح الاقتران في تطبيق Android. يجب أن يبقى الكمبيوتر والبرنامج متصلين؛ لا يبدأ الاتصال قبل فتح قفل البرنامج.",
+            "Enable the connection and generate a pairing token. For access away from home, run Tailscale on the computer and phone and expose this app with Tailscale Serve. Enter its HTTPS address and pairing token in the Android app. Keep this computer and app online. The connection starts after app unlock."))
+        self._row_check(b,1,self.t("تفعيل اتصال Android", "Enable Android connection"),"remote_enabled",self.settings.remote_enabled)
+        self._row_entry(b,2,self.t("منفذ الاتصال على الكمبيوتر", "Connection port on this computer"),"remote_port",self.settings.remote_port,width=12)
+        pairing=ttk.Frame(b)
+        pairing.grid(row=3,column=0,columnspan=2,sticky="ew",pady=5)
+        ttk.Button(pairing,text=self.t("عرض ونسخ مفتاح الاقتران", "Show and copy pairing token"),command=self._show_pairing_token).pack(side="left",padx=(0,6))
+        ttk.Button(pairing,text=self.t("إنشاء / تغيير المفتاح", "Generate / replace token"),command=self._regenerate_pairing_token).pack(side="left")
+        self._remote_status_label=ttk.Label(b,text="",style="Muted.TLabel",wraplength=690)
+        self._remote_status_label.grid(row=4,column=0,columnspan=2,sticky="w",pady=3)
+        ttk.Button(b,text=self.t("تحديث حالة الاتصال", "Refresh connection status"),command=self._refresh_remote_status).grid(row=5,column=0,columnspan=2,sticky="w",pady=3)
+        self._refresh_remote_status()
+        g=self._section("GitHub",self.t("اختر نسخة Git المحلية مرة واحدة. ستُستخدم في المحادثات الجديدة وعلى الهاتف. يجب إعداد تسجيل الدخول إلى Git على هذا الكمبيوتر.", "Select the local Git checkout once. New chats and phone requests reuse it. Configure command-line Git authentication on this computer."))
+        self._row_entry(g,1,self.t("المستودع: owner/name", "Repository: owner/name"),"github_repository",self.settings.github_repository)
+        self._row_entry(g,2,self.t("مجلد المستودع المحلي", "Local checkout folder"),"github_checkout",self.settings.github_checkout)
+        ttk.Button(g,text=self.t("اختيار المجلد", "Choose folder"),command=self._choose_github_checkout).grid(row=3,column=1,sticky="w",pady=5)
+
+    def _refresh_remote_status(self):
+        label=getattr(self,"_remote_status_label",None)
+        if label is not None:
+            text=self.remote_status() if self.remote_status else self.t("احفظ الإعدادات لتطبيق الاتصال.", "Save settings to apply the connection.")
+            label.configure(text=text)
+
+    def _choose_github_checkout(self):
+        selected=filedialog.askdirectory(parent=self,title=self.t("اختر مجلد نسخة Git المحلية", "Choose a local Git checkout"),mustexist=True)
+        if selected:self.vars["github_checkout"].set(selected)
+
+    def _show_pairing_token(self):
+        from ..remote.settings import load_remote_token
+        try:
+            if not self.security or not self.security.unlocked:
+                raise SecurityError(self.t("افتح قفل البرنامج أولاً.", "Unlock the app first."))
+            token=load_remote_token(self.security)
+            if not token:
+                raise SecurityError(self.t("أنشئ مفتاح اقتران أولاً.", "Generate a pairing token first."))
+            dlg=tk.Toplevel(self)
+            dlg.title(self.t("مفتاح اقتران Android", "Android pairing token"))
+            dlg.transient(self)
+            body=ttk.Frame(dlg,padding=20)
+            body.pack(fill="both",expand=True)
+            ttk.Label(body,text=self.t("أدخل هذا المفتاح في تطبيق Android على هاتفك.", "Enter this token in the Android app on your phone.")).pack(anchor="w",pady=(0,10))
+            entry=ttk.Entry(body,width=56)
+            entry.insert(0,token)
+            entry.configure(state="readonly")
+            entry.pack(fill="x",pady=4)
+            def copy():
+                self.clipboard_clear()
+                self.clipboard_append(token)
+            ttk.Button(body,text=self.t("نسخ", "Copy"),command=copy).pack(anchor="e",pady=8)
+        except (OSError,SecurityError) as exc:
+            self.status.configure(text=str(exc))
+
+    def _regenerate_pairing_token(self):
+        from ..remote.settings import generate_remote_token, TOKEN_FILE
+        try:
+            if not self.security or not self.security.unlocked:
+                raise SecurityError(self.t("افتح قفل البرنامج أولاً.", "Unlock the app first."))
+            exists=(Path(self.security.root)/TOKEN_FILE).exists()
+            if exists and not messagebox.askyesno(self.t("تغيير مفتاح الاقتران", "Replace pairing token"),self.t(
+                    "سيُلغى اتصال الهواتف المقترنة بالمفتاح القديم. هل تريد إنشاء مفتاح جديد؟",
+                    "Phones paired with the old token will lose access. Generate a new token?"),parent=self):
+                return
+            generate_remote_token(self.security)
+            # Restart immediately so an old token cannot authorize new requests.
+            self.on_save(self.settings)
+            self._refresh_remote_status()
+            self._show_pairing_token()
+        except (OSError,SecurityError) as exc:
+            self.status.configure(text=str(exc))
 
     def _page_facebook(self):
         b=self._section("Facebook",self.t("يبدأ بفحص حالة خفيف في الخلفية. المتصفح المفتوح العادي هو الخيار المفضل عبر Browser Bridge، مع fallback للملف المُدار.","A light status check runs in the background. The normal open browser is preferred through Browser Bridge, with managed-profile fallback."))
@@ -197,7 +274,7 @@ class SettingsView(ttk.Frame):
 
     def _page_advanced(self):
         b=self._section(self.t("التكاملات المتقدمة","Advanced integrations"))
-        self._row_check(b,1,"Telegram","telegram_enabled",self.settings.telegram_enabled)
+        ttk.Button(b,text=self.t("إعداد Android وGitHub", "Configure Android & GitHub"),command=lambda:self.show_category("remote")).grid(row=1,column=0,columnspan=2,sticky="w",pady=6)
         self._row_check(b,2,"GitHub","github_enabled",self.settings.github_enabled)
         self._row_check(b,3,self.t("نظام Skills","Skills system"),"skills_enabled",self.settings.skills_enabled)
         self._row_check(b,4,self.t("السماح بمهارات GitHub بعد الموافقة","Allow GitHub skills after approval"),"allow_github_skills",self.settings.allow_github_skills)
@@ -236,6 +313,8 @@ class SettingsView(ttk.Frame):
         v=self.vars.get(name);return v.get() if v is not None else default
 
     def save(self):
+        if self.current == "remote":
+            return self._save_remote_settings()
         # Only fields currently rendered are changed; other settings stay intact.
         for name,var in self.vars.items():
             if not hasattr(self.settings,name):continue
@@ -252,3 +331,33 @@ class SettingsView(ttk.Frame):
         if self.security and self.security.configured:
             self.settings.password_mode=self.security.mode()
         self.settings.save();self.on_save(self.settings);self.status.config(text=self.t("تم الحفظ","Saved"))
+
+    def _save_remote_settings(self):
+        from ..github_upload_v430 import GitHubUploadError, validate_repository
+        from ..remote.settings import load_remote_token
+        try:
+            updated=replace(self.settings)
+            updated.remote_enabled=bool(self._value("remote_enabled",False))
+            updated.remote_port=int(self._value("remote_port",8766))
+            if not 1024 <= updated.remote_port <= 65535:
+                raise ValueError(self.t("اختر منفذاً بين 1024 و65535.", "Choose a port between 1024 and 65535."))
+            updated.github_repository=validate_repository(str(self._value("github_repository",self.settings.github_repository)))
+            checkout=str(self._value("github_checkout","")).strip()
+            if checkout:
+                path=Path(checkout).expanduser()
+                if not path.is_dir():raise ValueError(self.t("مجلد المستودع غير موجود.", "The checkout folder does not exist."))
+                updated.github_checkout=str(path.resolve())
+            else:
+                updated.github_checkout=""
+            if updated.remote_enabled:
+                if not self.security or not self.security.unlocked:
+                    raise ValueError(self.t("افتح قفل البرنامج قبل إعداد الاتصال.", "Unlock the app before configuring the connection."))
+                if not load_remote_token(self.security):
+                    raise ValueError(self.t("أنشئ مفتاح اقتران أولاً.", "Generate a pairing token first."))
+            updated.save()
+            self.settings=updated
+            self.on_save(updated)
+            self.status.configure(text=self.t("تم الحفظ", "Saved"))
+            self._refresh_remote_status()
+        except (ValueError, OSError, SecurityError, GitHubUploadError) as exc:
+            self.status.configure(text=str(exc))

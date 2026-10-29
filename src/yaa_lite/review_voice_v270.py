@@ -1,7 +1,8 @@
 """v2.7: explicit local approval UI and optional Arabic female voice comparison.
 
 No general command execution, phone API, credential upload or payment path is added.
-A desktop *click* is required to authorize each existing mutating agent tool.
+An explicit reviewed approval is required for each mutating agent tool. The
+desktop button and the authenticated mobile callback share the same boundary.
 """
 from __future__ import annotations
 
@@ -23,7 +24,7 @@ _ALLOWED_MUTATIONS = frozenset({
     'approve_facebook_campaign', 'run_facebook_rule_now',
 })
 _READ_ONLY_TOOLS = frozenset({
-    'app_status', 'facebook_status', 'verify_facebook_connection', 'open_facebook_login',
+    'app_status', 'facebook_status', 'verify_facebook_connection', 'open_facebook_login', 'open_facebook_publishing_login',
     'discover_facebook_groups', 'search_facebook_groups',
     'list_tasks', 'backup_status', 'count_facebook_groups',
 })
@@ -76,6 +77,30 @@ def permitted_mutation(tool_name: str, arguments: dict | None = None) -> bool:
             and approval['arguments'] == json.dumps(arguments or {}, sort_keys=True,
                                                      ensure_ascii=False, separators=(',', ':'), default=str)
             and time.monotonic() <= approval['deadline'])
+
+
+def execute_reviewed_action(controller, session_id: int, signature: str):
+    """Execute one exact preview after its transport verified an approval click.
+
+    The mobile service supplies this signature from a single-use, expiring
+    callback. Plain messages and model arguments never call this entrypoint.
+    """
+    from .agent.tools import ToolExecution
+    pending = controller.db.get_pending_action(session_id)
+    if not pending_is_fresh(pending) or not signature or pending_signature(pending) != signature:
+        return ToolExecution(False, 'انتهت المعاينة أو تغيّرت. جهّز العملية وراجعها من جديد.')
+    controller.db.clear_pending_action(session_id)
+    controller._v270_authorization = None
+    _LOCAL_APPROVAL.details = {
+        'tool': pending['tool_name'],
+        'arguments': json.dumps(pending.get('arguments') or {}, sort_keys=True,
+                                ensure_ascii=False, separators=(',', ':'), default=str),
+        'deadline': time.monotonic() + _CLICK_TTL_SECONDS,
+    }
+    try:
+        return controller.tools.execute(pending['tool_name'], pending.get('arguments') or {})
+    finally:
+        _LOCAL_APPROVAL.details = None
 
 
 def install_execution_boundary():

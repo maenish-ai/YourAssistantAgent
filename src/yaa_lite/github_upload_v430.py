@@ -12,6 +12,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import threading
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -24,6 +25,9 @@ BLOCKED_PARTS = {'.git', '.ssh', '.gnupg', '.venv', 'venv', '__pycache__', 'node
 WINDOWS_RESERVED = {'CON', 'PRN', 'AUX', 'NUL', *(f'COM{i}' for i in range(1, 10)), *(f'LPT{i}' for i in range(1, 10))}
 ROOT_ENTRIES = {'src', 'tests', '.github', 'assets', 'installer', 'launcher.py', 'readme.md', 'pyproject.toml'}
 PENDING_UPLOAD_KEY = 'yaa.pending-upload-commit'
+PENDING_UPLOAD_REPO_KEY = 'yaa.pending-upload-repository'
+_PUBLISH_LOCKS: dict[str, threading.RLock] = {}
+_PUBLISH_LOCKS_GUARD = threading.Lock()
 
 
 class GitHubUploadError(Exception):
@@ -49,6 +53,7 @@ class UploadPlan:
     branch: str
     files: tuple[UploadFile, ...]
     pending_commit: str = ''
+    expected_repo: str = TARGET_REPO
 
     @property
     def changes(self) -> tuple[UploadFile, ...]:
@@ -97,7 +102,25 @@ def _git(git: str, checkout: Path, *args: str, timeout: int = 35) -> str:
     return p.stdout.rstrip('\r\n')
 
 
-def _check_checkout(path: Path, git: str) -> tuple[Path, str, str]:
+def validate_repository(value: str) -> str:
+    """Validate a configured GitHub owner/name, never a URL or Git option."""
+    repository = str(value or '').strip()
+    parts = repository.split('/')
+    if (len(parts) != 2 or not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?', parts[0])
+            or not re.fullmatch(r'[A-Za-z0-9_.-]{1,100}', parts[1])
+            or parts[1] in {'.', '..'}):
+        raise GitHubUploadError('GitHub repository must be owner/name, for example maenish-ai/YourAssistantAgent.')
+    return repository
+
+
+def _matches_repository(remote: str, expected_repo: str) -> bool:
+    return bool(re.fullmatch(
+        r'(?:https://(?:[^/@]+@)?github\.com/|git@github\.com:|ssh://git@github\.com/)'
+        + re.escape(expected_repo) + r'(?:\.git)?/?', remote, re.I))
+
+
+def _check_checkout(path: Path, git: str, expected_repo: str = TARGET_REPO) -> tuple[Path, str, str]:
+    expected_repo = validate_repository(expected_repo)
     checkout = path.expanduser().resolve()
     if not checkout.is_dir():
         raise GitHubUploadError('Choose an existing local GitHub repository folder.')
@@ -105,11 +128,12 @@ def _check_checkout(path: Path, git: str) -> tuple[Path, str, str]:
     if top != checkout:
         raise GitHubUploadError('Choose the repository root, not a subfolder.')
     remote = _git(git, checkout, 'remote', 'get-url', 'origin')
-    # Allow normal GitHub HTTPS or SSH remotes, but never an unrelated repository.
-    allowed = re.fullmatch(r'(?:https://(?:[^/@]+@)?github\.com/|git@github\.com:|ssh://git@github\.com/)' +
-                           re.escape(TARGET_REPO) + r'(?:\.git)?/?', remote, re.I)
-    if not allowed:
-        raise GitHubUploadError('The selected folder is not the expected GitHub repository: ' + TARGET_REPO)
+    # Both fetch and push destinations must match. A separate pushurl can direct
+    # Git to another host/repository even when the ordinary origin looks right.
+    push_urls = _git(git, checkout, 'remote', 'get-url', '--push', '--all', 'origin').splitlines()
+    if (not _matches_repository(remote, expected_repo) or len(push_urls) != 1
+            or not _matches_repository(push_urls[0], expected_repo)):
+        raise GitHubUploadError('The selected folder is not the expected GitHub repository: ' + expected_repo)
     if _git(git, checkout, 'status', '--porcelain=v1', '--untracked-files=all'):
         raise GitHubUploadError('The repository contains uncommitted or untracked changes. Review/commit these in GitHub Desktop first.')
     branch = _git(git, checkout, 'branch', '--show-current')
@@ -119,10 +143,15 @@ def _check_checkout(path: Path, git: str) -> tuple[Path, str, str]:
     return checkout, branch, head
 
 
-def _pending_upload(git: str, checkout: Path, branch: str, head: str) -> str:
-    """Only offer a retry when this workflow's failed commit is still HEAD."""
+def _pending_upload(git: str, checkout: Path, branch: str, head: str,
+                    expected_repo: str = TARGET_REPO) -> str:
+    """Only offer a retry for this repository, branch and unchanged HEAD."""
     pending = _git(git, checkout, 'config', '--local', '--default', '', '--get', PENDING_UPLOAD_KEY)
-    return head if pending == f'{branch}:{head}' else ''
+    repository = _git(git, checkout, 'config', '--local', '--default', '', '--get', PENDING_UPLOAD_REPO_KEY)
+    # Legacy uploads only targeted the original repository; they can be retried
+    # there, but must never migrate to a newly configured repository.
+    same_repo = repository.casefold() == expected_repo.casefold() if repository else expected_repo.casefold() == TARGET_REPO.casefold()
+    return head if same_repo and pending == f'{branch}:{head}' else ''
 
 
 def _validate_name(name: str) -> str:
@@ -147,7 +176,7 @@ def _validate_name(name: str) -> str:
     return '/'.join(parts)
 
 
-def _zip_members(archive: Path) -> list[tuple[zipfile.ZipInfo, str]]:
+def _zip_members(archive: Path, *, repository_name: str = "YourAssistantAgent") -> list[tuple[zipfile.ZipInfo, str]]:
     if not archive.is_file() or archive.suffix.lower() != '.zip' or not zipfile.is_zipfile(archive):
         raise GitHubUploadError('Select a valid ZIP archive.')
     with zipfile.ZipFile(archive) as z:
@@ -179,7 +208,9 @@ def _zip_members(archive: Path) -> list[tuple[zipfile.ZipInfo, str]]:
             raise GitHubUploadError('ZIP has no usable files.')
         parts = [name.split('/') for _, name in raw]
         common = parts[0][0] if all(len(p) > 1 and p[0] == parts[0][0] for p in parts) else None
-        strip = bool(common and (re.sub(r'[^a-z0-9]', '', common.lower()) == 'yourassistantagent'
+        strip = bool(common and (common.casefold() in {repository_name.casefold(),
+                                  repository_name.casefold() + '-main', repository_name.casefold() + '-master'}
+                                 or re.sub(r'[^a-z0-9]', '', common.lower()) == 'yourassistantagent'
                                  or re.match(r'^yourassistantagent[-_]', common, re.I)
                                  or all(len(p) > 1 and p[1].lower() in ROOT_ENTRIES for p in parts)))
         result = []
@@ -210,13 +241,15 @@ def _safe_destination(checkout: Path, relative: str) -> Path:
     return out
 
 
-def prepare_upload(archive: Path | str, checkout: Path | str, git_executable: str | None = None) -> UploadPlan:
+def prepare_upload(archive: Path | str, checkout: Path | str, git_executable: str | None = None,
+                   *, expected_repo: str = TARGET_REPO) -> UploadPlan:
+    expected_repo = validate_repository(expected_repo)
     archive = Path(archive).expanduser().resolve()
     if archive.stat().st_size > 300 * 1024 * 1024:
         raise GitHubUploadError('ZIP archive is larger than 300 MB.')
     git = git_executable or find_git()
-    checkout, branch, head = _check_checkout(Path(checkout), git)
-    entries = _zip_members(archive)
+    checkout, branch, head = _check_checkout(Path(checkout), git, expected_repo)
+    entries = _zip_members(archive, repository_name=expected_repo.split('/')[1])
     output = []
     with zipfile.ZipFile(archive) as z:
         for info, relative in entries:
@@ -231,8 +264,30 @@ def prepare_upload(archive: Path | str, checkout: Path | str, git_executable: st
             else:
                 change = 'added'
             output.append(UploadFile(info.filename, relative, content_hash, info.file_size, change))
-    pending = _pending_upload(git, checkout, branch, head)
-    return UploadPlan(archive, _sha256(archive), checkout, git, head, branch, tuple(output), pending)
+    pending = _pending_upload(git, checkout, branch, head, expected_repo)
+    return UploadPlan(archive, _sha256(archive), checkout, git, head, branch, tuple(output), pending, expected_repo)
+
+
+def prepare_configured_upload(archive: Path | str, settings, choose_checkout=None) -> UploadPlan:
+    """Use the saved target across chats; a picker is needed only for first setup.
+
+    Remote callers omit the picker and fail clearly when no checkout is set.
+    A newly chosen checkout is remembered only after repository validation.
+    """
+    repository = validate_repository(getattr(settings, 'github_repository', TARGET_REPO))
+    folder = str(getattr(settings, 'github_checkout', '') or '').strip()
+    if not folder:
+        if choose_checkout is None:
+            raise GitHubUploadError('Configure the local GitHub checkout in Settings before uploading remotely.')
+        folder = str(choose_checkout() or '').strip()
+        if not folder:
+            raise GitHubUploadError('No local GitHub checkout was selected.')
+    plan = prepare_upload(archive, folder, expected_repo=repository)
+    if str(getattr(settings, 'github_checkout', '') or '') != str(plan.checkout):
+        settings.github_repository = repository
+        settings.github_checkout = str(plan.checkout)
+        settings.save()
+    return plan
 
 
 def describe_plan(plan: UploadPlan) -> str:
@@ -253,7 +308,7 @@ def describe_plan(plan: UploadPlan) -> str:
         action = 'Approving will retry PUSH of the pending commit to origin; no new commit will be created.'
     else:
         action = 'All files already match; no commit or push is needed.'
-    return (f'Repository: {TARGET_REPO}\nLocal folder: {plan.checkout}\n'
+    return (f'Repository: {plan.expected_repo}\nLocal folder: {plan.checkout}\n'
             f'Target branch: {plan.branch}\nArchive: {plan.archive.name}\n'
             f'Added: {added} | Modified: {modified} | Unchanged: {unchanged}\n'
             f'Files to commit:\n{sample}{workflow_note}{pending_note}\n\n'
@@ -261,8 +316,12 @@ def describe_plan(plan: UploadPlan) -> str:
 
 
 def _push_upload(plan: UploadPlan, checkout: Path, branch: str, commit: str) -> str:
+    _, current_branch, current_head = _check_checkout(checkout, plan.git_executable, plan.expected_repo)
+    if current_branch != branch or current_head != commit:
+        raise GitHubUploadError('Repository changed before push. Inspect the local commit in GitHub Desktop.')
     # Persist the branch and commit ID in local Git metadata. A failed or interrupted
     # push can then be retried after a fresh preview and explicit approval.
+    _git(plan.git_executable, checkout, 'config', '--local', PENDING_UPLOAD_REPO_KEY, plan.expected_repo)
     _git(plan.git_executable, checkout, 'config', '--local', PENDING_UPLOAD_KEY, f'{branch}:{commit}')
     try:
         _git(plan.git_executable, checkout, 'push', 'origin', f'{commit}:refs/heads/{branch}', timeout=120)
@@ -273,6 +332,7 @@ def _push_upload(plan: UploadPlan, checkout: Path, branch: str, commit: str) -> 
                                 f'{exc}') from exc
     try:
         _git(plan.git_executable, checkout, 'config', '--local', '--unset-all', PENDING_UPLOAD_KEY)
+        _git(plan.git_executable, checkout, 'config', '--local', '--unset-all', PENDING_UPLOAD_REPO_KEY)
     except GitHubUploadError:
         # Remote publication already succeeded. Do not report a failed upload
         # solely because local metadata could not be cleaned up.
@@ -281,18 +341,27 @@ def _push_upload(plan: UploadPlan, checkout: Path, branch: str, commit: str) -> 
 
 
 def publish_upload(plan: UploadPlan, *, approved: bool = False) -> str:
+    """Serialize local and remote uploads to the same checkout in this app."""
+    key = os.path.normcase(str(plan.checkout.resolve()))
+    with _PUBLISH_LOCKS_GUARD:
+        lock = _PUBLISH_LOCKS.setdefault(key, threading.RLock())
+    with lock:
+        return _publish_upload(plan, approved=approved)
+
+
+def _publish_upload(plan: UploadPlan, *, approved: bool = False) -> str:
     if not approved:
         raise GitHubUploadError('Upload requires explicit user approval.')
-    checkout, branch, head = _check_checkout(plan.checkout, plan.git_executable)
+    checkout, branch, head = _check_checkout(plan.checkout, plan.git_executable, plan.expected_repo)
     if branch != plan.branch or head != plan.base_head or _sha256(plan.archive) != plan.archive_sha256:
         raise GitHubUploadError('Repository or archive changed since preview. Re-open the upload preview.')
-    if _pending_upload(plan.git_executable, checkout, branch, head) != plan.pending_commit:
+    if _pending_upload(plan.git_executable, checkout, branch, head, plan.expected_repo) != plan.pending_commit:
         raise GitHubUploadError('Pending upload changed since preview. Re-open the upload preview.')
     if not plan.changes:
         if plan.pending_commit:
             note = _push_upload(plan, checkout, branch, head)
-            return (f'Published pending upload to {TARGET_REPO} ({branch}). '
-                    f'Commit: https://github.com/{TARGET_REPO}/commit/{head}{note}')
+            return (f'Published pending upload to {plan.expected_repo} ({branch}). '
+                    f'Commit: https://github.com/{plan.expected_repo}/commit/{head}{note}')
         return 'All ZIP files already match the repository. No commit or push needed.'
     # Fully validate and stage archive payloads in an isolated temporary directory
     # before writing a single file into the local checkout.
@@ -339,13 +408,13 @@ def publish_upload(plan: UploadPlan, *, approved: bool = False) -> str:
     if not actual:
         if plan.pending_commit:
             note = _push_upload(plan, checkout, branch, head)
-            return (f'Published pending upload to {TARGET_REPO} ({branch}). '
-                    f'Commit: https://github.com/{TARGET_REPO}/commit/{head}{note}')
+            return (f'Published pending upload to {plan.expected_repo} ({branch}). '
+                    f'Commit: https://github.com/{plan.expected_repo}/commit/{head}{note}')
         return 'All ZIP files already match the repository after Git normalization. No commit or push needed.'
     _git(plan.git_executable, checkout, 'commit', '-m', 'Apply reviewed ZIP update via YourAssistantAgent')
     commit = _git(plan.git_executable, checkout, 'rev-parse', 'HEAD')
     note = _push_upload(plan, checkout, branch, commit)
-    return f'Published {len(actual)} files to {TARGET_REPO} ({branch}). Commit: https://github.com/{TARGET_REPO}/commit/{commit}{note}'
+    return f'Published {len(actual)} files to {plan.expected_repo} ({branch}). Commit: https://github.com/{plan.expected_repo}/commit/{commit}{note}'
 
 
 def is_upload_request(text: str) -> bool:
@@ -389,21 +458,18 @@ def apply_v430_ui() -> None:
         candidate_paths = [Path.home() / 'Documents' / 'GitHub' / 'YourAssistantAgent',
                            Path.home() / 'Desktop' / 'YourAssistantAgent']
         default = next((p for p in candidate_paths if p.is_dir()), Path.home())
-        remembered = getattr(self, '_v430_repo_folder', None)
-        folder = filedialog.askdirectory(parent=self, title='Select YourAssistantAgent local Git checkout',
-                                        initialdir=str(remembered or default), mustexist=True)
-        if not folder:
-            return
+        def choose_checkout():
+            return filedialog.askdirectory(parent=self, title='Select local GitHub checkout',
+                                           initialdir=str(default), mustexist=True)
         try:
-            plan = prepare_upload(zip_paths[0], folder)
-            self._v430_repo_folder = str(plan.checkout)
+            plan = prepare_configured_upload(zip_paths[0], self.settings, choose_checkout)
             if not plan.changes and not plan.pending_commit:
                 show(self, 'ZIP inspected. No file changes detected; nothing was published.')
                 return
             if not messagebox.askyesno('Approve GitHub Commit + Push', describe_plan(plan), parent=self):
                 show(self, 'GitHub ZIP upload cancelled. No files were changed.')
                 return
-            # No network access or file writes before affirmative GUI approval.
+            # No network access or repository writes before affirmative GUI approval.
             self.busy = True
             if hasattr(self, '_v300_update_buttons'):
                 self._v300_update_buttons()

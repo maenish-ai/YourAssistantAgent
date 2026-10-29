@@ -67,7 +67,7 @@ def test_packaged_without_edge_tts_extra_dependencies():
     workflow = (ROOT / '.github/workflows/build-windows.yml').read_text(encoding='utf-8')
     assert 'collect_all("edge_tts")' not in spec
     assert 'edge_tts' not in workflow
-    assert 'YourAssistantAgent-Windows-Setup-v3.0.1-ArabicFix' in workflow
+    assert 'YourAssistantAgent-Windows-Setup-v4.4.0' in workflow
 
 
 def test_group_and_browser_requests_reach_tool_router():

@@ -1,76 +1,103 @@
-# Your Assistant Agent
+# Your Assistant Agent 4.4
 
-A Windows desktop assistant written in Python with a Tkinter interface. The current
-application uses **GroqCloud (`openai/gpt-oss-120b`)** for chat and tool calling.
-It does not bundle or run the Qwen model described in earlier releases.
+A Python/Tkinter Windows assistant with a standalone native Android companion.
+GroqCloud (`openai/gpt-oss-120b`) handles conversation and tool selection; local
+application tools perform reviewed GitHub and Facebook tasks.
 
-## Run from source
+## Windows setup
 
-Requires Python 3.11 or 3.12, a desktop display, and a Groq API key configured in
-the application's settings.
+Install Python 3.11 or 3.12 and configure your Groq key in the desktop app:
 
 ```powershell
 python -m pip install -r requirements.txt
 python launcher.py
 ```
 
-An installed `your-assistant-agent` command and `python -m yaa_lite.main` use the
-same application initialization as the launcher and packaged Windows executable.
-For the module command, install the package or set `PYTHONPATH` to `src` first.
+The launcher, installed `your-assistant-agent` command, module entrypoint and
+packaged Windows executable share the same initialization.
 
-## ZIP updates to GitHub
+## GitHub ZIP uploads
 
-1. Attach a ZIP in the chat and choose **ZIP → GitHub**, or write
-   `ارفع ملف ZIP على جيت هب`.
-2. Select the existing local checkout of `maenish-ai/YourAssistantAgent`. It must
-   have a clean working tree and the correct `origin` remote.
-3. Review the file list and destination branch, then approve the upload.
+In **Settings → Android & GitHub**, set the target repository (`owner/name`) and
+its existing local Git checkout. The target persists across chats. Git author
+identity and command-line push authentication must be configured; signing in to
+GitHub Desktop alone does not guarantee Git can push from the command line.
 
-The app checks and extracts the ZIP contents into that checkout, stages the
-reviewed changes, creates a commit, and pushes it using Git. It does not automate
-GitHub Desktop's buttons. A GitHub-downloaded `YourAssistantAgent-main` wrapper
-folder is removed automatically. Existing project files absent from the ZIP are
-not deleted.
+Attach a ZIP from desktop chat or Android. The assistant checks it and displays
+its target repository, branch and changes. Only the approval button writes files,
+commits and pushes. Missing files are not deleted. ZIP wrappers for the target
+repository are removed automatically. Failed pushes leave a local commit and
+can be retried through a new preview without creating a duplicate commit.
 
-Git must be installed (the app can also find Git bundled with GitHub Desktop).
-Git author identity and command-line push authentication must be configured.
-**A GitHub Desktop sign-in alone does not guarantee that command-line Git can
-push.** If pushing fails, the app reports that the commit remains local; use
-GitHub Desktop to resolve authentication or network issues. Reattach the same
-ZIP to review and retry the pending push without creating a duplicate commit.
+The app can target different configured GitHub repositories. It does not create
+GitHub repositories or automatically clone a checkout, and the model cannot
+change the configured destination. Choose/create your checkout with GitHub
+Desktop before using remote uploads.
 
-## Browser and Facebook setup
+## Android companion
 
-For the extension connection:
+The source is in [`android/`](android/). It uses native Java views, an encrypted
+Android Keystore pairing token, HTTPS, ZIP attachments, event polling and explicit
+approve/cancel controls. Android 8.0 or later is required. It is independent of
+Telegram; no Telegram bot is involved.
 
-1. Start the desktop assistant.
-2. Open `chrome://extensions` or `edge://extensions`, enable Developer Mode,
-   choose **Load unpacked**, and select the `browser_extension` directory.
-3. Sign in to Facebook in that same browser, then ask the assistant to verify the
-   connection and refresh joined groups.
+See [the Arabic setup guide](README_V440_AR.md) for the complete procedure.
 
-The extension talks to `127.0.0.1:8765` on the **same computer**. It is not a
-remote access server. After updating extension files, reload the extension from
-the browser's extensions page.
+1. In the unlocked desktop app, open **Settings → Android & GitHub**, generate a
+   pairing token, enable Android connection and save.
+2. Expose the loopback companion (`127.0.0.1:8766` by default) using an authenticated
+   private network with a valid HTTPS endpoint. For example, install Tailscale
+   on Windows and Android, sign in to the same tailnet, and configure on Windows:
 
-Facebook publishing currently uses a **separate Playwright browser profile**.
-A connected extension does not prove that this publishing profile is signed in.
-The app opens the publishing browser when needed; finish its manual sign-in
-before running a campaign. Captchas, two-factor authentication and account
-checkpoints remain manual. Review and approve the campaign before publishing.
+   ```powershell
+   tailscale serve --bg http://127.0.0.1:8766
+   ```
 
-Group discovery and posting depend on Facebook's current page layout and account
-permissions. Automated tests do not establish successful posting to a live group.
+   Follow Tailscale's displayed setup and HTTPS requirements. Use the HTTPS URL
+   it reports, not `127.0.0.1`, in the phone app. Tailscale must remain connected
+   on both devices. Do not use Funnel/public exposure for this setup.
+3. Install the Android debug APK from the build artifacts, enter that HTTPS URL
+   and the desktop pairing token, and tap Connect.
 
-## Using a phone away from home
+The app listens only on loopback and provides no public relay. HTTPS/private
+network configuration is a required setup step, not automatic. Both the Windows
+assistant and home computer must remain running and awake. Unlock the assistant
+after restart before remote access works. Android polls while the app is open;
+this release does not provide background push notifications.
 
-There is currently **no Android client or remote command/file transport**.
-The Telegram connector is a placeholder, not a running bot. The desktop app's
-attachment chooser receives local files only. Sending a ZIP from a phone to the
-home computer requires a separate authenticated transport and remote approval
-flow; these local repairs do not add that capability.
+Remote ZIPs are limited to 20 MiB. Files stay on the computer and are not sent to
+the model. The configured conversation service still sends chat text to Groq.
+Approvals expire after at most 15 minutes, are bound to a particular preview,
+and work once. A new instruction invalidates the old approval. A lost network
+reply is not proof that a request failed; inspect the conversation before
+repeating it. `/new`, `/cancel`, `/status` are available in Android chat.
+Changing the pairing token revokes the old connection; changing settings or
+restarting the desktop app invalidates outstanding approval buttons.
 
-## Validation and Windows builds
+## Facebook
+
+Load `browser_extension` unpacked in Chrome/Edge, sign in to Facebook, and reload
+the extension after updates. The extension uses loopback port 8765 for connection
+checks and joined-group discovery.
+
+Publishing uses a **separate managed Playwright profile**. Ask
+`افتح متصفح النشر لفيسبوك` and complete sign-in there on the computer during
+initial setup. An extension connection alone does not establish publishing access.
+Passwords, CAPTCHA, two-factor authentication and checkpoints remain manual.
+
+Ask to refresh/select groups by keywords or exclusions, then prepare sharing
+one to four recent visible page posts. Before approval, the assistant resolves
+and shows the **actual post links and all target groups**. Execution uses those
+exact links and groups, even if the page or group list later changes. It reports
+published, submitted, pending group approval, skipped and failed outcomes separately.
+
+Unscheduled requests default to one execution after approval. A configured
+recurring schedule reuses the approved links; new posts need a new preview.
+The finder follows visible page links, not a verified chronological feed or
+Meta Ads Manager. Review the displayed links. Account permissions and Facebook's
+current page layout affect live behavior.
+
+## Tests and builds
 
 ```powershell
 python -m pip install -r requirements-dev.txt
@@ -80,8 +107,13 @@ python launcher.py --self-test
 node --check browser_extension/background.js
 ```
 
-`.github/workflows/build-windows.yml` runs tests, packages the Windows app with
-PyInstaller, smoke-tests the executable, and builds an Inno Setup installer when
-changes are pushed to `main`. Download the installer from that run's artifacts;
-updating source files does not update an already-installed copy automatically.
-The artifact label still contains an older release name.
+For Android with Gradle 8.9 and Android SDK 35 installed:
+
+```sh
+gradle -p android :app:testDebugUnitTest :app:assembleDebug
+```
+
+The single `.github/workflows/build-windows.yml` workflow tests and builds both
+the Windows installer and Android debug APK for `main` pushes and pull requests.
+Source changes do not update existing Windows installations automatically.
+Debug APKs are for testing; release signing and distribution are not configured.

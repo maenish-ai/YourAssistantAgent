@@ -7,8 +7,8 @@ import zipfile
 import pytest
 
 from yaa_lite.github_upload_v430 import (
-    GitHubUploadError, PENDING_UPLOAD_KEY, _zip_members, _validate_name, describe_plan,
-    is_upload_request, prepare_upload, publish_upload,
+    GitHubUploadError, PENDING_UPLOAD_KEY, PENDING_UPLOAD_REPO_KEY, _zip_members, _validate_name, describe_plan,
+    is_upload_request, prepare_upload, prepare_configured_upload, publish_upload, validate_repository,
 )
 
 
@@ -258,3 +258,99 @@ def test_refuse_symlink_destination(checkout, tmp_path):
     git(checkout, 'commit', '-m', 'track symlink')
     with pytest.raises(GitHubUploadError, match='symbolic link'):
         prepare_upload(archive, checkout)
+
+
+@pytest.mark.parametrize('repository', ['', 'https://github.com/owner/repo', 'owner', '../repo',
+                                      'owner/../repo', 'owner/..', '-owner/repo', 'owner/repo?x=y'])
+def test_repository_setting_is_a_name_not_url_or_path(repository):
+    with pytest.raises(GitHubUploadError, match='owner/name'):
+        validate_repository(repository)
+
+
+@pytest.mark.parametrize('remote', ['https://github.com/example/OtherProject.git',
+                                   'git@github.com:example/OtherProject.git',
+                                   'ssh://git@github.com/example/OtherProject.git'])
+def test_configurable_target_preview_and_publish(checkout, tmp_path, remote):
+    git(checkout, 'remote', 'set-url', 'origin', remote)
+    archive = make_zip(tmp_path / 'patch.zip', {'OtherProject-main/styles.css': 'body{}'})
+    plan = prepare_upload(archive, checkout, expected_repo='example/OtherProject')
+    assert plan.expected_repo == 'example/OtherProject'
+    assert plan.changes[0].relative_path == 'styles.css'
+    assert 'Repository: example/OtherProject' in describe_plan(plan)
+    import yaa_lite.github_upload_v430 as module
+    original_git = module._git
+    def fake_push(executable, root, *args, **kwargs):
+        if args[0] == 'push':
+            return ''
+        return original_git(executable, root, *args, **kwargs)
+    with patch.object(module, '_git', side_effect=fake_push):
+        result = publish_upload(plan, approved=True)
+    assert 'https://github.com/example/OtherProject/commit/' in result
+
+
+def test_remote_change_after_preview_is_rejected(checkout, tmp_path):
+    archive = make_zip(tmp_path / 'patch.zip', {'README.md': 'after'})
+    plan = prepare_upload(archive, checkout)
+    git(checkout, 'remote', 'set-url', 'origin', 'https://github.com/elsewhere/project.git')
+    with pytest.raises(GitHubUploadError, match='not the expected'):
+        publish_upload(plan, approved=True)
+    assert (checkout / 'README.md').read_text() == 'before'
+
+
+@pytest.mark.parametrize('push_urls', [
+    ['https://github.com/elsewhere/project.git'],
+    ['https://other.example/maenish-ai/YourAssistantAgent.git'],
+    ['https://github.com/maenish-ai/YourAssistantAgent.git', 'https://github.com/elsewhere/project.git'],
+])
+def test_separate_or_multiple_push_destinations_cannot_bypass_target(checkout, tmp_path, push_urls):
+    for remote in push_urls:
+        git(checkout, 'config', '--add', 'remote.origin.pushurl', remote)
+    archive = make_zip(tmp_path / 'patch.zip', {'README.md': 'after'})
+    with pytest.raises(GitHubUploadError, match='not the expected'):
+        prepare_upload(archive, checkout)
+
+
+def test_pending_upload_cannot_follow_reconfigured_repository(checkout, tmp_path):
+    archive = make_zip(tmp_path / 'patch.zip', {'README.md': 'before'})
+    head = git(checkout, 'rev-parse', 'HEAD')
+    git(checkout, 'config', '--local', PENDING_UPLOAD_KEY, f'main:{head}')
+    git(checkout, 'config', '--local', PENDING_UPLOAD_REPO_KEY, 'maenish-ai/YourAssistantAgent')
+    git(checkout, 'remote', 'set-url', 'origin', 'https://github.com/example/OtherProject.git')
+    assert not prepare_upload(archive, checkout, expected_repo='example/OtherProject').pending_commit
+
+
+def test_new_chat_reuses_persisted_checkout_without_picker(checkout, tmp_path):
+    import json
+    from types import SimpleNamespace
+    settings_file = tmp_path / 'settings.json'
+    settings = SimpleNamespace(github_repository='maenish-ai/YourAssistantAgent', github_checkout='')
+    def save():
+        settings_file.write_text(json.dumps({'github_repository': settings.github_repository,
+                                            'github_checkout': settings.github_checkout}))
+    settings.save = save
+    archive = make_zip(tmp_path / 'patch.zip', {'README.md': 'after'})
+    first = prepare_configured_upload(archive, settings, lambda: checkout)
+    fresh = SimpleNamespace(**json.loads(settings_file.read_text()), save=lambda: None)
+    def no_picker():
+        raise AssertionError('A fresh chat must use the saved target')
+    second = prepare_configured_upload(archive, fresh, no_picker)
+    assert first.checkout == second.checkout == checkout.resolve()
+    assert (checkout / 'README.md').read_text() == 'before'
+
+
+def test_remote_upload_requires_preconfigured_checkout(tmp_path):
+    from types import SimpleNamespace
+    settings = SimpleNamespace(github_repository='maenish-ai/YourAssistantAgent', github_checkout='')
+    archive = make_zip(tmp_path / 'patch.zip', {'README.md': 'after'})
+    with pytest.raises(GitHubUploadError, match='Configure the local GitHub checkout'):
+        prepare_configured_upload(archive, settings)
+
+
+def test_invalid_chosen_checkout_is_not_remembered(checkout, tmp_path):
+    from types import SimpleNamespace
+    settings = SimpleNamespace(github_repository='someone/Other', github_checkout='',
+                               save=lambda: (_ for _ in ()).throw(AssertionError('invalid target saved')))
+    archive = make_zip(tmp_path / 'patch.zip', {'README.md': 'after'})
+    with pytest.raises(GitHubUploadError, match='not the expected'):
+        prepare_configured_upload(archive, settings, lambda: checkout)
+    assert settings.github_checkout == ''

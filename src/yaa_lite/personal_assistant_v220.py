@@ -140,6 +140,14 @@ def _tool_schemas() -> list[dict]:
         {
             "type": "function",
             "function": {
+                "name": "open_facebook_publishing_login",
+                "description": "Open the separate managed publishing browser ONLY when the user asks to sign in for publishing or open the publishing browser. The user must sign in manually on the computer and close that window before previewing. Never enters credentials.",
+                "parameters": empty,
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "verify_facebook_connection",
                 "description": "Verify whether the saved/open Facebook session is signed in. Read-only; use after the user says login is finished.",
                 "parameters": empty,
@@ -193,7 +201,8 @@ def _tool_schemas() -> list[dict]:
                         "run_time": {"type": "string", "description": "Local 24-hour HH:MM."},
                         "run_once_at": {"type": "string", "description": "Local ISO datetime for a one-time scheduled run, or empty."},
                         "run_immediately": {"type": "boolean", "description": "True only if the user explicitly asks to run/share now."},
-                        "post_offset": {"type": "integer", "minimum": 0, "description": "0=latest post, 1=previous, etc."},
+                        "post_offset": {"type": "integer", "minimum": 0, "maximum": 46, "description": "0=latest visible post, 1=previous, etc."},
+                        "post_count": {"type": "integer", "minimum": 1, "maximum": 4, "description": "Number of consecutive recent posts to share, e.g. 4 for the latest four. This does not query paid Ads Manager campaigns."},
                         "max_groups": {"type": "integer", "minimum": 1, "maximum": 500},
                         "interval_seconds": {"type": "integer", "minimum": 30, "maximum": 3600},
                         "no_repeat_days": {"type": "integer", "minimum": 0, "maximum": 365},
@@ -253,6 +262,9 @@ def _install_tool_registry_extensions() -> None:
         if name == "open_facebook_login":
             result = self._yaa_facebook.open_manual_login()
             return ToolExecution(result.ok, result.message, {"count": result.count})
+        if name == "open_facebook_publishing_login":
+            result = self._yaa_facebook.open_publishing_login()
+            return ToolExecution(result.ok, result.message, {"count": result.count})
         if name == "verify_facebook_connection":
             result = self._yaa_facebook.verify_session()
             return ToolExecution(result.ok, result.message, {"count": result.count})
@@ -272,6 +284,8 @@ def _install_tool_registry_extensions() -> None:
         if name == "approve_facebook_campaign":
             plan_data = args.get("plan") if isinstance(args.get("plan"), dict) else {}
             try:
+                if not plan_data.get("approval_snapshot") or not plan_data.get("post_urls") or not plan_data.get("selected_groups"):
+                    raise ValueError("Prepare a fresh preview with actual posts and groups before approving")
                 plan = SmartPlan(
                     name=str(plan_data.get("name") or "Facebook campaign"),
                     command_text=str(plan_data.get("command_text") or ""),
@@ -281,14 +295,18 @@ def _install_tool_registry_extensions() -> None:
                     run_once_at=str(plan_data.get("run_once_at") or ""),
                     post_mode="fixed",
                     post_offset=max(0, int(plan_data.get("post_offset") or 0)),
+                    post_count=max(1, min(4, int(plan_data.get("post_count") or 1))),
+                    post_urls=list(plan_data["post_urls"]),
+                    selected_groups=list(plan_data["selected_groups"]),
+                    approval_snapshot=True,
                     group_keyword=str(plan_data.get("group_keyword") or ""),
                     max_groups=max(1, min(int(plan_data.get("max_groups") or 100), 500)),
                     interval_seconds=max(30, int(plan_data.get("interval_seconds") or 60)),
-                    no_repeat_days=max(0, int(plan_data.get("no_repeat_days") or 14)),
+                    no_repeat_days=max(0, int(plan_data.get("no_repeat_days", 14))),
                     share_mode="native_share",
                 )
                 rule_id = self._yaa_db.add_rule(plan)
-                count = self._yaa_db.count_groups(plan.group_keyword)
+                count = len(plan.selected_groups)
                 self._yaa_facebook.activity("smart_rule_saved", f"id={rule_id}; groups={count}; {plan.name}")
                 run_now = bool(args.get("run_immediately"))
                 if run_now:
@@ -298,9 +316,20 @@ def _install_tool_registry_extensions() -> None:
                     # the rule snapshot to the background worker so it will not
                     # unexpectedly repeat tomorrow.
                     self._yaa_db.set_rule_enabled(rule_id, False)
-                    text = f"Saved one-off task #{rule_id} for {count} matching groups. {started.message}"
+                    text = f"Saved one-off task #{rule_id} for {len(plan.post_urls)} reviewed post(s) and {count} groups. {started.message}"
+                    if not started.ok:
+                        return ToolExecution(False, text, {"rule_id": rule_id, "count": count, "run_immediately": False})
                 else:
-                    text = f"Saved task #{rule_id}. Matching groups: {count}."
+                    settings = getattr(self._yaa_facebook, 'settings', None)
+                    scheduling_active = bool(getattr(settings, 'background_tasks_enabled', False)
+                                             and getattr(settings, 'smart_agent_enabled', True))
+                    if scheduling_active:
+                        self._yaa_facebook.start_scheduler()
+                        text = f"Saved scheduled task #{rule_id} for {count} reviewed groups. Background scheduling is enabled while the app is running."
+                    else:
+                        text = f"Saved task #{rule_id} for {count} reviewed groups, but background scheduling is disabled. Enable background tasks in Settings before expecting scheduled execution."
+                    return ToolExecution(True, text, {"rule_id": rule_id, "count": count,
+                                                     "run_immediately": False, "scheduled_active": scheduling_active})
                 return ToolExecution(True, text, {"rule_id": rule_id, "count": count, "run_immediately": run_now})
             except Exception as exc:
                 return ToolExecution(False, f"{type(exc).__name__}: {exc}")
@@ -354,6 +383,8 @@ def _save_selection(db, session_id: int, args: dict) -> None:
 
 def _campaign_preview(controller, user_text: str, args: dict, session_id: int, status=None):
     from .agent.orchestrator import AgentResponse
+    from .stability_v260 import _check_cancel
+    _check_cancel()
 
     include = _clean_list(args.get("include_keywords"))
     exclude_kw = _clean_list(args.get("exclude_keywords"))
@@ -363,88 +394,83 @@ def _campaign_preview(controller, user_text: str, args: dict, session_id: int, s
     source = str(args.get("source_page_url") or controller.settings.default_source_page or "").strip()
     if not source:
         return AgentResponse(controller.t(
-            "فهمت المهمة، لكن ما عندي رابط صفحة Facebook المصدر بعد. أعطني رابط الصفحة التي تريد أخذ المنشور منها.",
-            "I understand the task, but I still need the source Facebook page URL.",
+            "أعطني رابط صفحة Facebook التي تريد أخذ المنشورات منها.",
+            "I need the source Facebook page URL.",
         ), used_model=True)
-
-    weekdays = []
-    for value in args.get("weekdays") or []:
-        try:
-            day = int(value)
-            if 0 <= day <= 6 and day not in weekdays:
-                weekdays.append(day)
-        except Exception:
-            pass
-    run_time = str(args.get("run_time") or "20:00")
-    if not __import__("re").match(r"^(?:[01]\d|2[0-3]):[0-5]\d$", run_time):
-        run_time = "20:00"
-    run_once_at = str(args.get("run_once_at") or "").strip()
-    run_immediately = bool(args.get("run_immediately"))
-    max_groups = max(1, min(int(args.get("max_groups") or 100), 500))
-    interval = max(30, min(int(args.get("interval_seconds") or controller.settings.facebook_interval_min_seconds or 60), 3600))
-    no_repeat = max(0, min(int(args.get("no_repeat_days") if args.get("no_repeat_days") is not None else controller.settings.facebook_no_repeat_days), 365))
-    post_offset = max(0, int(args.get("post_offset") or 0))
-    name = str(args.get("name") or "Facebook campaign")[:120]
-
-    matches = controller.db.list_groups(keyword=encoded, limit=max_groups, enabled_only=True)
-    examples = "، ".join(str(g.get("name") or "") for g in matches[:8])
-    inc_text = "، ".join(include) if include else controller.t("كل الجروبات", "all groups")
-    exc_parts = []
-    if exclude_kw:
-        exc_parts.append(controller.t("استبعاد أي اسم/وسم يحتوي: ", "exclude keyword(s): ") + "، ".join(exclude_kw))
-    if exclude_names:
-        exc_parts.append(controller.t("استبعاد أسماء محددة: ", "exclude exact names: ") + "، ".join(exclude_names))
-    exclusion = "\n".join(exc_parts) if exc_parts else controller.t("لا توجد استثناءات", "no exclusions")
-    schedule = controller.t("تشغيل الآن بعد الموافقة", "run now after approval") if run_immediately else (
-        controller.t(f"مرة واحدة: {run_once_at}", f"one time: {run_once_at}") if run_once_at else controller.t(f"الساعة {run_time}", f"at {run_time}")
-    )
-    post_text = controller.t("آخر منشور", "latest post") if post_offset == 0 else controller.t(f"المنشور السابق رقم {post_offset}", f"post offset {post_offset}")
-    summary = controller.t(
-        f"فهمت المهمة هكذا:\n"
-        f"• المصدر: {source}\n"
-        f"• اختيار الجروبات: {inc_text}\n"
-        f"• {exclusion}\n"
-        f"• المطابق الآن: {len(matches)} جروب (حد التنفيذ {max_groups})\n"
-        + (f"• أمثلة: {examples}\n" if examples else "")
-        + f"• المنشور: {post_text}\n"
-        f"• الموعد: {schedule}\n"
-        f"• الفاصل: {interval} ثانية — منع التكرار: {no_repeat} يوم\n\n"
-        "هذه معاينة ولم يتم نشر شيء. راجع التفاصيل واضغط زر «موافق» للتنفيذ.",
-        f"I understood the task as follows:\n"
-        f"• Source: {source}\n"
-        f"• Group selection: {inc_text}\n"
-        f"• {exclusion}\n"
-        f"• Currently matching: {len(matches)} group(s) (execution cap {max_groups})\n"
-        + (f"• Examples: {examples}\n" if examples else "")
-        + f"• Post: {post_text}\n"
-        f"• Schedule: {schedule}\n"
-        f"• Interval: {interval}s — no-repeat: {no_repeat} day(s)\n\n"
-        "This is only a preview; nothing was published. Review it and click Approve to execute.",
-    )
-
+    try:
+        weekdays = sorted({int(day) for day in args.get('weekdays', []) if 0 <= int(day) <= 6})
+        run_time = str(args.get('run_time') or '20:00')
+        if not __import__('re').fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d', run_time):
+            raise ValueError('Use a valid HH:MM schedule')
+        run_once_at = str(args.get('run_once_at') or '').strip()
+        if run_once_at:
+            when = datetime.fromisoformat(run_once_at)
+            # Scheduling is in this Windows computer's local time.
+            if when.tzinfo is not None or when <= datetime.now():
+                raise ValueError('Use a future local datetime without a timezone for a one-time schedule')
+        has_schedule = bool(weekdays or args.get('run_time') or run_once_at)
+        run_immediately = bool(args.get('run_immediately', not has_schedule))
+        if not run_immediately and not has_schedule:
+            return AgentResponse(controller.t('حدد موعد التشغيل، أو اطلب التنفيذ الآن بعد الموافقة.',
+                                               'Specify a schedule or ask to run now after approval.'), used_model=True)
+        max_groups = max(1, min(int(args.get('max_groups') or 100), 500))
+        interval = max(30, min(int(args.get('interval_seconds') or controller.settings.facebook_interval_min_seconds or 60), 3600))
+        no_repeat = max(0, min(int(args.get('no_repeat_days') if args.get('no_repeat_days') is not None else controller.settings.facebook_no_repeat_days), 365))
+        offset = int(args.get('post_offset') or 0)
+        count = int(args.get('post_count') or 1)
+        if not 1 <= count <= 4 or not 0 <= offset <= 46:
+            raise ValueError('Choose 1 to 4 posts and an offset from 0 to 46')
+        controller._activity('facebook_preview_loading', 'resolving actual posts/groups in publishing profile', status,
+                             controller.t('أفحص المنشورات والجروبات الفعلية قبل تجهيز الموافقة',
+                                          'Resolving actual posts and groups before approval'))
+        snapshot = controller.facebook.preview_campaign(source, encoded, max_groups, offset, count)
+        if not snapshot.get('post_urls') or not snapshot.get('selected_groups'):
+            raise ValueError('The publishing preview did not return concrete posts and groups')
+    except Exception as exc:
+        controller.db.clear_pending_action(session_id)
+        return AgentResponse(controller.t(
+            f'تعذر تجهيز معاينة النشر: {exc}\nلم يتم نشر شيء. قد تحتاج تسجيل الدخول في متصفح النشر المُدار؛ اتصال إضافة المتصفح وحده لا يكفي.',
+            f'Could not prepare the publishing preview: {exc}\nNothing was published. Sign in to the managed publishing browser if needed; an extension connection alone is insufficient.',
+        ), used_model=True, used_tools=True, detail=str(exc))
+    name = str(args.get('name') or 'Facebook campaign')[:120]
     plan = {
-        "name": name,
-        "command_text": user_text,
-        "source_page_url": source,
-        "weekdays": weekdays,
-        "run_time": run_time,
-        "run_once_at": run_once_at,
-        "post_mode": "fixed",
-        "post_offset": post_offset,
-        "group_keyword": encoded,
-        "max_groups": max_groups,
-        "interval_seconds": interval,
-        "no_repeat_days": no_repeat,
-        "share_mode": "native_share",
+        'name': name, 'command_text': user_text, 'source_page_url': source,
+        'weekdays': weekdays, 'run_time': run_time, 'run_once_at': run_once_at,
+        'post_mode': 'fixed', 'post_offset': offset, 'post_count': count,
+        'group_keyword': encoded, 'max_groups': max_groups,
+        'interval_seconds': interval, 'no_repeat_days': no_repeat,
+        'share_mode': 'native_share', 'post_urls': list(snapshot['post_urls']),
+        'selected_groups': list(snapshot['selected_groups']), 'approval_snapshot': True,
     }
-    controller.db.set_pending_action(
-        session_id,
-        "approve_facebook_campaign",
-        {"plan": plan, "run_immediately": run_immediately},
-        summary,
+    post_lines = '\n'.join(f'{i + 1}. {url}' for i, url in enumerate(plan['post_urls']))
+    group_lines = '\n'.join(f'{i + 1}. {g["name"]} — {g["url"]}' for i, g in enumerate(plan['selected_groups']))
+    schedule = controller.t('مرة واحدة الآن بعد الموافقة', 'one time now after approval') if run_immediately else (
+        controller.t(f'مرة واحدة: {run_once_at}', f'one time: {run_once_at}') if run_once_at else
+        controller.t(f'جدول متكرر الساعة {run_time}؛ أيام {weekdays or "كل يوم"}',
+                     f'recurring at {run_time}; days {weekdays or "every day"}')
     )
-    controller._activity("agent_plan_preview", f"personal-agent groups={len(matches)}; {name}", status,
-                         controller.t("الخطة جاهزة وتنتظر موافقتك", "Plan ready and waiting for approval"))
+    summary = controller.t(
+        f'معاينة النشر الفعلية\nالمصدر: {source}\nالموعد: {schedule}\n'
+        f'المنشورات ({len(plan["post_urls"])}):\n{post_lines}\n\n'
+        f'الجروبات ({len(plan["selected_groups"])}):\n{group_lines}\n\n'
+        f'المجموع: {len(plan["post_urls"]) * len(plan["selected_groups"])} مشاركة كحد أقصى. '
+        f'الفاصل: {interval} ثانية؛ منع التكرار: {no_repeat} يوم.\n'
+        'التنفيذ يلتزم بهذه الروابط والجروبات، حتى لو تغيرت الصفحة أو قائمة الجروبات. '
+        'الجدول المتكرر يستخدم نفس الروابط المعروضة؛ منشورات جديدة تحتاج معاينة جديدة.\n'
+        'لم يتم نشر شيء. راجع القائمة كاملة ثم اضغط زر «موافق» لتنفيذ العملية المعروضة.',
+        f'Actual publishing preview\nSource: {source}\nSchedule: {schedule}\n'
+        f'Posts ({len(plan["post_urls"])}):\n{post_lines}\n\n'
+        f'Groups ({len(plan["selected_groups"])}):\n{group_lines}\n\n'
+        f'Maximum submissions: {len(plan["post_urls"]) * len(plan["selected_groups"])}. '
+        f'Interval: {interval}s; no-repeat: {no_repeat} days.\n'
+        'Execution is pinned to these exact post and group URLs. Recurring schedules reuse these same posts; '
+        'new posts require a fresh preview.\nNothing was published. Review the full list and click Approve.',
+    )
+    _check_cancel()
+    controller.db.set_pending_action(session_id, 'approve_facebook_campaign',
+                                     {'plan': plan, 'run_immediately': run_immediately}, summary)
+    controller._activity('agent_plan_preview', f'posts={count}; groups={len(plan["selected_groups"])}; {name}', status,
+                         controller.t('المعاينة الفعلية جاهزة وتنتظر موافقتك', 'Actual preview ready for approval'))
     return AgentResponse(summary, used_model=True, used_tools=True, detail=json.dumps(plan, ensure_ascii=False))
 
 
@@ -464,6 +490,7 @@ def _install_personal_controller() -> None:
         "app_status",
         "facebook_status",
         "open_facebook_login",
+        "open_facebook_publishing_login",
         "verify_facebook_connection",
         "discover_facebook_groups",
         "search_facebook_groups",
@@ -520,8 +547,10 @@ def _install_personal_controller() -> None:
             "Use application tools only when they materially help complete the user's request. You may use multiple safe tools across successive turns. "
             "For Facebook group requests, prefer discover_facebook_groups before search if the saved list may be stale. "
             "When the user describes group inclusion/exclusion in natural Arabic, map it faithfully to include_keywords, exclude_keywords, and exact exclude_names. "
+            "Use post_count (1 to 4) for requests to share several recent posts. These are visible page posts, not paid Ads Manager campaigns. "
             "Never claim an action succeeded unless a tool result confirms it. Publishing or immediate campaign execution must go through draft_facebook_campaign and the app approval gate. "
-            "Facebook passwords, 2FA and checkpoints are always manual; open the login page when needed, never attempt to bypass them. "
+            "Facebook passwords, 2FA and checkpoints are always manual; open the login page only on explicit request, never bypass them. "
+            "Publishing previews use a separate managed profile; if it needs login, suggest open_facebook_publishing_login for the user to sign in on the computer. "
             f"Current local datetime: {now}. Configured default Facebook source page: {self.settings.default_source_page or '(none)'}. "
             f"Saved Facebook groups: {self.db.count_groups()}."
         )
@@ -579,10 +608,16 @@ def _install_personal_controller() -> None:
                         {"role": "tool", "tool_call_id": call_id, "name": name, "content": "Invalid task ID."},
                     ])
                     continue
-                summary = self.t(f"سأشغّل المهمة رقم {rule_id} الآن. هل تريد التنفيذ؟",
-                                 f"I will run task #{rule_id} now. Approve?")
-                self.db.set_pending_action(session_id, "run_facebook_rule_now", {"rule_id": rule_id}, summary)
-                return AgentResponse(summary, used_model=True, used_tools=True, detail=f"rule={rule_id}")
+                rule = self.db.get_rule(rule_id)
+                if not rule:
+                    return AgentResponse(self.t("المهمة غير موجودة.", "Task not found."), used_tools=True)
+                # Existing saved rules also receive a fresh concrete preview, so
+                # their source/target selection cannot change after approval.
+                spec = decode_group_filter(rule.get('group_keyword') or '') or {}
+                refreshed = {**rule, **spec, 'run_immediately': True}
+                if not spec and rule.get('group_keyword'):
+                    refreshed['include_keywords'] = [rule['group_keyword']]
+                return _campaign_preview(self, text, refreshed, session_id, status=status)
 
             if name not in safe_tools:
                 tool_text = f"Unknown or disallowed tool: {name}"

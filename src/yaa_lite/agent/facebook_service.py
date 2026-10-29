@@ -3,7 +3,8 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from urllib.parse import urlsplit
 from typing import Callable
 
 from ..config import Settings
@@ -44,6 +45,9 @@ class FacebookService:
         self._progress_done = 0
         self._progress_total = 0
         self._started_at: float | None = None
+        self._result_lock = threading.RLock()
+        self._rule_results: dict[int, dict] = {}
+        self._completion_listeners: list[Callable[[int, dict], None]] = []
 
     def current_status(self) -> dict:
         return {
@@ -56,6 +60,76 @@ class FacebookService:
             "running": self._active_rule_id is not None,
             "started_at": self._started_at,
         }
+
+    def add_completion_listener(self, callback: Callable[[int, dict], None]) -> None:
+        with self._result_lock:
+            if callback not in self._completion_listeners:
+                self._completion_listeners.append(callback)
+
+    def remove_completion_listener(self, callback: Callable[[int, dict], None]) -> None:
+        with self._result_lock:
+            if callback in self._completion_listeners:
+                self._completion_listeners.remove(callback)
+
+    def rule_result(self, rule_id: int) -> dict | None:
+        with self._result_lock:
+            result = self._rule_results.get(int(rule_id))
+            return dict(result) if result else None
+
+    def _complete(self, rule_id: int, result: dict) -> None:
+        with self._result_lock:
+            self._rule_results[rule_id] = dict(result)
+            # Bounded process-local result cache; history remains in SQLite.
+            if len(self._rule_results) > 100:
+                self._rule_results.pop(next(iter(self._rule_results)))
+            listeners = list(self._completion_listeners)
+        for callback in listeners:
+            try:
+                callback(rule_id, dict(result))
+            except Exception:
+                self.activity("facebook_result_delivery_error", f"id={rule_id}")
+
+    @staticmethod
+    def _facebook_url(value: str, *, group: bool = False) -> str:
+        value = str(value or '').strip()
+        parsed = urlsplit(value)
+        host = (parsed.hostname or '').lower()
+        if (parsed.scheme != 'https' or parsed.username or parsed.password or
+                parsed.port not in (None, 443) or
+                not (host == 'facebook.com' or host.endswith('.facebook.com')) or
+                (group and not parsed.path.startswith('/groups/'))):
+            raise ValueError('A valid HTTPS Facebook URL is required')
+        return value
+
+    def preview_campaign(self, source_page_url: str, group_keyword: str = '',
+                         max_groups: int = 100, post_offset: int = 0,
+                         post_count: int = 1) -> dict:
+        """Resolve actual targets before approval, through the publishing profile."""
+        source = self._facebook_url(source_page_url)
+        count, offset = int(post_count), int(post_offset)
+        if not 1 <= count <= 4 or not 0 <= offset <= 46:
+            raise ValueError('Choose 1 to 4 posts and an offset from 0 to 46')
+        if not self._exec_lock.acquire(blocking=False):
+            raise RuntimeError('Another Facebook task is running; wait before preparing a preview')
+        try:
+            groups = self.db.list_groups(keyword=group_keyword, limit=max(1, min(int(max_groups), 500)), enabled_only=True)
+            if not groups:
+                raise ValueError('No matching saved groups. Refresh or change the group selection first')
+            selected = [{'id': int(g['id']), 'name': str(g['name']),
+                         'url': self._facebook_url(g['url'], group=True)} for g in groups]
+            fb = self.fb()
+            fb.ensure_logged_in()
+            candidates = fb.find_recent_post_urls(source, limit=min(50, max(8, offset + count)))
+            posts = list(dict.fromkeys(self._facebook_url(u) for u in candidates))
+            chosen = posts[offset:offset + count]
+            if len(chosen) != count:
+                raise ValueError(f'Requested {count} posts at offset {offset}, but only {len(chosen)} were found. Nothing was approved')
+            self.activity('facebook_preview_ready', f'posts={len(chosen)}; groups={len(selected)}; managed publishing profile')
+            return {'post_urls': chosen, 'selected_groups': selected, 'post_count': count,
+                    'approval_snapshot': True}
+        finally:
+            self.close_browser()
+            self._exec_lock.release()
 
     def pause_current(self) -> bool:
         if self._active_rule_id is None:
@@ -206,6 +280,24 @@ class FacebookService:
             self.activity("facebook_login_error", f"{type(exc).__name__}: {exc}")
             return FacebookActionResult(False, self._t(f"تعذر فتح تسجيل الدخول: {exc}", f"Could not open login: {exc}"))
 
+    def open_publishing_login(self) -> FacebookActionResult:
+        """Open the exact separate profile used by previews and publishing."""
+        if not self._exec_lock.acquire(blocking=False):
+            return FacebookActionResult(False, self._t('هناك مهمة Facebook قيد التنفيذ.', 'A Facebook task is running.'))
+        try:
+            backend = self.fb().open_manual_login()
+            self._last_status = 'manual_login'
+            self._last_backend = backend
+            self.activity('facebook_publishing_login', backend)
+            return FacebookActionResult(True, self._t(
+                f'فتحت متصفح النشر المُدار ({backend}) على الكمبيوتر. سجّل الدخول يدوياً فيه ثم أغلق نافذته، وأعد طلب معاينة النشر.',
+                f'Opened the managed publishing browser ({backend}) on the computer. Sign in manually, close that window, then request the publishing preview again.'))
+        except Exception as exc:
+            return FacebookActionResult(False, self._t(f'تعذر فتح متصفح النشر: {exc}', f'Could not open the publishing browser: {exc}'))
+        finally:
+            self.close_browser()
+            self._exec_lock.release()
+
     def _verify_via_open_browser(self) -> FacebookActionResult | None:
         if not (self.browser_bridge and self.browser_bridge.connected):
             return None
@@ -284,97 +376,121 @@ class FacebookService:
         rule = self.db.get_rule(rule_id)
         if not rule:
             return FacebookActionResult(False, self._t("المهمة غير موجودة.", "Task not found."))
-        threading.Thread(
-            target=self._execute_rule_guarded,
-            args=(rule,),
-            daemon=True,
-            name=f"yaa-facebook-now-{rule_id}",
-        ).start()
+        if not self._exec_lock.acquire(blocking=False):
+            return FacebookActionResult(False, self._t("هناك مهمة Facebook قيد التنفيذ؛ انتظر انتهاءها.", "Another Facebook task is running; wait for completion."))
+        try:
+            threading.Thread(target=self._execute_rule_guarded, args=(rule, True),
+                             daemon=True, name=f"yaa-facebook-now-{rule_id}").start()
+        except Exception:
+            self._exec_lock.release()
+            raise
         return FacebookActionResult(True, self._t(f"بدأ تنفيذ المهمة {rule_id} في الخلفية.", f"Task {rule_id} started in the background."))
 
-    def _execute_rule_guarded(self, rule: dict) -> None:
-        if not self._exec_lock.acquire(blocking=False):
+    def _execute_rule_guarded(self, rule: dict, lock_acquired: bool = False) -> None:
+        if not lock_acquired and not self._exec_lock.acquire(blocking=False):
             self.activity("facebook_rule_delayed", f"id={rule.get('id')}; another Facebook task is active")
             return
+        rule_id = int(rule.get("id") or 0)
         self._task_cancel_event.clear()
         self._task_pause_event.clear()
-        self._active_rule_id = int(rule.get("id") or 0) or None
+        self._active_rule_id = rule_id or None
         self._current_step = "starting"
-        self._progress_done = 0
-        self._progress_total = 0
+        self._progress_done = self._progress_total = 0
         self._started_at = time.time()
+        result = {'status': 'failed', 'published': 0, 'submitted': 0, 'pending_approval': 0,
+                  'failed': 0, 'skipped': 0, 'total': 0, 'error': ''}
         try:
-            self._execute_rule(rule)
+            result = self._execute_rule(rule)
+        except Exception as exc:
+            result['error'] = f'{type(exc).__name__}: {exc}'
+            self.activity('facebook_rule_error', f'id={rule_id}; {result["error"]}')
         finally:
             self._active_rule_id = None
             self._current_step = "idle"
-            self._progress_done = 0
-            self._progress_total = 0
+            self._progress_done = self._progress_total = 0
             self._started_at = None
             self._task_cancel_event.clear()
             self._task_pause_event.clear()
-            self._exec_lock.release()
             self.close_browser()
+            self._exec_lock.release()
+            self._complete(rule_id, result)
 
-    def _execute_rule(self, rule: dict) -> None:
-        rule_id = int(rule["id"])
-        groups = self.db.list_groups(keyword=rule.get("group_keyword") or "", limit=int(rule.get("max_groups") or 100))
+    def _execute_rule(self, rule: dict) -> dict:
+        rule_id = int(rule['id'])
+        result = {'status': 'completed', 'published': 0, 'submitted': 0, 'pending_approval': 0,
+                  'failed': 0, 'skipped': 0, 'total': 0, 'error': ''}
+        snapshot = bool(rule.get('approval_snapshot'))
+        if snapshot:
+            groups = list(rule.get('selected_groups') or [])
+            posts = list(rule.get('post_urls') or [])
+            if not groups or not posts or len(posts) > 4 or len(groups) > 500:
+                raise ValueError('Approved Facebook target snapshot is missing or invalid; prepare a new preview')
+        else:
+            groups = self.db.list_groups(keyword=rule.get('group_keyword') or '', limit=int(rule.get('max_groups') or 100))
+            posts = []
         if not groups:
-            self.activity("facebook_rule_no_groups", f"id={rule_id}; keyword={rule.get('group_keyword','')}")
-            return
-        self._progress_total = len(groups)
-        self._current_step = "opening_facebook"
-        self.activity("facebook_rule_start", f"id={rule_id}; groups={len(groups)}; keyword={rule.get('group_keyword','')}")
-        try:
-            self.activity("facebook_opening", f"id={rule_id}; opening saved browser session")
-            fb = self.fb()
-            fb.ensure_logged_in()
-            wanted = max(8, int(rule.get("post_offset") or 0) + 4)
-            self._current_step = "finding_source_post"
-            self.activity("facebook_source_post_search", f"id={rule_id}; page={rule.get('source_page_url','')}; wanted={wanted}")
-            posts = fb.find_recent_post_urls(str(rule.get("source_page_url") or ""), limit=min(wanted, 50))
-            if not posts:
-                self.activity("facebook_rule_error", f"id={rule_id}; no source posts found")
-                return
-            offset = int(rule.get("post_offset") or 0)
-            if rule.get("post_mode") == "rotation":
-                offset = 0
-            if offset >= len(posts):
-                self.activity("facebook_rule_error", f"id={rule_id}; post offset {offset}, found {len(posts)}")
-                return
-            post_url = posts[offset]
-            self._current_step = "sharing"
-            self.activity("facebook_post_found", f"id={rule_id}; post={post_url}")
-
-            submitted = 0
-            skipped = 0
-            interval = max(30, int(rule.get("interval_seconds") or 60))
-            no_repeat = max(0, int(rule.get("no_repeat_days") or 14))
-            for index, group in enumerate(groups):
-                if not self._wait_if_paused():
-                    self.activity("facebook_rule_cancelled", f"id={rule_id}; done={self._progress_done}/{self._progress_total}")
-                    break
-                gid = int(group["id"])
-                if self.db.was_shared_recently(gid, post_url, no_repeat):
-                    skipped += 1
-                    continue
-                try:
-                    self._progress_done = index
-                    self.activity("facebook_group_share_start", f"{index + 1}/{len(groups)}; {group['name']}")
-                    outcome = fb.share_post_to_group(
-                        group_name=group["name"],
-                        group_url=group["url"],
-                        post_url=post_url,
-                    )
-                    outcome = outcome if outcome in {"published", "submitted", "pending_approval"} else "submitted"
-                    self.db.record_share(rule_id, gid, post_url, outcome)
-                    submitted += 1
-                    self.activity("facebook_share", f"{group['name']}: {outcome}")
-                except Exception as exc:
-                    self.db.record_share(rule_id, gid, post_url, "failed", str(exc))
-                    self.activity("facebook_share_error", f"{group['name']}: {type(exc).__name__}: {exc}")
-                if index < len(groups) - 1 and not self._stop_event.wait(interval):
-                    continue
-            self.activity("facebook_rule_done", f"id={rule_id}; total={len(groups)}; submitted={submitted}; skipped={skipped}")
-        except Exception as exc:
-            self.activity("facebook_rule_error", f"id={rule_id}; {type(exc).__name__}: {exc}")
+            result.update(status='failed', error='No matching groups')
+            self.activity('facebook_rule_no_groups', f'id={rule_id}')
+            return result
+        groups = [{'id': int(g['id']), 'name': str(g['name']),
+                   'url': self._facebook_url(g['url'], group=True)} for g in groups]
+        self._current_step = 'opening_facebook'
+        fb = self.fb()
+        fb.ensure_logged_in()
+        if not snapshot:
+            offset = 0 if rule.get('post_mode') == 'rotation' else max(0, int(rule.get('post_offset') or 0))
+            count = max(1, min(4, int(rule.get('post_count') or 1)))
+            candidates = fb.find_recent_post_urls(self._facebook_url(rule.get('source_page_url') or ''), limit=min(50, max(8, offset + count)))
+            posts = list(dict.fromkeys(candidates))[offset:offset + count]
+            if len(posts) != count:
+                result.update(status='failed', error='The requested source posts were not found')
+                return result
+        posts = [self._facebook_url(u) for u in posts]
+        result['total'] = len(posts) * len(groups)
+        self._progress_total = result['total']
+        self._current_step = 'sharing'
+        interval = max(30, int(rule.get('interval_seconds') or 60))
+        no_repeat = max(0, int(rule.get('no_repeat_days', 14)))
+        pairs = [(post, group) for post in posts for group in groups]
+        attempted = 0
+        for index, (post_url, group) in enumerate(pairs):
+            if not self._wait_if_paused():
+                result['status'] = 'cancelled'
+                break
+            gid = group['id']
+            if self.db.was_shared_recently(gid, post_url, no_repeat):
+                result['skipped'] += 1
+                self._progress_done = index + 1
+                continue
+            # Settings caps apply across all tasks and all posts, not once per group.
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            hourly = max(1, int(getattr(self.settings, 'facebook_hourly_limit', 30)))
+            daily = max(1, int(getattr(self.settings, 'facebook_daily_limit', 120)))
+            if (self.db.submitted_share_count(now - timedelta(hours=1)) >= hourly or
+                    self.db.submitted_share_count(now.replace(hour=0, minute=0, second=0, microsecond=0)) >= daily):
+                result.update(status='limited', error='Facebook hourly or daily submission limit reached')
+                break
+            if attempted and self._task_cancel_event.wait(interval):
+                result['status'] = 'cancelled'
+                break
+            if self._stop_event.is_set() or not self._wait_if_paused():
+                result['status'] = 'cancelled'
+                break
+            attempted += 1
+            try:
+                self.activity('facebook_group_share_start', f'{index + 1}/{len(pairs)}; {group["name"]}; {post_url}')
+                outcome = fb.share_post_to_group(group_name=group['name'], group_url=group['url'], post_url=post_url)
+                if outcome not in {'published', 'submitted', 'pending_approval'}:
+                    raise RuntimeError('Facebook did not confirm a submission outcome')
+                self.db.record_share(rule_id, gid, post_url, outcome)
+                result[outcome] += 1
+                self.activity('facebook_share', f'{group["name"]}: {outcome}')
+            except Exception as exc:
+                result['failed'] += 1
+                self.db.record_share(rule_id, gid, post_url, 'failed', str(exc))
+                self.activity('facebook_share_error', f'{group["name"]}: {type(exc).__name__}: {exc}')
+            self._progress_done = index + 1
+        if result['status'] == 'completed' and result['failed']:
+            result['status'] = 'partial' if any(result[k] for k in ('published', 'submitted', 'pending_approval')) else 'failed'
+        self.activity('facebook_rule_done', f'id={rule_id}; {result}')
+        return result

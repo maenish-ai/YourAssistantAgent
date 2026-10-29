@@ -24,6 +24,10 @@ _FB_CHECK = re.compile(r"(?:افحص|فحص|تحقق|شيك|تأكد|check|verif
 
 def fast_facebook_intent(text: str) -> str | None:
     text = " ".join(str(text or "").strip().split())
+    # The dedicated publishing profile must not be checked/opened through the
+    # normal extension connection by the generic Facebook fast path.
+    if re.search(r'publishing|managed|النشر|المُدار|المدار', text, re.I):
+        return None
     if _FB_OPEN.fullmatch(text):
         return "open"
     if _FB_REFRESH.fullmatch(text):

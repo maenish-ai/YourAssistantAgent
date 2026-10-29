@@ -94,6 +94,10 @@ class Settings:
     notify_telegram: bool = False
     telegram_enabled: bool = False
     github_enabled: bool = False
+    remote_enabled: bool = False
+    remote_port: int = 8766
+    github_repository: str = "maenish-ai/YourAssistantAgent"
+    github_checkout: str = ""
 
     # Cloud STT/TTS are provided by v2.8 voice service; legacy options preserved.
     voice_enabled: bool = True
@@ -162,6 +166,15 @@ class Settings:
         obj.voice_reply_mode = "text"
         obj.approval_timeout_minutes = max(5, min(int(obj.approval_timeout_minutes), 1440))
         obj.drive_sync_interval_minutes = max(15, min(int(obj.drive_sync_interval_minutes), 1440))
+        # Only an explicit boolean opt-in can start the phone connection.
+        obj.remote_enabled = obj.remote_enabled is True
+        try:
+            obj.remote_port = int(obj.remote_port)
+            if not 1024 <= obj.remote_port <= 65535:
+                raise ValueError("Invalid remote port")
+        except (ValueError, TypeError):
+            obj.remote_port = 8766
+            obj.remote_enabled = False
         return obj
 
     def save(self) -> None:

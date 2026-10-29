@@ -131,7 +131,11 @@ db.upsert_groups([
 settings = Settings(default_source_page='https://www.facebook.com/testpage')
 runtime = Runtime()
 engine = SimpleNamespace(runtime=runtime)
-controller = SmartAgentController(db, settings, engine, SimpleNamespace())
+def preview_campaign(source, group_keyword='', max_groups=100, post_offset=0, post_count=1):
+    return {'post_urls': ['https://www.facebook.com/testpage/posts/123'],
+            'selected_groups': db.list_groups(keyword=group_keyword, limit=max_groups),
+            'post_count': 1, 'approval_snapshot': True}
+controller = SmartAgentController(db, settings, engine, SimpleNamespace(preview_campaign=preview_campaign))
 chat = Chat(db, controller, settings, session)
 assert chat.send(first).used_tools
 assert db.get_pending_action(session) is None

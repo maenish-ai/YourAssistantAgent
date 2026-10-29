@@ -51,6 +51,8 @@ class App(tk.Tk):
         self.backup: BackupService | None = None
         self.browser_bridge: BrowserBridge | None = None
         self.tray = None
+        self.remote_worker = None
+        self._remote_status = self.t("اتصال الهاتف غير مفعّل", "Phone connection is disabled")
 
         self.shell = self.sidebar = self.main = self.main_header = self.content = None
         self.sessions_frame = None
@@ -182,6 +184,7 @@ class App(tk.Tk):
         if self.backup is None:
             self.backup = BackupService(self.settings_obj, self.security, activity=self._activity)
 
+        self._restart_remote_worker()
         self.show_main()
         self._apply_startup_page()
         self._schedule_background_polls()
@@ -385,7 +388,7 @@ class App(tk.Tk):
         elif view == "backup":
             widget = BackupView(self.content, self.settings_obj, self.backup)
         elif view == "settings":
-            widget = SettingsView(self.content, self.settings_obj, self._settings_saved, self.security)
+            widget = SettingsView(self.content, self.settings_obj, self._settings_saved, self.security, remote_status=self.remote_status_text)
         else:
             return
         self._view_widget = widget
@@ -522,6 +525,7 @@ class App(tk.Tk):
         self.runtime.reconfigure(settings.context_tokens, settings.threads, retry_count=settings.hammer_retry_count, performance_mode=settings.performance_mode)
         self.facebook.update_settings(settings)
         self.backup.update_settings(settings)
+        self._restart_remote_worker()
         self._activity("settings_saved", f"language={settings.interface_language}; appearance={settings.appearance}; ctx={settings.context_tokens}; threads={settings.threads}")
         try:
             from ..startup import apply_startup_mode
@@ -540,6 +544,46 @@ class App(tk.Tk):
             self.chat_window.apply_settings(settings)
         self._backup_after_change()
         self._refresh_visible_view()
+
+    def _stop_remote_worker(self):
+        worker = getattr(self, "remote_worker", None)
+        self.remote_worker = None
+        if worker:
+            try:
+                worker.stop()
+            except Exception as exc:
+                self._activity("remote_stop_error", type(exc).__name__)
+
+    def _restart_remote_worker(self):
+        self._stop_remote_worker()
+        if not self.settings_obj.remote_enabled:
+            self._remote_status = self.t("اتصال الهاتف غير مفعّل", "Phone connection is disabled")
+            return
+        worker = None
+        try:
+            from ..remote.service import build_remote_worker
+            worker = build_remote_worker(self.settings_obj, self.security, self.db, self.runtime, self.facebook, activity=self._activity)
+            if worker:
+                worker.start()
+                self.remote_worker = worker
+                self._remote_status = self.t("اتصال Android مفعّل", "Android connection is enabled")
+            else:
+                self._remote_status = self.t("اتصال الهاتف غير مفعّل", "Phone connection is disabled")
+        except Exception as exc:
+            if worker:
+                try:
+                    worker.stop()
+                except Exception:
+                    pass
+            # Pairing credentials must never appear in UI errors or activity logs.
+            self._remote_status = self.t("تعذر تشغيل اتصال Android. راجع مفتاح الاقتران والمنفذ وإعدادات الاتصال.", "Could not start Android connection. Check the pairing token, port and connection settings.")
+            self._activity("remote_start_error", type(exc).__name__)
+
+    def remote_status_text(self):
+        worker = getattr(self, "remote_worker", None)
+        if worker:
+            return worker.status_text()
+        return self._remote_status
 
     def _refresh_visible_view(self):
         try:
@@ -707,6 +751,7 @@ class App(tk.Tk):
         self.deiconify(); self.state("normal"); self.lift(); self.focus_force()
 
     def _shutdown(self):
+        self._stop_remote_worker()
         try:
             if self.tray:
                 self.tray.stop()

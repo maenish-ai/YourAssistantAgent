@@ -59,6 +59,10 @@ class SmartPlan:
     run_once_at: str = ""  # ISO local datetime for one-time instructions
     post_mode: str = "fixed"  # fixed | rotation
     post_offset: int = 0
+    post_count: int = 1
+    post_urls: list[str] = field(default_factory=list)
+    selected_groups: list[dict] = field(default_factory=list)
+    approval_snapshot: bool = False
     group_keyword: str = ""
     max_groups: int = 100
     interval_seconds: int = 60
@@ -66,7 +70,13 @@ class SmartPlan:
     share_mode: str = "native_share"
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        result = asdict(self)
+        # Preserve the legacy save-rule tool's argument contract. Concrete
+        # approved snapshots are serialized by the newer campaign path.
+        if not self.approval_snapshot and self.post_count == 1 and not self.post_urls and not self.selected_groups:
+            for key in ('post_count', 'post_urls', 'selected_groups', 'approval_snapshot'):
+                result.pop(key, None)
+        return result
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), ensure_ascii=False)
@@ -85,7 +95,10 @@ class SmartPlan:
         else:
             days = "كل يوم" if ar else "Every day"
 
-        if self.post_mode == "rotation":
+        if self.approval_snapshot:
+            post = (f"{len(self.post_urls)} منشور محدد من المعاينة" if ar else
+                    f"{len(self.post_urls)} reviewed post(s), pinned to approved URLs")
+        elif self.post_mode == "rotation":
             post = "تدوير البوستات تلقائيًا" if ar else "Rotate posts automatically"
         elif self.post_offset == 0:
             post = "آخر بوست" if ar else "Latest post"

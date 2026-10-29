@@ -24,6 +24,9 @@ binaries = list(sd_binaries)
 hiddenimports = [
     "yaa_lite",
     "yaa_lite.main",
+    "yaa_lite.remote.service",
+    "yaa_lite.remote.mobile",
+    "yaa_lite.remote.settings",
     "yaa_lite.personal_assistant_v220",
     "yaa_lite.cloud_voice_v240",
     "yaa_lite.fast_live_v250",

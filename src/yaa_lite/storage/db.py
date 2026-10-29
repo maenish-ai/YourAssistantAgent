@@ -80,6 +80,15 @@ class ChatDB:
                 "no_repeat_days INTEGER NOT NULL DEFAULT 14, share_mode TEXT NOT NULL DEFAULT 'native_share', "
                 "next_run_at TEXT, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT DEFAULT CURRENT_TIMESTAMP)"
             )
+            rule_cols = self._columns(con, "smart_rules")
+            for col, spec in {
+                "post_count": "INTEGER NOT NULL DEFAULT 1",
+                "post_urls": "TEXT NOT NULL DEFAULT '[]'",
+                "selected_groups": "TEXT NOT NULL DEFAULT '[]'",
+                "approval_snapshot": "INTEGER NOT NULL DEFAULT 0",
+            }.items():
+                if col not in rule_cols:
+                    con.execute(f"ALTER TABLE smart_rules ADD COLUMN {col} {spec}")
             con.execute(
                 "CREATE TABLE IF NOT EXISTS share_history ("
                 "id INTEGER PRIMARY KEY AUTOINCREMENT, rule_id INTEGER, group_id INTEGER NOT NULL, "
@@ -312,13 +321,16 @@ class ChatDB:
         with self._lock, self._connect() as con:
             cur = con.execute(
                 "INSERT INTO smart_rules(name,command_text,source_page_url,weekdays,run_time,run_once_at,post_mode,post_offset,"
-                "group_keyword,max_groups,interval_seconds,no_repeat_days,share_mode,next_run_at,enabled) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)",
+                "group_keyword,max_groups,interval_seconds,no_repeat_days,share_mode,next_run_at,post_count,post_urls,selected_groups,approval_snapshot,enabled) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)",
                 (
                     str(plan.name), str(plan.command_text), str(plan.source_page_url), json.dumps(weekdays),
                     str(plan.run_time), run_once_at, str(plan.post_mode), int(plan.post_offset),
                     str(plan.group_keyword), int(plan.max_groups), int(plan.interval_seconds), int(plan.no_repeat_days),
-                    str(plan.share_mode), next_run,
+                    str(plan.share_mode), next_run, max(1, min(4, int(getattr(plan, "post_count", 1)))),
+                    json.dumps(getattr(plan, "post_urls", []) or [], ensure_ascii=False),
+                    json.dumps(getattr(plan, "selected_groups", []) or [], ensure_ascii=False),
+                    int(bool(getattr(plan, "approval_snapshot", False))),
                 ),
             )
             return int(cur.lastrowid)
@@ -333,6 +345,11 @@ class ChatDB:
                 d["weekdays"] = json.loads(d.get("weekdays") or "[]")
             except Exception:
                 d["weekdays"] = []
+            for key in ("post_urls", "selected_groups"):
+                try:
+                    d[key] = json.loads(d.get(key) or "[]")
+                except (ValueError, TypeError):
+                    d[key] = []
             out.append(d)
         return out
 
@@ -346,6 +363,11 @@ class ChatDB:
             d["weekdays"] = json.loads(d.get("weekdays") or "[]")
         except Exception:
             d["weekdays"] = []
+        for key in ("post_urls", "selected_groups"):
+            try:
+                d[key] = json.loads(d.get(key) or "[]")
+            except (ValueError, TypeError):
+                d[key] = []
         return d
 
     def due_rules(self, now_iso: str | None = None) -> list[dict]:
@@ -438,3 +460,13 @@ class ChatDB:
                 "INSERT INTO share_history(rule_id,group_id,post_url,status,detail) VALUES(?,?,?,?,?)",
                 (rule_id, int(group_id), post_url, status, (detail or "")[:4000]),
             )
+
+    def submitted_share_count(self, since: datetime) -> int:
+        """Count accepted submissions for the existing hourly/daily caps."""
+        with self._lock, self._connect() as con:
+            row = con.execute(
+                "SELECT COUNT(*) FROM share_history WHERE created_at>=? "
+                "AND status IN ('published','submitted','pending_approval')",
+                (since.strftime("%Y-%m-%d %H:%M:%S"),),
+            ).fetchone()
+        return int(row[0])

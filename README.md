@@ -1,65 +1,87 @@
-# Your Assistant Agent v2.2.0 — Direct Qwen Personal Assistant
+# Your Assistant Agent
 
-A lightweight Windows desktop personal assistant with **one local AI brain: Qwen3 1.7B Q4_K_M**.
+A Windows desktop assistant written in Python with a Tkinter interface. The current
+application uses **GroqCloud (`openai/gpt-oss-120b`)** for chat and tool calling.
+It does not bundle or run the Qwen model described in earlier releases.
 
-The app is no longer designed as “router first, chat second”. In v2.2, ordinary conversation is ordinary Qwen chat. When the user asks for something the app can actually do, Qwen uses its native function/tool-calling format through llama.cpp and the desktop app executes only allow-listed tools.
+## Run from source
 
-## Core architecture
+Requires Python 3.11 or 3.12, a desktop display, and a Groq API key configured in
+the application's settings.
 
-`User text/voice -> Qwen3 -> (normal answer OR application tool) -> tool result -> Qwen3 -> user`
+```powershell
+python -m pip install -r requirements.txt
+python launcher.py
+```
 
-There is no `respond` function in the main personal-assistant tool list. If no tool is needed, Qwen answers normally.
+An installed `your-assistant-agent` command and `python -m yaa_lite.main` use the
+same application initialization as the launcher and packaged Windows executable.
+For the module command, install the package or set `PYTHONPATH` to `src` first.
 
-The desktop application remains the permission and safety boundary. Qwen never receives arbitrary Python or shell execution.
+## ZIP updates to GitHub
 
-## Facebook personal-assistant flow
+1. Attach a ZIP in the chat and choose **ZIP → GitHub**, or write
+   `ارفع ملف ZIP على جيت هب`.
+2. Select the existing local checkout of `maenish-ai/YourAssistantAgent`. It must
+   have a clean working tree and the correct `origin` remote.
+3. Review the file list and destination branch, then approve the upload.
 
-Qwen can now chain safe Facebook operations in one request, for example:
+The app checks and extracts the ZIP contents into that checkout, stages the
+reviewed changes, creates a commit, and pushes it using Git. It does not automate
+GitHub Desktop's buttons. A GitHub-downloaded `YourAssistantAgent-main` wrapper
+folder is removed automatically. Existing project files absent from the ZIP are
+not deleted.
 
-- open the Facebook login page if the account needs manual sign-in;
-- verify the Facebook connection;
-- refresh joined groups;
-- select groups by include keywords;
-- exclude groups by keyword or exact name;
-- remember the latest group selection inside the current chat when chat memory is enabled;
-- draft a campaign and show a deterministic preview;
-- after explicit approval, save/run the campaign.
+Git must be installed (the app can also find Git bundled with GitHub Desktop).
+Git author identity and command-line push authentication must be configured.
+**A GitHub Desktop sign-in alone does not guarantee that command-line Git can
+push.** If pushing fails, the app reports that the commit remains local; use
+GitHub Desktop to resolve authentication or network issues. Reattach the same
+ZIP to review and retry the pending push without creating a duplicate commit.
 
-Example natural instruction:
+## Browser and Facebook setup
 
-> حدّث الجروبات، اختار كل جروب فيه كلمة الفحص، واستثني الجروب اسمه الفحص التجارية.
+For the extension connection:
 
-The application turns that into a structured group filter rather than relying on brittle string parsing.
+1. Start the desktop assistant.
+2. Open `chrome://extensions` or `edge://extensions`, enable Developer Mode,
+   choose **Load unpacked**, and select the `browser_extension` directory.
+3. Sign in to Facebook in that same browser, then ask the assistant to verify the
+   connection and refresh joined groups.
 
-Publishing/immediate campaign execution still requires explicit approval. Facebook passwords, 2FA, CAPTCHA and checkpoints remain manual and are never bypassed.
+The extension talks to `127.0.0.1:8765` on the **same computer**. It is not a
+remote access server. After updating extension files, reload the extension from
+the browser's extensions page.
 
-## Native Qwen tool calling
+Facebook publishing currently uses a **separate Playwright browser profile**.
+A connected extension does not prove that this publishing profile is signed in.
+The app opens the publishing browser when needed; finish its manual sign-in
+before running a campaign. Captchas, two-factor authentication and account
+checkpoints remain manual. Review and approve the campaign before publishing.
 
-The bundled llama.cpp server starts with `--jinja`, allowing the Qwen chat template to expose OpenAI-compatible tool calls. Qwen may either:
+Group discovery and posting depend on Facebook's current page layout and account
+permissions. Automated tests do not establish successful posting to a live group.
 
-1. return normal assistant text; or
-2. request one allow-listed application function.
+## Using a phone away from home
 
-Safe tools can be executed and fed back to Qwen for another step, with a hard five-step cap per user turn to prevent accidental loops.
+There is currently **no Android client or remote command/file transport**.
+The Telegram connector is a placeholder, not a running bot. The desktop app's
+attachment chooser receives local files only. Sending a ZIP from a phone to the
+home computer requires a separate authenticated transport and remote approval
+flow; these local repairs do not add that capability.
 
-## Voice
+## Validation and Windows builds
 
-Push-to-talk remains fully local:
+```powershell
+python -m pip install -r requirements-dev.txt
+$env:PYTHONPATH = "$PWD\src"
+python -m pytest -q
+python launcher.py --self-test
+node --check browser_extension/background.js
+```
 
-`Microphone -> whisper.cpp -> Qwen3 -> optional app tools -> Piper -> speakers`
-
-The build bundles whisper.cpp, a multilingual Whisper base model, Piper, and the Jordanian Arabic `ar_JO-kareem-medium` voice. Windows SAPI remains a fallback for speech output.
-
-## Local AI model
-
-- Base model: `Qwen/Qwen3-1.7B`
-- GGUF: `ggml-org/Qwen3-1.7B-GGUF`
-- File: `Qwen3-1.7B-Q4_K_M.gguf`
-- SHA256: `d2387ca2dbfee2ffabce7120d3770dadca0b293052bc2f0e138fdc940d9bc7b5`
-- License: Apache-2.0
-
-Legacy source/database names containing `hammer` remain only as compatibility aliases so existing chats and tasks continue to open. The shipped model is Qwen, not Hammer.
-
-## Build
-
-Push the overlay to `main`. The single `.github/workflows/build-windows.yml` workflow downloads and verifies Qwen, llama.cpp, whisper.cpp and Piper, runs tests, builds the PyInstaller app, smoke-tests it, creates the Inno Setup installer and uploads the installer artifact plus SHA256.
+`.github/workflows/build-windows.yml` runs tests, packages the Windows app with
+PyInstaller, smoke-tests the executable, and builds an Inno Setup installer when
+changes are pushed to `main`. Download the installer from that run's artifacts;
+updating source files does not update an already-installed copy automatically.
+The artifact label still contains an older release name.

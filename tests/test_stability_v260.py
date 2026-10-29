@@ -16,6 +16,8 @@ def test_ambiguous_page_task_is_not_sent_to_automatic_browser_navigation():
     assert facebook_page_ambiguous('ثبتلي منشور على صفحتي قبل الإعلان')
     assert not facebook_page_ambiguous('افتح الفيسبوك')
     assert not facebook_page_ambiguous('افحص حالة فيسبوك')
+    assert not facebook_page_ambiguous('انشر آخر منشور من الصفحة على الجروبات')
+    assert not facebook_page_ambiguous('Post the latest page announcement to these groups')
 
 
 def test_old_campaign_pending_is_not_carried_into_unrelated_new_command():

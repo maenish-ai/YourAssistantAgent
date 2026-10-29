@@ -88,7 +88,8 @@ def test_installer_does_not_launch_new_exe_unattended():
 def test_launcher_applies_lightweight_after_old_patches():
     root=Path(__file__).resolve().parents[1]
     launcher=(root/'launcher.py').read_text(encoding='utf8')
-    assert launcher.index('apply_repair_v280()') < launcher.index('apply_lightweight_v290()')
+    bootstrap=(root/'src/yaa_lite/bootstrap.py').read_text(encoding='utf8')
+    assert bootstrap.index('apply_repair_v280()') < bootstrap.index('apply_lightweight_v290()')
     assert 'from yaa_lite.main import main' in launcher
 
 

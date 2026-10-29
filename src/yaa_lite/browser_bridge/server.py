@@ -39,8 +39,11 @@ class BrowserBridge:
         return f"connected — {self.browser or 'browser'} — {self.tabs} tab(s)"
 
     def queue_command(self, action: str, **arguments) -> str:
-        if action not in {"open_url", "active_page", "extract_links", "click_text", "click_selector", "type_selector", "probe_url"}:
+        if action not in {"open_url", "active_page", "extract_links", "click_text", "click_selector", "type_selector", "probe_url", "discover_facebook_groups", "facebook_session"}:
             raise ValueError(f"Browser action not allowed: {action}")
+        if action == "discover_facebook_groups":
+            arguments["limit"] = max(1, min(int(arguments.get("limit", 500)), 1000))
+            arguments["deep"] = bool(arguments.get("deep", False))
         cid = uuid.uuid4().hex
         cmd = {"id": cid, "action": action, "arguments": arguments, "created_at": time.time()}
         with self._lock:
@@ -52,16 +55,28 @@ class BrowserBridge:
     def execute(self, action: str, timeout: float = 15.0, **arguments) -> dict:
         if not self.connected:
             raise RuntimeError("Normal browser extension is not connected")
-        cid = self.queue_command(action, **arguments)
-        event = self._result_events[cid]
-        if not event.wait(timeout=max(1.0, float(timeout))):
-            with self._lock:
-                self._result_events.pop(cid, None)
-            raise TimeoutError(f"Browser command timed out: {action}")
+        # Install the deadline while holding the same lock used by the HTTP
+        # poller, so a queued command cannot escape before its expiry is set.
         with self._lock:
-            result = self._results.pop(cid, {"ok": False, "error": "missing result"})
-            self._result_events.pop(cid, None)
-        return result
+            cid = self.queue_command(action, **arguments)
+            event = self._result_events[cid]
+            duration = max(1.0, float(timeout))
+            for command in self._commands:
+                if command["id"] == cid:
+                    command["expires_at"] = time.time() + duration
+                    break
+        try:
+            if not event.wait(timeout=duration):
+                raise TimeoutError(f"Browser command timed out: {action}")
+            with self._lock:
+                return self._results.pop(cid, {"ok": False, "error": "missing result"})
+        finally:
+            # A timed-out click/type/open must never run on a later poll. Results
+            # arriving after timeout are ignored by the HTTP handler too.
+            with self._lock:
+                self._commands = [c for c in self._commands if c["id"] != cid]
+                self._results.pop(cid, None)
+                self._result_events.pop(cid, None)
 
     def start(self) -> bool:
         if self.thread and self.thread.is_alive():
@@ -99,7 +114,8 @@ class BrowserBridge:
                     with bridge._lock:
                         # Drop commands that have become too old before the extension sees them.
                         now = time.time()
-                        bridge._commands = [c for c in bridge._commands if now - c.get("created_at", now) < 60]
+                        bridge._commands = [c for c in bridge._commands
+                                            if now < c.get("expires_at", c.get("created_at", now) + 60)]
                         cmd = bridge._commands.pop(0) if bridge._commands else None
                     return self._send(200, {"ok": True, "command": cmd})
                 return self._send(404, {"ok": False})
@@ -121,9 +137,10 @@ class BrowserBridge:
                         return self._send(400, {"ok": False})
                     result = body.get("result") if isinstance(body.get("result"), dict) else {"ok": False, "error": "invalid result"}
                     with bridge._lock:
-                        bridge._results[cid] = result
                         event = bridge._result_events.get(cid)
-                    if event:
+                        if event is None:
+                            return self._send(200, {"ok": True, "ignored": True})
+                        bridge._results[cid] = result
                         event.set()
                     bridge.activity("browser_command_result", f"id={cid[:8]}; ok={bool(result.get('ok'))}")
                     return self._send(200, {"ok": True})
@@ -134,6 +151,7 @@ class BrowserBridge:
 
         try:
             self.server = ThreadingHTTPServer(("127.0.0.1", self.port), Handler)
+            self.port = self.server.server_address[1]
         except OSError:
             self.activity("browser_bridge_error", f"port={self.port}; unavailable")
             return False

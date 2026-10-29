@@ -40,6 +40,7 @@ def test_signature_binds_exact_operation_and_summary():
 def test_sensitive_execution_denied_without_local_click_token():
     _LOCAL_APPROVAL.details = None
     assert permitted_mutation('facebook_status', {})
+    assert permitted_mutation('open_facebook_login', {})
     assert not permitted_mutation('approve_facebook_campaign', {'plan': {'groups': 3}})
     assert not permitted_mutation('run_facebook_rule_now', {'rule_id': 8})
     assert not permitted_mutation('save_facebook_share_rule', {})

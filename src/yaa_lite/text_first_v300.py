@@ -44,11 +44,39 @@ def requires_local_tools(text: str) -> bool:
     """
     return bool(re.search(
         r'(?:افتح|شغّل|شغل|اضبط|احذف|حذف|امسح|ارفع|نزّل|انشر|ابعث|أرسل|ارسل|جدول|سوي|سوّي|اعمل|أعمل|افحص|فحص|عدل|عدّل|حدّث|حدث|'
-        r'فيسبوك|واتساب|تلغرام|تليجرام|جيت[ -]?هاب|github|\bgit\b|\brepo\b|'
+        r'فيس\s?بوك|جروب|قروب|متصفح|تصفح|واتساب|تلغرام|تليجرام|جيت[ -]?هاب|github|\bgit\b|\brepo\b|'
         r'الملفات|المجلد|المهمة|المهام|الكمبيوتر|المجموعات|\bopen\b|\bupload\b|'
-        r'\bdelete\b|\bpublish\b|\bdownload\b|\btask\b)',
+        r'\bdelete\b|\bpublish\b|\bdownload\b|\btask\b|\bfacebook\b|\bbrowser\b|\bgroups?\b|'
+        r'\brefresh\b|\bverify\b|\bbackup\b|\bschedule\b|\bpost\b)',
         str(text or ''), re.I,
     ))
+
+
+def chat_context(db, session_id: int, current_text: str) -> list[dict]:
+    """Use bounded context from this chat when its memory is enabled.
+
+    The current user message has already been persisted by send(); remove that
+    one copy so the request adds it only once. Nothing from other chats is read.
+    """
+    session = db.get_session(session_id)
+    if not session or not int(session.get('memory_enabled', 1)):
+        return []
+    rows = db.recent_messages('hammer', 13, session_id=session_id)
+    if rows and rows[-1].get('role') == 'user' and rows[-1].get('content') == current_text:
+        rows = rows[:-1]
+    context = []
+    remaining = 6000
+    for row in reversed(rows[-12:]):
+        role = row.get('role')
+        content = str(row.get('content') or '').strip()
+        if role not in {'user', 'assistant'} or not content:
+            continue
+        content = content[:min(1200, remaining)]
+        if not content:
+            break
+        context.append({'role': role, 'content': content})
+        remaining -= len(content)
+    return list(reversed(context))
 
 
 def _visual_arabic(value: str) -> str:
@@ -121,8 +149,8 @@ def apply_text_first_v300() -> None:
 
     def settings_ai_page(self):
         frame = self._section('GroqCloud • GPT-OSS 120B', self.t(
-            'الذكاء الاصطناعي يُشغّل على السحابة. البرنامج يرسل كل طلب جديد مستقلًا عن الأوامر القديمة.',
-            'Cloud-hosted AI. Each new request is processed without old chat turns.'
+            'الذكاء الاصطناعي يُشغّل على السحابة. عند تفعيل ذاكرة المحادثة تُرسل الرسائل الأخيرة لفهم المتابعة؛ تنفيذ العمليات يحتاج موافقة منفصلة.',
+            'Cloud-hosted AI. With chat memory enabled, recent messages provide context. Actions require separate approval.'
         ))
         self._row_combo(frame, 1, self.t('حد طول الإجابة', 'Reply token limit'),
                         'max_response_tokens', self.settings.max_response_tokens, [128, 240, 384])
@@ -132,10 +160,6 @@ def apply_text_first_v300() -> None:
     SettingsView._build_shell = settings_shell
     SettingsView._page_voice = settings_voice_page
     SettingsView._page_ai = settings_ai_page
-    # v2.2 stored Facebook group selections as cross-turn memory; v3.0 obeys
-    # the user's preference that a NEW instruction never inherits old commands.
-    from . import personal_assistant_v220 as personal
-    personal._selection_context = lambda _db, _session_id: ''
 
     def build(self):
         self._v260_serial = 0
@@ -340,15 +364,19 @@ def apply_text_first_v300() -> None:
         self.detail_btn.pack_forget()
         self.detail_box.pack_forget()
 
-        # A new instruction must NEVER accidentally approve or inherit an older plan.
-        # Only the explicit review button can set this controller authorization.
+        # Context and an unapproved draft are not execution authorization.
+        # Only the review button sets authorization, bound to the exact preview.
         is_click_approval = (text == 'نعم' and bool(getattr(self.controller, '_v270_authorization', None)))
         if not is_click_approval:
             self.controller._v270_authorization = None
             try:
-                self.db.clear_pending_action(self.session_id)
+                pending = self.db.get_pending_action(self.session_id)
+                if pending and not pending_is_fresh(pending):
+                    self.db.clear_pending_action(self.session_id)
             except Exception:
                 pass
+        history = chat_context(self.db, self.session_id, text)
+        pending = self.db.get_pending_action(self.session_id)
 
         if is_single_facebook_link(text):
             answer = self.t('وصلني رابط فيسبوك. شو بدك أعمل عليه بالضبط؟ أقرأ الصفحة، أفحص منشور، أو أجهّز عملية للموافقة؟',
@@ -363,8 +391,7 @@ def apply_text_first_v300() -> None:
         self.busy = True
         self.status.configure(text=self.t('جاري الاتصال بـGroq…', 'Contacting Groq…'))
         self._v300_update_buttons()
-        # Never carry unrelated old turns into this request. The pending
-        # confirmation, if any, is enforced separately by the tool gate.
+        # Keep local execution permissions separate from conversational context.
         attachments = ', '.join(Path(p).name for p in self.attachments)
         prompt = text + (f'\n\nAttached task files: {attachments}' if attachments else '')
         self.attachments.clear()
@@ -376,18 +403,18 @@ def apply_text_first_v300() -> None:
         def work():
             _CANCEL.event = cancel_event
             try:
-                if requires_local_tools(prompt) or is_click_approval:
+                if (requires_local_tools(prompt) or is_click_approval or pending
+                        or any(requires_local_tools(item['content']) for item in history[-4:])):
                     outcome = self.controller.handle(
-                        QWEN, [], prompt, self.session_id,
+                        QWEN, history, prompt, self.session_id,
                         max(96, min(400, int(self.settings.max_response_tokens))),
                         min(25, int(self.settings.ai_timeout_seconds)),
                         status=lambda message: queue_result('status', message),
                     )
                 else:
-                    # For normal chat, skip the tool router entirely: one direct
-                    # model response, no stale conversation context.
+                    # Ordinary conversation needs only one model response.
                     completion = self.engine.reply(
-                        QWEN, [], prompt, max(96, min(400, int(self.settings.max_response_tokens))),
+                        QWEN, history, prompt, max(96, min(400, int(self.settings.max_response_tokens))),
                         min(25, int(self.settings.ai_timeout_seconds)),
                         status=lambda message: queue_result('status', message),
                     )

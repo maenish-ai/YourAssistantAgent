@@ -101,6 +101,10 @@ def explicit_git_status_intent(text):
 def facebook_page_ambiguous(text):
     """Unsupported page editing: ask which action, never guess Photos/Stories."""
     s = ' '.join(str(text or '').split()).lower()
+    # Sharing a source page's post into groups is a supported campaign, not
+    # an ambiguous request to edit the page itself.
+    if re.search(r'(?:جروب|قروب|مجموعات|\bgroups?\b)', s):
+        return False
     has_page = bool(re.search(r'(?:صفحت[يها]?|صفحة|page|البيدج)', s))
     possible_edit = bool(re.search(r'(?:هايلايت|هايلات|highlight|ستلايت|الستلايت|story|ستوري|تثبيت|ثبّت|بين|pin|غلاف|بوست|منشور|إعلان|اعلان|الاعلان|الإعلان)', s))
     explicit_action = bool(re.search(r'(?:سو[يّ]|اعمل|اعملي|خلّي|حط|عدّل|ثبت|انشر|نزّل|create|make|pin|post)', s))
@@ -121,17 +125,8 @@ def _install_controller_safety():
     from .agent.orchestrator import AgentResponse, SmartAgentController
     from .agent.tools import ToolExecution, ToolRegistry
     from .fast_live_v250 import fast_refresh_groups, fast_check_facebook, fast_open_facebook
-    from . import personal_assistant_v220 as pa
     if getattr(SmartAgentController, '_yaa_v260_safe', False):
         return
-
-    # The model never receives a login-opening tool. A login screen can still be
-    # opened on explicit user request, but not from guesses about page content.
-    original_schemas = pa._tool_schemas
-    def schemas_without_auto_login():
-        return [x for x in original_schemas()
-                if (x.get('function') or {}).get('name') != 'open_facebook_login']
-    pa._tool_schemas = schemas_without_auto_login
 
     original_execute = ToolRegistry.execute
     def execute(self, name, arguments=None):

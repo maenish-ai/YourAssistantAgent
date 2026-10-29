@@ -23,6 +23,7 @@ MAX_MEMBER = 100 * 1024 * 1024
 BLOCKED_PARTS = {'.git', '.ssh', '.gnupg', '.venv', 'venv', '__pycache__', 'node_modules'}
 WINDOWS_RESERVED = {'CON', 'PRN', 'AUX', 'NUL', *(f'COM{i}' for i in range(1, 10)), *(f'LPT{i}' for i in range(1, 10))}
 ROOT_ENTRIES = {'src', 'tests', '.github', 'assets', 'installer', 'launcher.py', 'readme.md', 'pyproject.toml'}
+PENDING_UPLOAD_KEY = 'yaa.pending-upload-commit'
 
 
 class GitHubUploadError(Exception):
@@ -47,6 +48,7 @@ class UploadPlan:
     base_head: str
     branch: str
     files: tuple[UploadFile, ...]
+    pending_commit: str = ''
 
     @property
     def changes(self) -> tuple[UploadFile, ...]:
@@ -88,8 +90,11 @@ def _git(git: str, checkout: Path, *args: str, timeout: int = 35) -> str:
         raise GitHubUploadError(f'Git command could not complete: {type(exc).__name__}') from exc
     if p.returncode != 0:
         # Avoid leaking passwords, tokens or machine-local repository URLs.
-        raise GitHubUploadError(f'Git {args[0]} failed (exit {p.returncode}). Check GitHub Desktop login, Git permissions and network connection.')
-    return p.stdout.strip()
+        raise GitHubUploadError(f'Git {args[0]} failed (exit {p.returncode}). Check command-line Git authentication, '
+                                'repository permissions and network connection. GitHub Desktop login alone may not authenticate Git.')
+    # Keep machine-readable -z output intact. strip() also removes a valid
+    # leading space from the first staged filename, breaking the reviewed set.
+    return p.stdout.rstrip('\r\n')
 
 
 def _check_checkout(path: Path, git: str) -> tuple[Path, str, str]:
@@ -112,6 +117,12 @@ def _check_checkout(path: Path, git: str) -> tuple[Path, str, str]:
         raise GitHubUploadError('Detached HEAD: select a normal branch in GitHub Desktop first.')
     head = _git(git, checkout, 'rev-parse', 'HEAD')
     return checkout, branch, head
+
+
+def _pending_upload(git: str, checkout: Path, branch: str, head: str) -> str:
+    """Only offer a retry when this workflow's failed commit is still HEAD."""
+    pending = _git(git, checkout, 'config', '--local', '--default', '', '--get', PENDING_UPLOAD_KEY)
+    return head if pending == f'{branch}:{head}' else ''
 
 
 def _validate_name(name: str) -> str:
@@ -169,6 +180,7 @@ def _zip_members(archive: Path) -> list[tuple[zipfile.ZipInfo, str]]:
         parts = [name.split('/') for _, name in raw]
         common = parts[0][0] if all(len(p) > 1 and p[0] == parts[0][0] for p in parts) else None
         strip = bool(common and (re.sub(r'[^a-z0-9]', '', common.lower()) == 'yourassistantagent'
+                                 or re.match(r'^yourassistantagent[-_]', common, re.I)
                                  or all(len(p) > 1 and p[1].lower() in ROOT_ENTRIES for p in parts)))
         result = []
         seen.clear()
@@ -219,7 +231,8 @@ def prepare_upload(archive: Path | str, checkout: Path | str, git_executable: st
             else:
                 change = 'added'
             output.append(UploadFile(info.filename, relative, content_hash, info.file_size, change))
-    return UploadPlan(archive, _sha256(archive), checkout, git, head, branch, tuple(output))
+    pending = _pending_upload(git, checkout, branch, head)
+    return UploadPlan(archive, _sha256(archive), checkout, git, head, branch, tuple(output), pending)
 
 
 def describe_plan(plan: UploadPlan) -> str:
@@ -232,11 +245,39 @@ def describe_plan(plan: UploadPlan) -> str:
         sample += f'\n  ... and {len(names)-28} more files'
     workflow_note = '\nWARNING: GitHub Actions workflow files will change.' if any(
         f.relative_path.lower().startswith('.github/workflows/') for f in plan.changes) else ''
+    pending_note = (f'\nPending upload commit: {plan.pending_commit[:12]} (will retry PUSH).'
+                    if plan.pending_commit else '')
+    if plan.changes:
+        action = 'Approving will WRITE these files, COMMIT, and PUSH to origin.'
+    elif plan.pending_commit:
+        action = 'Approving will retry PUSH of the pending commit to origin; no new commit will be created.'
+    else:
+        action = 'All files already match; no commit or push is needed.'
     return (f'Repository: {TARGET_REPO}\nLocal folder: {plan.checkout}\n'
             f'Target branch: {plan.branch}\nArchive: {plan.archive.name}\n'
             f'Added: {added} | Modified: {modified} | Unchanged: {unchanged}\n'
-            f'Files to commit:\n{sample}{workflow_note}\n\n'
-            'No files will be deleted. Approving will WRITE these files, COMMIT, and PUSH to origin.')
+            f'Files to commit:\n{sample}{workflow_note}{pending_note}\n\n'
+            f'No files will be deleted. {action}')
+
+
+def _push_upload(plan: UploadPlan, checkout: Path, branch: str, commit: str) -> str:
+    # Persist the branch and commit ID in local Git metadata. A failed or interrupted
+    # push can then be retried after a fresh preview and explicit approval.
+    _git(plan.git_executable, checkout, 'config', '--local', PENDING_UPLOAD_KEY, f'{branch}:{commit}')
+    try:
+        _git(plan.git_executable, checkout, 'push', 'origin', f'{commit}:refs/heads/{branch}', timeout=120)
+    except GitHubUploadError as exc:
+        raise GitHubUploadError(f'Local commit {commit[:12]} is ready, but PUSH FAILED. '
+                                'Resolve command-line Git authentication/network issues, then select the same ZIP to retry. '
+                                'You can also push this local commit from GitHub Desktop. '
+                                f'{exc}') from exc
+    try:
+        _git(plan.git_executable, checkout, 'config', '--local', '--unset-all', PENDING_UPLOAD_KEY)
+    except GitHubUploadError:
+        # Remote publication already succeeded. Do not report a failed upload
+        # solely because local metadata could not be cleaned up.
+        return ' Push succeeded; local retry metadata could not be cleared.'
+    return ''
 
 
 def publish_upload(plan: UploadPlan, *, approved: bool = False) -> str:
@@ -245,7 +286,13 @@ def publish_upload(plan: UploadPlan, *, approved: bool = False) -> str:
     checkout, branch, head = _check_checkout(plan.checkout, plan.git_executable)
     if branch != plan.branch or head != plan.base_head or _sha256(plan.archive) != plan.archive_sha256:
         raise GitHubUploadError('Repository or archive changed since preview. Re-open the upload preview.')
+    if _pending_upload(plan.git_executable, checkout, branch, head) != plan.pending_commit:
+        raise GitHubUploadError('Pending upload changed since preview. Re-open the upload preview.')
     if not plan.changes:
+        if plan.pending_commit:
+            note = _push_upload(plan, checkout, branch, head)
+            return (f'Published pending upload to {TARGET_REPO} ({branch}). '
+                    f'Commit: https://github.com/{TARGET_REPO}/commit/{head}{note}')
         return 'All ZIP files already match the repository. No commit or push needed.'
     # Fully validate and stage archive payloads in an isolated temporary directory
     # before writing a single file into the local checkout.
@@ -280,21 +327,31 @@ def publish_upload(plan: UploadPlan, *, approved: bool = False) -> str:
     staged = _git(plan.git_executable, checkout, 'diff', '--cached', '--name-only', '-z')
     # -z is machine-safe, including filenames with whitespace.
     actual = {p for p in staged.split('\x00') if p}
-    if actual != set(changed):
+    if not actual.issubset(set(changed)):
         raise GitHubUploadError('Staged files differ from the reviewed ZIP. No commit or push was run.')
+    # On Windows, core.autocrlf and .gitattributes can normalize ZIP bytes to
+    # exactly the already-tracked content. Such files produce no staged diff;
+    # they must not cause an otherwise valid upload to fail (or an empty commit).
+    normalized = set(changed) - actual
+    for relative in normalized:
+        _git(plan.git_executable, checkout, 'ls-files', '--error-unmatch', '--', relative)
+        _git(plan.git_executable, checkout, 'diff', '--quiet', '--', relative)
+    if not actual:
+        if plan.pending_commit:
+            note = _push_upload(plan, checkout, branch, head)
+            return (f'Published pending upload to {TARGET_REPO} ({branch}). '
+                    f'Commit: https://github.com/{TARGET_REPO}/commit/{head}{note}')
+        return 'All ZIP files already match the repository after Git normalization. No commit or push needed.'
     _git(plan.git_executable, checkout, 'commit', '-m', 'Apply reviewed ZIP update via YourAssistantAgent')
     commit = _git(plan.git_executable, checkout, 'rev-parse', 'HEAD')
-    try:
-        _git(plan.git_executable, checkout, 'push', 'origin', f'HEAD:refs/heads/{branch}', timeout=120)
-    except GitHubUploadError as exc:
-        raise GitHubUploadError(f'Local commit {commit[:12]} created, but PUSH FAILED. Open GitHub Desktop to resolve authentication/network issues. {exc}') from exc
-    return f'Published {len(changed)} files to {TARGET_REPO} ({branch}). Commit: https://github.com/{TARGET_REPO}/commit/{commit}'
+    note = _push_upload(plan, checkout, branch, commit)
+    return f'Published {len(actual)} files to {TARGET_REPO} ({branch}). Commit: https://github.com/{TARGET_REPO}/commit/{commit}{note}'
 
 
 def is_upload_request(text: str) -> bool:
     s = ' '.join(str(text or '').lower().split())
     action = re.search(r'ارفع|ارفعه|رفع|انشر|ادفع|حدّث|حدث|upload|push|publish|commit', s)
-    target = re.search(r'github|جيت\s*[ -]?هاب|جتهب|المستودع|\brepo\b|git\s*hub', s)
+    target = re.search(r'github|جيت\s*[ -]?ها?ب|جتهب|المستودع|\brepo\b|git\s*hub', s)
     question = re.search(r'^(?:كيف|ليش|لماذا|هل|what|how|why)\b', s)
     return bool(action and target and not question)
 
@@ -340,7 +397,7 @@ def apply_v430_ui() -> None:
         try:
             plan = prepare_upload(zip_paths[0], folder)
             self._v430_repo_folder = str(plan.checkout)
-            if not plan.changes:
+            if not plan.changes and not plan.pending_commit:
                 show(self, 'ZIP inspected. No file changes detected; nothing was published.')
                 return
             if not messagebox.askyesno('Approve GitHub Commit + Push', describe_plan(plan), parent=self):

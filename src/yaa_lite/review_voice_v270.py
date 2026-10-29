@@ -23,7 +23,7 @@ _ALLOWED_MUTATIONS = frozenset({
     'approve_facebook_campaign', 'run_facebook_rule_now',
 })
 _READ_ONLY_TOOLS = frozenset({
-    'app_status', 'facebook_status', 'verify_facebook_connection',
+    'app_status', 'facebook_status', 'verify_facebook_connection', 'open_facebook_login',
     'discover_facebook_groups', 'search_facebook_groups',
     'list_tasks', 'backup_status', 'count_facebook_groups',
 })

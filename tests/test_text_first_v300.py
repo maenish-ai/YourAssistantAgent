@@ -41,13 +41,13 @@ def test_stt_joins_words_without_auto_send():
 
 def test_text_first_no_tts_or_old_fullscreen_sweep():
     source = SOURCE.read_text(encoding='utf-8')
-    launcher = (ROOT / 'launcher.py').read_text(encoding='utf-8')
+    bootstrap = (ROOT / 'src/yaa_lite/bootstrap.py').read_text(encoding='utf-8')
     main = (ROOT / 'src/yaa_lite/main.py').read_text(encoding='utf-8')
-    assert 'apply_text_first_v300()' in launcher
+    assert 'apply_text_first_v300()' in bootstrap
     assert 'def disable_voice_reply(' in source
     assert 'ChatWindow._maybe_speak_reply = disable_voice_reply' in source
     assert 'self.engine.reply(' in source
-    assert 'history=[], ' not in source  # routing uses new prompt, not old persisted messages
+    assert 'QWEN, history, prompt' in source
     assert 'def _cloud_label_sweep' not in main
     assert 'after(700' not in main
     assert 'VoiceService' not in main
@@ -68,3 +68,10 @@ def test_packaged_without_edge_tts_extra_dependencies():
     assert 'collect_all("edge_tts")' not in spec
     assert 'edge_tts' not in workflow
     assert 'YourAssistantAgent-Windows-Setup-v3.0.1-ArabicFix' in workflow
+
+
+def test_group_and_browser_requests_reach_tool_router():
+    helper = _pure_helpers()['requires_local_tools']
+    for text in ('Refresh Facebook groups', 'verify facebook login',
+                 'اختار الجروبات اللي اسمها الفحص', 'تصفح الصفحة', 'افتح المتصفح'):
+        assert helper(text), text

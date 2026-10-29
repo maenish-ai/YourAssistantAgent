@@ -29,7 +29,7 @@ async function waitForTab(tabId, timeoutMs=20000) {
     if (tab.status === "complete") return tab;
     await new Promise(r => setTimeout(r, 250));
   }
-  return chrome.tabs.get(tabId);
+  throw new Error("Page did not finish loading before the timeout");
 }
 
 async function discoverFacebookGroups(limit, deep=false) {
@@ -87,6 +87,43 @@ async function discoverFacebookGroups(limit, deep=false) {
   }
 }
 
+async function facebookSession() {
+  const tab = await chrome.tabs.create({url: "https://www.facebook.com/me", active: false});
+  try {
+    await waitForTab(tab.id, 8000);
+    const result = await inTab(tab.id, async () => {
+      const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+      for (let attempt = 0; attempt < 8; attempt++) {
+        const url = new URL(location.href);
+        const path = url.pathname.toLowerCase();
+        if (!/(^|\.)facebook\.com$/i.test(url.hostname)) {
+          return {ok: false, status: "unknown", error: "unexpected_facebook_redirect"};
+        }
+        if (/^\/(checkpoint|two_step_verification)(?:\/|$)/.test(path)) {
+          return {ok: true, status: "checkpoint", url: location.href};
+        }
+        if (/^\/(login|recover|reg)(?:\/|\.|$)/.test(path) ||
+            document.querySelector("input[name='email'],input[name='pass']")) {
+          return {ok: true, status: "not_connected", url: location.href};
+        }
+        const account = document.querySelector(
+          '[role="button"][aria-label="Account"], [role="button"][aria-label="Your profile"], ' +
+          '[role="button"][aria-label="حسابك"], [role="button"][aria-label="ملفك الشخصي"]');
+        // A profile URL can be public. Only rendered account controls provide
+        // positive evidence that this browser has an authenticated session.
+        if (account) {
+          return {ok: true, status: "connected", url: location.href};
+        }
+        if (attempt < 7) await sleep(250);
+      }
+      return {ok: false, status: "unknown", error: "facebook_session_unverified", url: location.href};
+    });
+    return result || {ok: false, status: "unknown", error: "empty_session_result"};
+  } finally {
+    try { await chrome.tabs.remove(tab.id); } catch (_) {}
+  }
+}
+
 async function execute(command) {
   const a = command.action;
   const x = command.arguments || {};
@@ -98,6 +135,9 @@ async function execute(command) {
     const r = await fetch(String(x.url || ""), {credentials: "include", redirect: "follow"});
     const text = await r.text();
     return {ok: r.ok, status: r.status, url: r.url, text: text.slice(0, Number(x.max_chars || 5000))};
+  }
+  if (a === "facebook_session") {
+    return facebookSession();
   }
   if (a === "discover_facebook_groups") {
     return discoverFacebookGroups(x.limit, x.deep === true);
@@ -144,19 +184,68 @@ async function execute(command) {
   throw new Error("Unsupported action");
 }
 
+// One command at a time: overlapping intervals must never drive different pages
+// concurrently while a previous discovery or click is still running.
+let polling = false;
+let pendingResult = null;
+
 async function poll() {
+  if (polling) return;
+  polling = true;
   try {
+    // Keep a completed result until the app acknowledges it. A transient bridge
+    // failure must not lose the result or cause the command to run twice.
+    if (pendingResult) {
+      const ack = await post("/command-result", pendingResult);
+      if (!ack.ok) return;
+      pendingResult = null;
+    }
     const r = await fetch(base + "/next-command");
+    if (!r.ok) return;
     const data = await r.json();
     if (data.command) {
       let result;
-      try { result = await execute(data.command); }
+      try {
+        if (data.command.expires_at && Date.now() >= data.command.expires_at * 1000) {
+          result = {ok: false, error: "command_expired"};
+        } else {
+          result = await execute(data.command);
+        }
+      }
       catch (e) { result = {ok: false, error: String(e && e.message || e)}; }
-      await post("/command-result", {id: data.command.id, result});
+      pendingResult = {id: data.command.id, result};
+      const ack = await post("/command-result", pendingResult);
+      if (ack.ok) pendingResult = null;
     }
-  } catch (_) {}
+  } catch (_) {
+    // The desktop app can be closed; the next wakeup will reconnect.
+  } finally {
+    polling = false;
+  }
 }
 
-hello();
+const WAKE_ALARM = "yaa-browser-bridge";
+async function wakeBridge() {
+  try {
+    // Unlike setInterval, alarms survive Manifest V3 worker suspension. Chrome
+    // 120+ supports 30-second alarms; older browsers may clamp this to a minute.
+    await chrome.alarms.create(WAKE_ALARM, {periodInMinutes: 0.5});
+  } catch (_) {}
+  await hello();
+  await poll();
+}
+
+// Register listeners synchronously, before any asynchronous startup work.
+chrome.alarms.onAlarm.addListener(alarm => {
+  if (alarm.name === WAKE_ALARM) {
+    void hello();
+    void poll();
+  }
+});
+chrome.runtime.onStartup.addListener(() => { void wakeBridge(); });
+chrome.runtime.onInstalled.addListener(() => { void wakeBridge(); });
+chrome.action.onClicked.addListener(() => { void wakeBridge(); });
+
+void wakeBridge();
 setInterval(hello, 3000);
 setInterval(poll, 650);

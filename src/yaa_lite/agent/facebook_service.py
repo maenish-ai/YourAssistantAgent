@@ -210,16 +210,19 @@ class FacebookService:
         if not (self.browser_bridge and self.browser_bridge.connected):
             return None
         try:
-            result = self.browser_bridge.execute("probe_url", url="https://www.facebook.com/me", max_chars=1600, timeout=12)
-            url = str(result.get("url") or "").casefold()
-            text = str(result.get("text") or "").casefold()
-            if not result.get("ok"):
-                return FacebookActionResult(False, "Facebook: connection check failed in normal browser")
-            blocked = any(x in url for x in ("/login", "/checkpoint", "recover")) or "log in to facebook" in text
-            self._last_status = "not_connected" if blocked else "connected"
+            result = self.browser_bridge.execute("facebook_session", timeout=12)
+            state = str(result.get("status") or "unknown")
+            connected = bool(result.get("ok")) and state == "connected"
+            self._last_status = "connected" if connected else "not_connected" if state == "not_connected" else "error"
             self._last_backend = "normal-browser-extension"
-            self.activity("facebook_connection" if not blocked else "facebook_connection_error", f"{self._last_status}; {self._last_backend}")
-            return FacebookActionResult(not blocked, f"Facebook: {self._last_status} — {self._last_backend}")
+            self.activity("facebook_connection" if connected else "facebook_connection_error", f"{state}; {self._last_backend}")
+            if connected:
+                return FacebookActionResult(True, "Facebook: connected — normal-browser-extension")
+            if state == "checkpoint":
+                return FacebookActionResult(False, self._t("Facebook يطلب تحققًا أمنيًا. افتحه وأكمل التحقق يدويًا.", "Facebook requires a security check. Open Facebook and complete it manually."))
+            if state == "not_connected":
+                return FacebookActionResult(False, self._t("حساب Facebook غير مسجل الدخول في المتصفح العادي.", "Facebook is not signed in in the normal browser."))
+            return FacebookActionResult(False, self._t("إضافة المتصفح متصلة، لكن لم نتمكن من التحقق من جلسة Facebook. افتح Facebook ثم أعد الفحص.", "The browser extension is connected, but the Facebook session could not be verified. Open Facebook and check again."))
         except Exception as exc:
             self.activity("browser_extension_fallback", f"verify: {type(exc).__name__}: {exc}")
             return None

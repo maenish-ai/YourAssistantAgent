@@ -51,6 +51,8 @@ def _upgrade_old_visible_labels(widget) -> None:
 
 
 def main() -> int:
+    from .bootstrap import configure_application
+    configure_application()
     _set_windows_app_id()
     if '--self-test' in sys.argv:
         return _self_test()

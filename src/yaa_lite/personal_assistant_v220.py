@@ -133,7 +133,7 @@ def _tool_schemas() -> list[dict]:
             "type": "function",
             "function": {
                 "name": "open_facebook_login",
-                "description": "Open Facebook in the user's normal/dedicated browser so the user can sign in manually if needed. Never enters passwords, 2FA codes, or bypasses checkpoints.",
+                "description": "Open Facebook only when the user explicitly asks to open Facebook or its sign-in page, so the user can sign in manually. Never enters passwords, 2FA codes, or bypasses checkpoints.",
                 "parameters": empty,
             },
         },
@@ -316,6 +316,9 @@ def _install_tool_registry_extensions() -> None:
 
 def _selection_context(db, session_id: int) -> str:
     try:
+        session = db.get_session(session_id)
+        if not session or not int(session.get("memory_enabled", 1)):
+            return ""
         rows = db.list_memory_items(limit=80, enabled_only=True)
     except Exception:
         return ""
@@ -406,7 +409,7 @@ def _campaign_preview(controller, user_text: str, args: dict, session_id: int, s
         + f"• المنشور: {post_text}\n"
         f"• الموعد: {schedule}\n"
         f"• الفاصل: {interval} ثانية — منع التكرار: {no_repeat} يوم\n\n"
-        "هذا مجرد Preview ولم يتم نشر شيء. إذا الخطة صحيحة اكتب: نعم.",
+        "هذه معاينة ولم يتم نشر شيء. راجع التفاصيل واضغط زر «موافق» للتنفيذ.",
         f"I understood the task as follows:\n"
         f"• Source: {source}\n"
         f"• Group selection: {inc_text}\n"
@@ -416,7 +419,7 @@ def _campaign_preview(controller, user_text: str, args: dict, session_id: int, s
         + f"• Post: {post_text}\n"
         f"• Schedule: {schedule}\n"
         f"• Interval: {interval}s — no-repeat: {no_repeat} day(s)\n\n"
-        "This is only a preview; nothing was published. Say yes to approve.",
+        "This is only a preview; nothing was published. Review it and click Approve to execute.",
     )
 
     plan = {

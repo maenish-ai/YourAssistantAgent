@@ -119,8 +119,8 @@ def test_cloud_service_uses_capture_v280(monkeypatch, tmp_path):
 
 
 def test_launcher_loads_repair_last():
-    launcher=(Path(__file__).resolve().parents[1]/'launcher.py').read_text()
-    assert launcher.index('apply_review_voice_v270()') < launcher.index('apply_repair_v280()')
+    bootstrap=(Path(__file__).resolve().parents[1]/'src/yaa_lite/bootstrap.py').read_text()
+    assert bootstrap.index('apply_review_voice_v270()') < bootstrap.index('apply_repair_v280()')
 
 
 def test_background_does_not_rearm_duplicate_backup_poll():

@@ -32,8 +32,10 @@ def test_direct_personal_agent_tool_list_has_no_fake_respond():
 
 def test_launcher_applies_personal_assistant_layer_before_main():
     launcher = (ROOT / "launcher.py").read_text(encoding="utf-8")
-    assert "apply_personal_assistant" in launcher
-    assert launcher.index("apply_personal_assistant()") < launcher.index("from yaa_lite.main import main")
+    bootstrap = (ROOT / "src/yaa_lite/bootstrap.py").read_text(encoding="utf-8")
+    main = (ROOT / "src/yaa_lite/main.py").read_text(encoding="utf-8")
+    assert "apply_personal_assistant()" in bootstrap
+    assert main.index("configure_application()") < main.index("GroqApp().mainloop()")
 
 
 def test_personal_controller_has_multistep_cap_and_approval_gate():

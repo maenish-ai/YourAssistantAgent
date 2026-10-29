@@ -9,8 +9,6 @@ import json
 import queue
 import re
 import threading
-import time
-import uuid
 import webbrowser
 from tkinter import ttk
 
@@ -40,36 +38,7 @@ def _install_discovery_bridge() -> None:
     from .browser_bridge.server import BrowserBridge
     if getattr(BrowserBridge, "_yaa_v250_groups", False):
         return
-    old_queue = BrowserBridge.queue_command
-
-    def queue_command(self, action, **arguments):
-        if action != "discover_facebook_groups":
-            return old_queue(self, action, **arguments)
-        cid = uuid.uuid4().hex
-        with self._lock:
-            self._commands.append({
-                "id": cid, "action": action,
-                "arguments": {"limit": max(1, min(int(arguments.get("limit", 120)), 500)),
-                              "deep": bool(arguments.get("deep", False))},
-                "created_at": time.time(),
-            })
-            self._result_events[cid] = threading.Event()
-        return cid
-
-    old_execute = BrowserBridge.execute
-
-    def execute(self, action, timeout=15.0, **arguments):
-        try:
-            return old_execute(self, action, timeout=timeout, **arguments)
-        except TimeoutError:
-            # Expired commands must not execute after the user sees a timeout.
-            with self._lock:
-                self._commands = [c for c in self._commands if c.get("action") != action or
-                                  time.time() - c.get("created_at", 0) < float(timeout)]
-            raise
-
-    BrowserBridge.queue_command = queue_command
-    BrowserBridge.execute = execute
+    # The core bridge owns allowlisting, normalization and command expiry.
     BrowserBridge._yaa_v250_groups = True
 
 
@@ -80,7 +49,7 @@ def fast_refresh_groups(fb, limit=120, deep=False):
         return False, "إضافة المتصفح مش متصلة. افتح Edge وتأكد أن إضافة Your Assistant Agent مفعلة، ثم جرّب تحديث المجموعات.", 0
     try:
         response = bridge.execute("discover_facebook_groups", limit=limit, deep=deep,
-                                  timeout=40 if deep else 15)
+                                  timeout=55 if deep else 15)
     except TimeoutError:
         return False, "تحديث المجموعات تجاوز المهلة المحددة وتوقف الانتظار. جرّب مرة ثانية.", 0
     except Exception as exc:
@@ -111,17 +80,19 @@ def fast_check_facebook(fb):
     bridge = getattr(fb, "browser_bridge", None)
     if bridge and bridge.connected:
         try:
-            result = bridge.execute("probe_url", url="https://www.facebook.com/me", max_chars=350, timeout=5)
-            url = str(result.get("url") or "").lower()
-            txt = str(result.get("text") or "").lower()
-            blocked = any(part in url for part in ("/login", "/checkpoint", "recover")) or "log in to facebook" in txt
-            if result.get("ok") and not blocked:
+            result = bridge.execute("facebook_session", timeout=12)
+            state = str(result.get("status") or "unknown")
+            fb._last_backend = "normal-browser-extension"
+            if result.get("ok") and state == "connected":
                 fb._last_status = "connected"
-                fb._last_backend = "normal-browser-extension"
-                return "Facebook متصل ✅ (فحص مباشر من Edge)."
-            if blocked:
+                return "Facebook متصل ✅ (فحص مباشر من المتصفح)."
+            if state == "not_connected":
                 fb._last_status = "not_connected"
-                return "Facebook مش مسجل دخول حاليًا. ما فتحت صفحة تسجيل الدخول تلقائيًا."
+                return "Facebook مش مسجل دخول حاليًا. افتح Facebook وسجل الدخول يدويًا ثم أعد الفحص."
+            fb._last_status = "error"
+            if state == "checkpoint":
+                return "Facebook يطلب تحققًا أمنيًا. افتحه وأكمل التحقق يدويًا ثم أعد الفحص."
+            return "إضافة المتصفح متصلة، لكن لم أتمكن من التحقق من جلسة Facebook. افتحه ثم أعد الفحص."
         except Exception:
             pass
     code = fb.status_code() if hasattr(fb, "status_code") else "not_checked"

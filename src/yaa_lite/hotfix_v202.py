@@ -8,9 +8,6 @@ into the core Facebook service in a later cleanup release.
 from __future__ import annotations
 
 import json
-import threading
-import time
-import uuid
 from typing import Any
 
 _APPLIED = False
@@ -91,25 +88,8 @@ def _install_browser_bridge_group_action() -> None:
 
     if getattr(BrowserBridge, "_yaa_v202_browser_patched", False):
         return
-    original = BrowserBridge.queue_command
-
-    def queue_command(self, action: str, **arguments) -> str:
-        if action != "discover_facebook_groups":
-            return original(self, action, **arguments)
-        cid = uuid.uuid4().hex
-        cmd = {
-            "id": cid,
-            "action": action,
-            "arguments": arguments,
-            "created_at": time.time(),
-        }
-        with self._lock:
-            self._commands.append(cmd)
-            self._result_events[cid] = threading.Event()
-        self.activity("browser_command_queued", f"{action}; id={cid[:8]}")
-        return cid
-
-    BrowserBridge.queue_command = queue_command
+    # Discovery is now implemented in the bridge itself. Keep this compatibility
+    # hook for old launchers without replacing its bounded command queue.
     BrowserBridge._yaa_v202_browser_patched = True
 
 

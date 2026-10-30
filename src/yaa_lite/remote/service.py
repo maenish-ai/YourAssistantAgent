@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
+import re
 from pathlib import Path
 import secrets
 import threading
@@ -37,6 +39,11 @@ class RemoteAssistant:
     def __init__(self, db, settings, runtime, facebook, publish: Callable,
                  root: Path, activity=None, controller=None):
         self.db, self.settings, self.facebook = db, settings, facebook
+        self.runtime = runtime
+        from .desktop import WindowsDesktop
+        from .files import RemoteFiles
+        self.desktop = WindowsDesktop(lambda: bool(getattr(settings,'remote_desktop_enabled',False)))
+        self.files = RemoteFiles(getattr(settings,'remote_files_root','') or Path.home())
         self.publish = publish
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -138,6 +145,24 @@ class RemoteAssistant:
                         'أرسل طلبك أو ZIP. راجع المعاينة واضغط موافق؛ كلمة نعم وحدها لا تنفّذ عملية.\n'
                         'محادثة جديدة: /new — إلغاء المعاينة: /cancel — الحالة: /status')
             return
+        desktop_intent = text.startswith('/computer ') or (not is_upload_request(text) and bool(re.search(
+            r'افتح|شغّل|شغل|انقل|نقل|ملفات|نزّل|واتساب|واتس|whatsapp|متصفح|سطح المكتب|الكمبيوتر|ابحث|سيرش|بحث.*(?:نت|انترنت)|حمّل|حمل.*(?:ملف|صور)|download|browser|computer|\bopen\b|\bsearch\b',text,re.I)))
+        if re.search(r'متصفح النشر|publishing.*(?:profile|browser)',text,re.I):desktop_intent=False
+        if desktop_intent and not re.search(r'جروب|قروب|مجموعات|groups',text,re.I):
+            if not (getattr(self.settings,'remote_desktop_enabled',False) and getattr(self.settings,'remote_ai_enabled',False)):
+                self._reply('فعّل التحكم بالكمبيوتر ومساعد الكمبيوتر من إعدادات نسخة Windows أولاً. للتحكم اليدوي استخدم زر سطح المكتب على الهاتف.')
+                return
+            instruction = text.removeprefix('/computer ').strip()
+            if len(instruction)>3000:
+                self._reply('اختصر مهمة الكمبيوتر إلى 3000 حرف أو أقل حتى تبقى التعليمات كاملة أثناء التنفيذ.')
+                return
+            self.db.add_message('user', instruction, 'hammer', self.session_id)
+            self.desktop.cancel.clear()
+            self._offer('desktop_ai', instruction, instruction,
+                'مهمة على الكمبيوتر:\n' + instruction + '\n\nبعد الموافقة سيقرأ المساعد عناصر النافذة ويرسل تسمياتها إلى Groq، ثم ينفّذ حتى 16 خطوة خلال 3 دقائق. '
+                'قد تتضمن الخطوات نقرات وكتابة وفتح صفحات. راقب الشاشة، ويمكنك إيقاف الخطوات التالية من زر إيقاف المهمة. '
+                'تسجيل الدخول والشاشات المحمية قد تحتاج تحكماً يدوياً. هل توافق على هذه المهمة؟')
+            return
         with self._lock:
             zip_pending = bool(self._approval and self._approval.kind == 'github')
         if zip_pending and (is_upload_request(text) or text.lower() in {'نعم', 'موافق', 'yes', 'approve'}):
@@ -227,6 +252,15 @@ class RemoteAssistant:
                 self._reply('تعذر إكمال الرفع. افحص حالة المستودع على الكمبيوتر قبل إعادة الطلب.')
             finally:
                 Path(approval.payload.archive).unlink(missing_ok=True)
+        elif approval.kind == 'desktop_ai':
+            try:
+                from .desktop_agent import run_desktop_task
+                self.check_desktop()
+                if not getattr(self.settings,'remote_ai_enabled',False):raise ValueError('Computer AI is disabled')
+                self._reply(run_desktop_task(self.runtime,self.desktop,str(approval.payload),self._reply,
+                    files=self.files,offer_download=lambda path,name:self.publish('ملف جاهز للتنزيل: '+name,download_path=path,download_name=name)))
+            except Exception as exc:
+                self._reply('توقفت مهمة الكمبيوتر: ' + str(exc))
         else:
             try:
                 result = execute_reviewed_action(self.controller, self.session_id, approval.signature)
@@ -256,11 +290,42 @@ class RemoteAssistant:
                     f'الإجمالي: {result.get("total", 0)}' +
                     ('\n' + str(result['error']) if result.get('error') else ''), session_id=origin_session)
 
+    def capabilities(self):
+        enabled = bool(getattr(self.settings,'remote_desktop_enabled',False)) and not self._closed
+        return {'desktop': enabled and os.name=='nt', 'files': enabled,
+                'computer_ai': enabled and bool(getattr(self.settings,'remote_ai_enabled',False)),
+                'transfer_limit': 256*1024*1024, 'primary_monitor_only': True}
+
+    def check_desktop(self):
+        from .desktop import DesktopError
+        if self._closed or not getattr(self.settings,'remote_desktop_enabled',False):
+            raise DesktopError('التحكم بالكمبيوتر ونقل الملفات غير مفعّل في إعدادات Windows.')
+
+    def desktop_input(self,data):
+        self.check_desktop()
+        try:self.desktop.input(data)
+        except Exception as exc:self._reply('تعذر التحكم: '+str(exc))
+
+    def file_import(self,path,folder,name):
+        try:
+            self.check_desktop()
+            result=self.files.import_file(path,folder,name)
+            self._reply('وصل الملف إلى الكمبيوتر: '+result['path'])
+        except Exception as exc:self._reply('تعذر نقل الملف: '+str(exc))
+        finally:Path(path).unlink(missing_ok=True)
+
+    def stop_desktop_task(self):
+        self.desktop.cancel.set()
+        with self._lock:
+            pending = bool(self._approval and self._approval.kind=='desktop_ai')
+        if pending:self._invalidate()
+
     def close(self) -> None:
         with self._lock:
             if self._closed:
                 return
             self._closed = True
+        self.desktop.close()
         self._invalidate()
         if hasattr(self.facebook, 'remove_completion_listener'):
             self.facebook.remove_completion_listener(self._completed)

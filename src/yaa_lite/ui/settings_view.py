@@ -37,6 +37,7 @@ class SettingsView(ttk.Frame):
         cats = [
             ("general",self.t("عام","General")), ("ai",self.t("Hammer والذكاء","AI & Hammer")),
             ("remote",self.t("Android وGitHub","Android & GitHub")),
+            ("desktop",self.t("التحكم بالكمبيوتر","Computer control")),
             ("facebook","Facebook"), ("backup",self.t("النسخ الاحتياطي","Backup")),
             ("security",self.t("الأمان والصلاحيات","Security & permissions")),
             ("notifications",self.t("التنبيهات","Notifications")), ("appearance",self.t("المظهر واللغة","Appearance & language")),
@@ -105,6 +106,7 @@ class SettingsView(ttk.Frame):
         self.current=key;self._clear();titles={
             "general":self.t("عام","General"),"ai":self.t("Hammer والذكاء","AI & Hammer"),"facebook":"Facebook","backup":self.t("النسخ الاحتياطي","Backup"),
             "remote":self.t("Android وGitHub","Android & GitHub"),
+            "desktop":self.t("التحكم بالكمبيوتر","Computer control"),
             "security":self.t("الأمان والصلاحيات","Security & permissions"),"notifications":self.t("التنبيهات","Notifications"),
             "appearance":self.t("المظهر واللغة","Appearance & language"),"voice":self.t("الصوت","Voice"),"memory":self.t("الذاكرة والتعلم","Memory & learning"),"advanced":self.t("متقدم","Advanced")}
         self.header.config(text=titles[key]);getattr(self,f"_page_{key}")()
@@ -150,6 +152,22 @@ class SettingsView(ttk.Frame):
         self._row_entry(g,1,self.t("المستودع: owner/name", "Repository: owner/name"),"github_repository",self.settings.github_repository)
         self._row_entry(g,2,self.t("مجلد المستودع المحلي", "Local checkout folder"),"github_checkout",self.settings.github_checkout)
         ttk.Button(g,text=self.t("اختيار المجلد", "Choose folder"),command=self._choose_github_checkout).grid(row=3,column=1,sticky="w",pady=5)
+
+    def _page_desktop(self):
+        b=self._section(self.t("التحكم بالكمبيوتر من الهاتف", "Control this computer from the phone"), self.t(
+            "عند التفعيل يستطيع الهاتف المقترن عرض الشاشة الرئيسية والنقر والكتابة ونقل الملفات. التحكم يعمل داخل جلسة Windows المفتوحة. تعطيل هذا الخيار يوقف التحكم عند حفظ الإعدادات.",
+            "The paired phone can view the primary screen, click, type and transfer files in the unlocked Windows session. Save with this option off to revoke desktop control."))
+        self._row_check(b,1,self.t("تفعيل الشاشة والتحكم ونقل الملفات", "Enable screen, input and file transfers"),"remote_desktop_enabled",self.settings.remote_desktop_enabled)
+        self._row_check(b,2,self.t("تفعيل مساعد الكمبيوتر بالعربي", "Enable the computer AI assistant"),"remote_ai_enabled",self.settings.remote_ai_enabled)
+        ttk.Label(b,text=self.t("مساعد الكمبيوتر يرسل أسماء وعناصر النافذة المرئية إلى Groq لفهم الأوامر. لا يرسل صور الشاشة أو محتوى الملفات. يطلب موافقة على المهمة قبل تنفيذ خطواتها.",
+                               "Computer AI sends visible window labels/elements to Groq. It does not send screenshots or file contents. Approve the task before its steps execute."),wraplength=650).grid(row=3,column=0,columnspan=2,sticky="w",pady=8)
+        f=self._section(self.t("مجلد الملفات المتاح للهاتف", "Phone file area"),self.t("الافتراضي هو مجلد المستخدم. اختر مجلداً أو قرصاً آخر إذا أردت إتاحته للهاتف. رفع ملف بنفس اسم ملف موجود يُرفض.",
+                                                                                  "Defaults to your home folder. Choose another folder or drive to expose it to the phone. Uploads never overwrite existing files."))
+        self._row_entry(f,1,self.t("المجلد", "Folder"),"remote_files_root",self.settings.remote_files_root)
+        def choose():
+            folder=filedialog.askdirectory(parent=self,mustexist=True)
+            if folder:self.vars['remote_files_root'].set(folder)
+        ttk.Button(f,text=self.t("اختيار المجلد أو القرص", "Choose folder or drive"),command=choose).grid(row=2,column=1,sticky='w')
 
     def _refresh_remote_status(self):
         label=getattr(self,"_remote_status_label",None)
@@ -313,6 +331,18 @@ class SettingsView(ttk.Frame):
         v=self.vars.get(name);return v.get() if v is not None else default
 
     def save(self):
+        if self.current == "desktop":
+            try:
+                updated=replace(self.settings)
+                updated.remote_desktop_enabled=bool(self._value('remote_desktop_enabled',False))
+                updated.remote_ai_enabled=bool(self._value('remote_ai_enabled',False)) and updated.remote_desktop_enabled
+                folder=str(self._value('remote_files_root','')).strip()
+                if folder and not Path(folder).expanduser().is_dir():raise ValueError(self.t('مجلد الملفات غير موجود.','File folder does not exist.'))
+                updated.remote_files_root=str(Path(folder).expanduser().resolve()) if folder else ''
+                updated.save();self.settings=updated;self.on_save(updated)
+                self.status.configure(text=self.t('تم الحفظ','Saved'))
+            except (OSError,ValueError) as exc:self.status.configure(text=str(exc))
+            return
         if self.current == "remote":
             return self._save_remote_settings()
         # Only fields currently rendered are changed; other settings stay intact.

@@ -1,8 +1,42 @@
-# Your Assistant Agent 4.4
+# Your Assistant Agent 4.5
 
 A Python/Tkinter Windows assistant with a standalone native Android companion.
 GroqCloud (`openai/gpt-oss-120b`) handles conversation and tool selection; local
 application tools perform reviewed GitHub and Facebook tasks.
+
+## Remote desktop, computer commands and files (4.5)
+
+The paired Android app now has **Desktop**, **Computer files** and **Computer
+command** controls. Desktop mode sends refreshed JPEG frames (about once a
+second, primary monitor only) and supports clicks, double/right clicks, drag,
+scrolling, Unicode text and keyboard shortcuts. Pinch zoom/pan changes the phone
+view; drag mode moves an item on Windows.
+
+Enable **Settings → Computer control → screen/input/file transfers** on Windows.
+Choose the file area (home folder by default; select a folder or drive to expose
+another area). Android can upload/download individual files up to **256 MiB**.
+Uploads refuse to overwrite existing files. ZIP-to-GitHub retains its separate
+20 MiB limit and review workflow.
+
+Enable the separate computer-AI option to give Arabic instructions using
+**Computer command** or `/computer ...`. The owner reviews the task once before
+execution. The model can inspect real accessibility element labels, open web
+URLs, click observed elements, type, use shortcuts, list file metadata and offer
+phone download buttons. It re-observes after actions, runs at most 16 steps/about
+3 minutes, and can be stopped from Desktop mode. UI labels are sent to Groq;
+screenshots and file contents are not. Windows requires `pywinauto` (installed by
+the Windows dependency list). Apps exposing sparse/no accessibility data need
+manual desktop control. AI automation is not guaranteed for every website or app.
+
+This operates in the **current unlocked Windows user session**. It cannot bypass
+Windows lock screens, UAC/secure desktop, elevated-process input restrictions,
+CAPTCHA, authentication or 2FA. The computer must remain awake. It does not add
+Wake-on-LAN, audio streaming, multi-monitor selection or a high-frame-rate remote
+desktop protocol. The HTTPS/private-network and pairing setup below still applies.
+The new Windows desktop backend has unit/transport tests using mocks; it needs
+real-device validation before relying on it for production work.
+
+See [the 4.5 Arabic guide](README_V450_AR.md).
 
 ## Windows setup
 

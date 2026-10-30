@@ -72,6 +72,48 @@ final class ApiClient {
         return request("POST", "/v1/uploads", null, file, UUID.randomUUID().toString());
     }
 
+    JSONObject desktop() throws ApiException { return request("GET", "/v1/desktop", null, null, null); }
+    JSONObject capabilities() throws ApiException { return request("GET", "/v1/capabilities", null, null, null); }
+    JSONObject files(String path) throws ApiException {
+        return request("GET", "/v1/files?path=" + encode(path), null, null, null);
+    }
+    static String encode(String value) {
+        try { return java.net.URLEncoder.encode(value, "UTF-8"); }
+        catch (Exception e) { throw new IllegalArgumentException("Invalid path"); }
+    }
+    JSONObject uploadFile(File file, String folder, String name) throws ApiException {
+        if (file.length() > 256L * 1024 * 1024) throw new ApiException("الملف يتجاوز 256 MiB.");
+        return request("POST", "/v1/files/upload?folder=" + encode(folder) + "&name=" + encode(name),
+                null, file, UUID.randomUUID().toString(), "application/octet-stream");
+    }
+    void downloadFile(String path, OutputStream output) throws ApiException {
+        HttpsURLConnection connection = null;
+        try {
+            if (closed) throw new ApiException("انقطع الاتصال.");
+            connection = (HttpsURLConnection) new URL(baseUrl + "/v1/files/download?path=" + encode(path)).openConnection();
+            active.set(connection);
+            connection.setInstanceFollowRedirects(false);
+            connection.setConnectTimeout(10000); connection.setReadTimeout(35000);
+            connection.setRequestProperty("Authorization", "Bearer " + token);
+            int status = connection.getResponseCode();
+            if (status != 200) throw new ApiException("تعذر تنزيل الملف (HTTP " + status + ").", status);
+            long expected = connection.getContentLengthLong();
+            if (expected < 0 || expected > 256L * 1024 * 1024) throw new ApiException("حجم الملف غير صالح أو يتجاوز 256 MiB.");
+            long received = 0;
+            try (InputStream input = connection.getInputStream()) {
+                byte[] buffer = new byte[65536]; int count;
+                while ((count = input.read(buffer)) != -1) {
+                    received += count;
+                    if (closed || received > expected) throw new ApiException("أُلغي التنزيل أو تغير حجم الملف.");
+                    output.write(buffer, 0, count);
+                }
+            }
+            if (received != expected) throw new ApiException("التنزيل غير مكتمل. أعد المحاولة.");
+        } catch (ApiException e) { throw e; }
+        catch (Exception e) { throw new ApiException("تعذر نقل الملف إلى الهاتف؛ قد يوجد ملف جزئي في المكان الذي اخترته."); }
+        finally { if (connection != null) { active.compareAndSet(connection,null); connection.disconnect(); } }
+    }
+
     void close() {
         closed = true;
         HttpsURLConnection connection = active.getAndSet(null);
@@ -79,6 +121,11 @@ final class ApiClient {
     }
 
     private JSONObject request(String method, String path, byte[] bytes, File file, String requestId)
+            throws ApiException {
+        return request(method, path, bytes, file, requestId, "application/zip");
+    }
+
+    private JSONObject request(String method, String path, byte[] bytes, File file, String requestId, String uploadMime)
             throws ApiException {
         HttpsURLConnection connection = null;
         try {
@@ -95,7 +142,7 @@ final class ApiClient {
             if (requestId != null) connection.setRequestProperty("X-Request-ID", requestId);
             if ("POST".equals(method)) {
                 connection.setDoOutput(true);
-                connection.setRequestProperty("Content-Type", file == null ? "application/json; charset=utf-8" : "application/zip");
+                connection.setRequestProperty("Content-Type", file == null ? "application/json; charset=utf-8" : uploadMime);
                 connection.setFixedLengthStreamingMode(file == null ? bytes.length : file.length());
                 try (OutputStream output = connection.getOutputStream()) {
                     if (file == null) {
@@ -107,7 +154,7 @@ final class ApiClient {
                             long written = 0;
                             while ((count = input.read(buffer)) != -1) {
                                 written += count;
-                                if (written > MAX_UPLOAD_BYTES || closed) throw new ApiException("أُلغي إرسال الملف.");
+                                if (written > ("application/zip".equals(uploadMime) ? MAX_UPLOAD_BYTES : 256L * 1024 * 1024) || closed) throw new ApiException("أُلغي إرسال الملف.");
                                 output.write(buffer, 0, count);
                             }
                         }
@@ -127,6 +174,8 @@ final class ApiClient {
             }
             if (status < 200 || status >= 300) {
                 String error = response.optString("error", "");
+                if (status == 404 && (path.startsWith("/v1/desktop") || path.startsWith("/v1/files")))
+                    error = "حدّث برنامج الكمبيوتر إلى نسخة 4.5 أو أحدث لتفعيل التحكم والملفات.";
                 if (error.isEmpty()) error = "تعذر تنفيذ الطلب (HTTP " + status + ").";
                 error = error.replace(token, "[hidden]");
                 throw new ApiException(error.substring(0, Math.min(400, error.length())), status);

@@ -121,6 +121,15 @@ public final class MainActivity extends Activity {
         taskActions.addView(newChatButton, weighted());
         taskActions.addView(attachButton, weighted());
         root.addView(taskActions);
+        LinearLayout computerActions = row();
+        computerActions.addView(button("سطح المكتب", () -> {
+            if (connected) startActivity(new Intent(this, DesktopActivity.class));
+        }), weighted());
+        computerActions.addView(button("ملفات الكمبيوتر", () -> {
+            if (connected) startActivity(new Intent(this, FilesActivity.class));
+        }), weighted());
+        computerActions.addView(button("أمر كمبيوتر", () -> { composer.setText("/computer "); composer.setSelection(composer.length()); composer.requestFocus(); }), weighted());
+        root.addView(computerActions);
         composer = new EditText(this);
         composer.setHint("اكتب طلبك للمساعد…");
         composer.setMinLines(1);
@@ -287,6 +296,14 @@ public final class MainActivity extends Activity {
             String text = event.optString("text", "");
             if ("approval".equals(event.optString("type"))) showApproval(event, text);
             else appendText(text, "المساعد");
+            if (event.has("download_path")) {
+                Button download = button("حفظ الملف على الهاتف", () -> {
+                    if (connected) startActivity(new Intent(this, FilesActivity.class)
+                            .putExtra("download_path", event.optString("download_path"))
+                            .putExtra("download_name", event.optString("download_name", "download")));
+                });
+                transcript.addView(download); trimAndScroll();
+            }
             cursor = id;
         }
         cursor = Math.max(cursor, response.optLong("cursor", cursor));

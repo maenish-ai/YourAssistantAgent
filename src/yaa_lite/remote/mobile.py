@@ -56,7 +56,7 @@ class MobileServer:
         self._last_seen = 0.0
 
     def publish(self, text: str, approval_token: str | None = None, expires_at: float | None = None,
-                clear_approval: bool = False) -> dict:
+                clear_approval: bool = False, download_path=None, download_name=None) -> dict:
         if len(str(text)) > 65536:
             raise MobileServerError('Android message exceeds event limit')
         if approval_token is not None and not _NONCE.fullmatch(approval_token):
@@ -69,6 +69,8 @@ class MobileServer:
                      'text': str(text), 'created_at': time.time()}
             if clear_approval:
                 event['clear_approval'] = True
+            if download_path is not None:
+                event.update(type='file', download_path=str(download_path), download_name=str(download_name or 'download'))
             if approval_token:
                 event.update(token=approval_token, expires_at=float(expires_at or time.time() + 900))
             self._events.append(event)
@@ -144,12 +146,18 @@ class MobileServer:
                 if self._stopping.is_set():
                     if task[0] == 'document':
                         task[1].unlink(missing_ok=True)
+                    elif task[0] == 'file_import':
+                        task[1][0].unlink(missing_ok=True)
                     continue
                 kind, value = task
                 if kind == 'text':
                     self.handler.text(value)
                 elif kind == 'document':
                     self.handler.document(value, '')
+                elif kind == 'desktop_input':
+                    self.handler.desktop_input(value)
+                elif kind == 'file_import':
+                    self.handler.file_import(*value)
                 else:
                     self.handler.callback(value)
             except Exception:
@@ -159,6 +167,8 @@ class MobileServer:
                 self.activity('remote_task_error', f'job={job_id}; operation failed')
                 if task[0] == 'document':
                     task[1].unlink(missing_ok=True)
+                elif task[0] == 'file_import':
+                    task[1][0].unlink(missing_ok=True)
             finally:
                 self._jobs.task_done()
 
@@ -219,6 +229,50 @@ class MobileServer:
                 if not self._authorized():
                     return
                 parsed = urlsplit(self.path)
+                if parsed.path == '/v1/capabilities':
+                    return self._send(200, companion.handler.capabilities())
+                if parsed.path in {'/v1/desktop', '/v1/files', '/v1/files/download'}:
+                    transfer_started = False
+                    try:
+                        companion.handler.check_desktop()
+                        if parsed.path == '/v1/desktop':
+                            return self._send(200, companion.handler.desktop.frame())
+                        query = parse_qs(parsed.query)
+                        relative = query.get('path', [''])[0]
+                        if parsed.path == '/v1/files':
+                            return self._send(200, companion.handler.files.listing(relative))
+                        from .files import MAX_TRANSFER
+                        path = companion.handler.files.resolve(relative, file=True)
+                        # Open first, then size the actual descriptor we stream.
+                        with path.open('rb') as source:
+                            import os
+                            size = os.fstat(source.fileno()).st_size
+                            if size > MAX_TRANSFER:
+                                return self._send(413, {'error': 'File exceeds 256 MiB'})
+                            transfer_started = True
+                            self.send_response(200)
+                            self.send_header('Content-Type', 'application/octet-stream')
+                            self.send_header('Content-Length', str(size))
+                            self.send_header('Cache-Control', 'no-store')
+                            self.send_header('Connection', 'close')
+                            self.end_headers()
+                            self.close_connection = True
+                            remaining = size
+                            while remaining:
+                                chunk = source.read(min(65536, remaining))
+                                if not chunk:break
+                                self.wfile.write(chunk)
+                                remaining -= len(chunk)
+                        return
+                    except (BrokenPipeError, ConnectionResetError):
+                        return
+                    except Exception as exc:
+                        if transfer_started:
+                            self.close_connection = True
+                            return
+                        from .desktop import DesktopError
+                        from .files import FileError
+                        return self._send(400, {'error': str(exc) if isinstance(exc,(DesktopError,FileError)) else 'Desktop/file operation unavailable'})
                 if parsed.path != '/v1/events':
                     return self._send(404, {'error': 'not_found'})
                 try:
@@ -233,7 +287,7 @@ class MobileServer:
                     return self._send(400, {'error': 'invalid_cursor'})
                 self._send(200, companion._snapshot(after))
 
-            def _length(self, maximum: int) -> int | None:
+            def _length(self, maximum: int, allow_empty=False) -> int | None:
                 lengths = self.headers.get_all('Content-Length') or []
                 if self.headers.get('Transfer-Encoding') is not None or len(lengths) != 1 or not re.fullmatch(r'[0-9]{1,10}', lengths[0]):
                     self._send(400, {'error': 'content_length_required'})
@@ -242,7 +296,7 @@ class MobileServer:
                 if length > maximum:
                     self._send(413, {'error': 'payload_too_large'})
                     return None
-                if length == 0:
+                if length == 0 and not allow_empty:
                     self._send(400, {'error': 'empty_payload'})
                     return None
                 return length
@@ -250,24 +304,34 @@ class MobileServer:
             def do_POST(self):
                 if not self._authorized():
                     return
-                path = self.path
-                if path not in {'/v1/messages', '/v1/new-chat', '/v1/uploads', '/v1/approvals'}:
+                parsed = urlsplit(self.path)
+                path = parsed.path
+                if path not in {'/v1/messages', '/v1/new-chat', '/v1/uploads', '/v1/approvals', '/v1/desktop/input', '/v1/desktop/stop', '/v1/files/upload'}:
                     return self._send(404, {'error': 'not_found'})
                 request_id = self.headers.get('X-Request-ID', '')
                 if not _REQUEST_ID.fullmatch(request_id):
                     return self._send(400, {'error': 'request_id_required'})
                 content_type = self.headers.get('Content-Type', '').split(';', 1)[0].strip().lower()
                 is_upload = path == '/v1/uploads'
-                if content_type != ('application/zip' if is_upload else 'application/json'):
+                is_file = path == '/v1/files/upload'
+                if content_type != ('application/octet-stream' if is_file else 'application/zip' if is_upload else 'application/json'):
                     return self._send(415, {'error': 'unsupported_media_type'})
-                length = self._length(MAX_UPLOAD_BYTES if is_upload else MAX_JSON_BYTES)
+                from .files import MAX_TRANSFER
+                length = self._length(MAX_TRANSFER if is_file else MAX_UPLOAD_BYTES if is_upload else MAX_JSON_BYTES, allow_empty=is_file)
                 if length is None:
                     return
                 uploaded = None
                 try:
-                    digest = hashlib.sha256(path.encode('ascii'))
-                    if is_upload:
-                        uploaded = companion.inbox / (secrets.token_hex(16) + '.zip')
+                    digest = hashlib.sha256(self.path.encode('utf-8'))
+                    if is_upload or is_file:
+                        if is_file:
+                            companion.handler.check_desktop()
+                            query = parse_qs(parsed.query, keep_blank_values=True)
+                            if set(query) != {'folder','name'} or any(len(v)!=1 for v in query.values()):raise ValueError()
+                            folder, name = query['folder'][0], query['name'][0]
+                            companion.handler.files.resolve(folder)
+                            companion.handler.files.name(name)
+                        uploaded = companion.inbox / (secrets.token_hex(16) + ('.bin' if is_file else '.zip'))
                         remaining = length
                         with uploaded.open('xb') as output:
                             while remaining:
@@ -277,9 +341,9 @@ class MobileServer:
                                 output.write(block)
                                 digest.update(block)
                                 remaining -= len(block)
-                        if not zipfile.is_zipfile(uploaded):
+                        if is_upload and not zipfile.is_zipfile(uploaded):
                             raise ValueError()
-                        task = ('document', uploaded)
+                        task = ('file_import', (uploaded, folder, name)) if is_file else ('document', uploaded)
                     else:
                         raw = self.rfile.read(length)
                         if len(raw) != length:
@@ -293,6 +357,13 @@ class MobileServer:
                             if set(data) != {'text'} or not isinstance(value, str) or not value.strip() or len(value) > 6000:
                                 raise ValueError()
                             task = ('text', value.strip())
+                        elif path == '/v1/desktop/input':
+                            companion.handler.check_desktop()
+                            task = ('desktop_input', data)
+                        elif path == '/v1/desktop/stop':
+                            if data:raise ValueError()
+                            companion.handler.stop_desktop_task()
+                            return self._send(202, {'job_id': 'stop-requested'})
                         elif path == '/v1/new-chat':
                             if data:
                                 raise ValueError()
@@ -307,7 +378,7 @@ class MobileServer:
                     if uploaded and (status != 202 or payload.get('duplicate')):
                         uploaded.unlink(missing_ok=True)
                     self._send(status, payload)
-                except (ValueError, UnicodeError, json.JSONDecodeError, OSError):
+                except Exception:
                     if uploaded:
                         uploaded.unlink(missing_ok=True)
                     self._send(400, {'error': 'invalid_payload'})
@@ -343,6 +414,8 @@ class MobileServer:
                 break
             if task[0] == 'document':
                 task[1].unlink(missing_ok=True)
+            elif task[0] == 'file_import':
+                task[1][0].unlink(missing_ok=True)
             self._jobs.task_done()
         if self._server:
             self._server.shutdown()

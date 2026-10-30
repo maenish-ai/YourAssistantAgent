@@ -23,6 +23,10 @@ def _self_test() -> int:
     from .security.manager import SecurityManager  # noqa: F401
     from .browser_bridge.server import BrowserBridge  # noqa: F401
     from .ai.runtime import GROQ_MODEL  # noqa: F401
+    if os.name == 'nt':
+        # Verify the UI Automation dependency in source and frozen Windows
+        # builds without capturing the desktop or injecting any input.
+        from pywinauto import Desktop  # noqa: F401
     from .text_first_v300 import is_single_facebook_link  # noqa: F401
     missing = [n for n in ('icon.ico', 'brand_mark_64.png', 'brand_mark_128.png', 'brand_mark_256.png')
                if not asset_path(n).exists()]

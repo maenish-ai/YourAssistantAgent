@@ -43,4 +43,6 @@ def configure_application() -> None:
     # v4.3: reviewed, approved ZIP-to-GitHub publishing via local Git checkout.
     from .github_upload_v430 import apply_v430_ui
     apply_v430_ui()
+    from .workflow_v490 import apply_workflow_v490
+    apply_workflow_v490()
     _CONFIGURED = True

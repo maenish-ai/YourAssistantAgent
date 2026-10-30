@@ -103,6 +103,9 @@ class Settings:
     remote_files_root: str = ""
     remote_files_all_drives: bool = False
     remote_keep_awake: bool = False
+    remote_home_port: int = 8443
+    remote_home_public_url: str = ""
+    remote_home_lan_url: str = ""
     github_repository: str = "maenish-ai/YourAssistantAgent"
     github_checkout: str = ""
 
@@ -174,12 +177,18 @@ class Settings:
         obj.approval_timeout_minutes = max(5, min(int(obj.approval_timeout_minutes), 1440))
         obj.drive_sync_interval_minutes = max(15, min(int(obj.drive_sync_interval_minutes), 1440))
         # Only an explicit boolean opt-in can start the phone connection.
-        if not isinstance(obj.remote_connection_mode,str) or obj.remote_connection_mode not in {"direct","relay"}:obj.remote_connection_mode="direct"
+        if not isinstance(obj.remote_connection_mode,str) or obj.remote_connection_mode not in {"direct","relay","home"}:obj.remote_connection_mode="direct"
         obj.remote_enabled = obj.remote_enabled is True
         obj.remote_desktop_enabled = obj.remote_desktop_enabled is True
         obj.remote_files_all_drives = obj.remote_files_all_drives is True
         obj.remote_keep_awake = obj.remote_keep_awake is True
         obj.remote_ai_enabled = obj.remote_ai_enabled is True and obj.remote_desktop_enabled
+        try:
+            obj.remote_home_port = int(obj.remote_home_port)
+            if not 1024<=obj.remote_home_port<=65535:raise ValueError()
+        except (ValueError,TypeError):
+            obj.remote_home_port=8443
+            if obj.remote_connection_mode=="home":obj.remote_enabled=False
         try:
             obj.remote_port = int(obj.remote_port)
             if not 1024 <= obj.remote_port <= 65535:

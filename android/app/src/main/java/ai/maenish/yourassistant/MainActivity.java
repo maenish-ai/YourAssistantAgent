@@ -69,7 +69,7 @@ public final class MainActivity extends Activity {
             credentials.clear();
             status.setText("تعذر فتح رمز الاقتران المحفوظ. أدخله مجدداً من إعدادات الكمبيوتر.");
         }
-        allowReconnect=credentials.autoConnect() && credentials.url().startsWith("relay+https://");
+        allowReconnect=credentials.autoConnect() && ApiClient.automaticOrigin(credentials.url());
         connectionFields.setVisibility(View.GONE);
         updateButtons();
         if (!allowReconnect && savedInstanceState != null && savedInstanceState.getBoolean("was_connected", false)
@@ -119,12 +119,14 @@ public final class MainActivity extends Activity {
         LinearLayout tasks=row();newChatButton=AppUi.button(this,"محادثة جديدة",this::newChat,false);attachButton=AppUi.button(this,"إرفاق ZIP",this::chooseZip,false);
         tasks.addView(newChatButton,weighted());tasks.addView(attachButton,weighted());root.addView(tasks,AppUi.space(this));
         composer=AppUi.field(this,"اطلب من مساعدك…");composer.setMinLines(1);composer.setMaxLines(3);composer.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE);
-        root.addView(composer,AppUi.space(this));sendButton=button("إرسال الطلب",this::sendText);root.addView(sendButton,AppUi.space(this));
+        root.addView(composer,AppUi.space(this));
+        root.addView(AppUi.label(this,"المحادثة الذكية تستخدم Groq؛ التحكم اليدوي والملفات لهما أزرار منفصلة.",11,true));
+        sendButton=button("إرسال الطلب",this::sendText);root.addView(sendButton,AppUi.space(this));
     }
 
     private void showPairingHelp(){
         new android.app.AlertDialog.Builder(this).setTitle("ربط Windows وAndroid")
-            .setMessage("١. حدّث برنامج Windows وافتح ربط الهاتف.\n٢. استورد ملف إعداد الخادم مرة واحدة. إذا لم يُجهّز الخادم، لن يكون هناك رمز صالح بعد.\n٣. فعّل صلاحيات الشاشة والملفات التي تريدها، ثم اعرض QR وامسحه هنا.\n\nاتصال خارج البيت يحتاج خادماً منشوراً. الكمبيوتر يجب أن يبقى مستيقظاً وبرنامجه مفتوحاً. قطع الاتصال يوقف هذا الهاتف؛ تغيير المفتاح من الكمبيوتر يلغي الاقتران.")
+            .setMessage("١. افتح ربط الهاتف في برنامج Windows واختر الاستضافة على هذا الكمبيوتر.\n٢. فعّل الاتصال والصلاحيات ثم امسح QR داخل شبكة البيت أول مرة.\n٣. للوصول من خارج البيت أضف عنوان HTTPS العام وافتح منفذ البرنامج في راوتر البيت. إذا كان الاتصال خلف CGNAT ولا يوجد IPv6 متاح، لا يمكن الوصول المباشر من الخارج.\n\nالكمبيوتر يستضيف الاتصال بنفسه ويجب أن يبقى مستيقظاً وبرنامجه مفتوحاً. قطع الاتصال يوقف هذا الهاتف؛ تغيير المفتاح من الكمبيوتر يلغي الاقتران.")
             .setPositiveButton("فهمت",null).show();
     }
 
@@ -160,7 +162,7 @@ public final class MainActivity extends Activity {
         final String token = tokenField.getText().toString().trim();
         try { client = new ApiClient(url, token); }
         catch (ApiClient.ApiException e) { status.setText(e.getMessage()); return; }
-        allowReconnect=url.startsWith("relay+https://");
+        allowReconnect=ApiClient.automaticOrigin(url);
         credentials.autoConnect(allowReconnect);
         disconnect(false);
         api = client;
@@ -439,8 +441,11 @@ public final class MainActivity extends Activity {
         try{
             if(raw.length()>2048)throw new Exception();
             JSONObject code=new JSONObject(raw);
-            if(!"yaa-relay".equals(code.optString("type"))||code.optInt("v")!=1)throw new Exception();
-            String address="relay+"+code.getString("url"),secret=code.getString("token");
+            if(code.optInt("v")!=1)throw new Exception();
+            String address,secret=code.getString("token");
+            if("yaa-direct".equals(code.optString("type")))address=new HomeProfile(code).encode();
+            else if("yaa-relay".equals(code.optString("type")))address="relay+"+code.getString("url");
+            else throw new Exception();
             ApiClient validation=new ApiClient(address,secret);validation.close();
             credentials.save(address,secret);credentials.autoConnect(true);
             serverField.setText(address);tokenField.setText(secret);allowReconnect=true;

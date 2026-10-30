@@ -5,7 +5,7 @@ import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit, quote
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
@@ -50,13 +50,13 @@ class FacebookConfig:
 
 class FacebookAutomation:
     """
-    Facebook integration with two deliberately separate modes:
+    Facebook integration using a dedicated persistent browser profile.
 
-    1) Manual login: opens the user's installed Chromium browser directly, with
-       the agent's dedicated persistent profile, without Playwright. Password,
-       2FA and any Facebook challenge stay fully manual.
-    2) Automation: after the saved session is verified, Playwright reuses the
-       same dedicated profile for scheduled work. Chromium sandbox is enabled.
+    The interactive workflow keeps one visible Playwright context for owner
+    login and subsequent actions. Password, 2FA and challenges stay manual.
+    The older direct-launch login entry remains for compatibility; it must
+    release the profile before Playwright can use it. Chromium sandbox stays
+    enabled for the controlled workflow.
 
     No stealth, CAPTCHA solving/bypass, proxy rotation, or anti-detection
     features are used.
@@ -217,6 +217,22 @@ class FacebookAutomation:
     def open_login(self):
         return self.open_manual_login()
 
+    def open_interactive(self):
+        """Keep the same visible profile open for login and later automation."""
+        self.manual_login_active=False
+        self.start()
+        self.page.goto(self.FACEBOOK_HOME,wait_until='domcontentloaded',timeout=30000)
+        self.page.bring_to_front()
+        return self.connection_status()
+
+    def interactive_status(self):
+        self.manual_login_active=False
+        self.start()
+        if 'facebook.com' not in (self.page.url or ''):
+            self.page.goto(self.FACEBOOK_HOME,wait_until='domcontentloaded',timeout=30000)
+        self._check_checkpoint()
+        return self.connection_status()
+
     def start(self):
         if self.manual_login_active:
             raise ManualLoginInProgress(
@@ -295,15 +311,14 @@ class FacebookAutomation:
         try:
             pages = self.context.pages
             urls = [(p.url or "").lower() for p in pages]
-            verification_fragments = (
-                "checkpoint",
-                "two_step_verification",
-                "two-factor",
-                "confirm_identity",
-                "security_check",
-            )
-            if any(any(fragment in url for fragment in verification_fragments) for url in urls):
+            if any(re.match(r'^/(?:checkpoint|two_step_verification|two-factor|confirm_identity|security_check)(?:/|$)',urlsplit(url).path) for url in urls):
                 return "verification_required"
+            if any(re.match(r'^/(?:login|recover|reg)(?:/|\.|$)',urlsplit(url).path) for url in urls):return 'not_connected'
+            for page in pages:
+                try:
+                    login=page.locator("input[name='email'],input[name='pass']")
+                    if login.count() and login.first.is_visible(timeout=500):return 'not_connected'
+                except (AttributeError,PlaywrightTimeoutError):pass
 
             cookies = self.context.cookies(["https://www.facebook.com", "https://facebook.com"])
             if any(c.get("name") == "c_user" and c.get("value") for c in cookies):
@@ -342,7 +357,11 @@ class FacebookAutomation:
             "checkpoint", "security check", "confirm your identity", "two-factor authentication",
             "two_step_verification", "التحقق من الأمان", "تأكيد هويتك", "المصادقة الثنائية", "تحقق من هويتك",
         ]
-        if any(x in url or x in body for x in checkpoint_words):
+        path=urlsplit(url).path
+        challenge_url=bool(re.match(r'^/(?:checkpoint|two_step_verification|two-factor|confirm_identity|security_check)(?:/|$)',path))
+        # A feed post discussing security is not an authentication challenge.
+        short_challenge=len(body)<1200 and any(body.strip().startswith(x) for x in checkpoint_words)
+        if challenge_url or short_challenge:
             raise CheckpointDetected("Facebook requested a security/checkpoint step; manual action is required.")
 
     def ensure_logged_in(self):
@@ -371,13 +390,29 @@ class FacebookAutomation:
         seen = set()
 
         for _ in range(4):
-            hrefs = self.page.locator("a[href]").evaluate_all("els => els.map(e => e.href)")
-            for href in hrefs:
-                if not isinstance(href, str) or "facebook.com" not in href:
-                    continue
-                if not re.search(r"/(posts|videos|reel|photo(?:s)?)/", href):
-                    continue
-                clean = self._clean_facebook_url(href)
+            from .post_links import canonical_post_url
+            hrefs = self.page.locator("a[href]").evaluate_all("""els => {
+                const articles=new Map();
+                return els.map(e=>{
+                    const article=e.closest('[role="article"],[data-pagelet^="FeedUnit"]');
+                    if(article&&!articles.has(article))articles.set(article,articles.size);
+                    const pinned=!!article?.querySelector('[aria-label="Pinned post"],[aria-label="منشور مثبت"]');
+                    return {url:e.href,article:article?articles.get(article):null,pinned};
+                });
+            }""")
+            rows=[row for row in hrefs if isinstance(row,dict) and not row.get('pinned')]
+            if any(row.get('article') is not None for row in rows):rows=[row for row in rows if row.get('article') is not None]
+            grouped={}
+            source_path=urlsplit(page_url).path.rstrip('/')
+            own_prefix=source_path+'/' if source_path and '.php' not in source_path else None
+            has_own=bool(own_prefix and any((canonical_post_url(row.get('url')) or '').startswith('https://www.facebook.com'+own_prefix) for row in rows))
+            for index,row in enumerate(rows):
+                clean=canonical_post_url(row.get('url'))
+                if not clean:continue
+                if has_own and not clean.startswith('https://www.facebook.com'+own_prefix):continue
+                key=row.get('article') if row.get('article') is not None else 'link-'+str(index)
+                if key not in grouped or ('/posts/' in clean and '/posts/' not in grouped[key]):grouped[key]=clean
+            for clean in grouped.values():
                 if clean not in seen:
                     seen.add(clean)
                     urls.append(clean)
@@ -386,6 +421,30 @@ class FacebookAutomation:
             self.page.mouse.wheel(0, 1200)
             self.page.wait_for_timeout(1200)
         return urls
+
+    def search_pages(self,query,limit=10):
+        self.ensure_logged_in()
+        self.page.goto('https://www.facebook.com/search/pages/?q='+quote(query),wait_until='domcontentloaded',timeout=30000)
+        self._check_checkpoint();self.page.wait_for_timeout(1500)
+        links=self.page.locator('[role="main"] a[href]').evaluate_all("els => els.map(e => ({name:(e.innerText||e.getAttribute('aria-label')||'').trim(),url:e.href}))")
+        reserved={'search','groups','watch','reel','videos','marketplace','gaming','login','settings','help','friends','bookmarks','notifications','events','me','stories'}
+        found=[];seen=set()
+        for item in links:
+            name=' '.join(str(item.get('name') or '').split());raw=str(item.get('url') or '')
+            parsed=urlsplit(raw);parts=parsed.path.strip('/').split('/')
+            if not name or not parts[0] or parts[0].lower() in reserved:continue
+            if parsed.scheme!='https' or not ((parsed.hostname or '')=='facebook.com' or (parsed.hostname or '').endswith('.facebook.com')):continue
+            if len(parts)>1 and parts[0] not in ('people','pages'):continue
+            if parts[0]=='profile.php':
+                from urllib.parse import parse_qs
+                identifier=parse_qs(parsed.query).get('id',[''])[0]
+                if not identifier.isdigit():continue
+                url='https://www.facebook.com/profile.php?id='+identifier
+            else:url=urlunsplit(('https','www.facebook.com',parsed.path.rstrip('/'),'',''))
+            if url in seen:continue
+            seen.add(url);found.append({'name':name[:200],'url':url})
+            if len(found)>=max(1,min(int(limit),20)):break
+        return found
 
     def post_link_to_group(self, group_url: str, post_url: str, message_prefix: str = ""):
         self.start()

@@ -50,7 +50,8 @@ def setup(tmp_path, monkeypatch):
     service = FacebookService(db, settings)
     monkeypatch.setattr(service, '_make_fb', lambda: browser)
     monkeypatch.setattr(service._task_cancel_event, 'wait', lambda timeout: False)
-    return db, settings, service, browser
+    yield db, settings, service, browser
+    service.shutdown()
 
 
 def snapshot_rule(db, service, *, post_count=4, **overrides):

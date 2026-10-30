@@ -29,6 +29,7 @@ public class AppScreensTest {
             assertFalse(text(activity,"سطح المكتب").isEnabled());assertFalse(text(activity,"الملفات").isEnabled());
             assertFalse(text(activity,"إرسال الطلب").isEnabled());
             assertNotEquals(0,activity.getApplicationInfo().icon);
+            assertNotNull(text(activity,"المحادثة الذكية تستخدم Groq؛ التحكم اليدوي والملفات لهما أزرار منفصلة."));
         }
     }
     @Test public void desktopLaunchesAndKeyboardCanBeExpandedWithoutAConnection(){

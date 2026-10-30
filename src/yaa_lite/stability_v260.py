@@ -106,7 +106,7 @@ def facebook_page_ambiguous(text):
     if re.search(r'(?:جروب|قروب|مجموعات|\bgroups?\b)', s):
         return False
     has_page = bool(re.search(r'(?:صفحت[يها]?|صفحة|page|البيدج)', s))
-    possible_edit = bool(re.search(r'(?:هايلايت|هايلات|highlight|ستلايت|الستلايت|story|ستوري|تثبيت|ثبّت|بين|pin|غلاف|بوست|منشور|إعلان|اعلان|الاعلان|الإعلان)', s))
+    possible_edit = bool(re.search(r'(?:هايلايت|هايلات|highlight|ستلايت|الستلايت|story|ستوري|تثبيت|ثبت|ثبّت|\bpin\b|غلاف|\bcover\b)', s))
     explicit_action = bool(re.search(r'(?:سو[يّ]|اعمل|اعملي|خلّي|حط|عدّل|ثبت|انشر|نزّل|create|make|pin|post)', s))
     return has_page and possible_edit and explicit_action
 

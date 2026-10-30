@@ -89,6 +89,7 @@ def capture_wav(
     level_callback: Callable[[float], None] | None = None,
     *,
     diagnostic_seconds: float | None = None,
+    finish_event: threading.Event | None = None,
     sd=None,
 ) -> CaptureReport:
     """Capture an input WAV using bounded memory and soft speech detection.
@@ -102,11 +103,11 @@ def capture_wav(
     rate = device.samplerate
     frames_per_block = max(160, int(rate * .05))
     seconds_per_block = frames_per_block / rate
-    max_seconds = max(1.0, min(5.0, float(diagnostic_seconds))) if diagnostic_seconds else 16.0
+    max_seconds = max(1.0, min(5.0, float(diagnostic_seconds))) if diagnostic_seconds else 30.0
     max_blocks = math.ceil(max_seconds / seconds_per_block)
     start_blocks = math.ceil(6.0 / seconds_per_block)
     min_speech_blocks = math.ceil(1.2 / seconds_per_block)
-    end_silence_blocks = math.ceil(.85 / seconds_per_block)
+    end_silence_blocks = math.ceil(1.15 / seconds_per_block)
     captured: list[bytes] = []
     levels: list[int] = []
     speech_started = False
@@ -120,6 +121,7 @@ def capture_wav(
                 if cancel_event.is_set():
                     from .cloud_service import VoiceCancelled
                     raise VoiceCancelled('تم إيقاف تسجيل الصوت.')
+                if finish_event is not None and finish_event.is_set() and captured:break
                 raw, _overflow = stream.read(frames_per_block)
                 chunk = bytes(raw)
                 if not chunk:

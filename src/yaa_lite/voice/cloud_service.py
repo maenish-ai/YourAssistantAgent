@@ -71,6 +71,11 @@ class CloudVoiceService:
     def __init__(self, settings):
         self.settings = settings
         self.cancel_event = threading.Event()
+        self.finish_event = threading.Event()
+
+    def finish(self):
+        """Finish the current recording and transcribe its tail; do not cancel it."""
+        self.finish_event.set()
 
     def cancel(self) -> None:
         self.cancel_event.set()
@@ -99,10 +104,10 @@ class CloudVoiceService:
         except Exception:
             return 0
 
-    def _record_wav(self, path: Path, level_callback: LevelCallback | None = None) -> None:
+    def _record_wav(self, path: Path, level_callback: LevelCallback | None = None):
         from .capture_v280 import capture_wav
         try:
-            capture_wav(path, self.settings, self.cancel_event, level_callback)
+            return capture_wav(path, self.settings, self.cancel_event, level_callback,finish_event=self.finish_event)
         except VoiceCancelled:
             raise
         except Exception as exc:
@@ -111,47 +116,56 @@ class CloudVoiceService:
     def listen_once(self, level_callback: LevelCallback | None = None, mode: str = "dictation") -> str:
         with tempfile.TemporaryDirectory(prefix="yaa_cloud_voice_") as td:
             wav = Path(td) / "input.wav"
-            self._record_wav(wav, level_callback=level_callback)
-            if self.cancel_event.is_set():
-                raise VoiceCancelled("Voice listening cancelled.")
-            key = get_groq_api_key(required=True)
-            try:
-                with wav.open("rb") as f:
-                    response = requests.post(
-                        self.STT_URL,
-                        headers={
-                            "Authorization": f"Bearer {key}",
-                            "User-Agent": "YourAssistantAgent/2.5",
-                        },
-                        files={"file": ("input.wav", f, "audio/wav")},
-                        data={
-                            "model": self.STT_MODEL_LIVE if mode == "live" else self.STT_MODEL,
-                            "language": "ar",
-                            "prompt": self.STT_PROMPT_AR,
-                            "response_format": "json",
-                            "temperature": "0",
-                        },
-                        timeout=(4, 12) if mode == "live" else (5, 20),
-                    )
-            except requests.RequestException as exc:
-                raise VoiceError(f"تعذر الاتصال بخدمة فهم الصوت: {exc}") from exc
+            report=self._record_wav(wav, level_callback=level_callback)
+            if report and (report.duration<.2 or report.peak_rms<35):raise VoiceError('ما سمعت كلام واضح؛ لم أضف نصاً من الصمت.')
+            if self.cancel_event.is_set():raise VoiceCancelled('Voice listening cancelled.')
+            return self.transcribe_file(wav,mode=mode)
 
-            if response.status_code == 401:
-                raise VoiceError("GroqCloud رفض مفتاح API. راجع GROQ_API_KEY.")
-            if response.status_code == 429:
-                raise VoiceError("وصلت للحد المجاني للصوت مؤقتًا. جرّب بعد قليل.")
-            if not response.ok:
-                raise VoiceError(f"فشل فهم الصوت (HTTP {response.status_code}).")
+    def transcribe_file(self,path: Path,*,mode='dictation',mime='audio/wav'):
+        key = get_groq_api_key(required=True)
+        try:
+            with Path(path).open("rb") as f:
+                response = requests.post(
+                    self.STT_URL,
+                    headers={
+                        "Authorization": f"Bearer {key}",
+                        "User-Agent": "YourAssistantAgent/2.5",
+                    },
+                    files={"file": (Path(path).name, f, mime)},
+                    data={
+                        "model": self.STT_MODEL_LIVE if mode == "live" else self.STT_MODEL,
+                        "language": "ar",
+                        "prompt": self.STT_PROMPT_AR,
+                        "response_format": "verbose_json",
+                        "temperature": "0",
+                    },
+                    timeout=(4, 12) if mode == "live" else (5, 35),
+                )
+        except requests.RequestException as exc:
+            raise VoiceError(f"تعذر الاتصال بخدمة فهم الصوت: {exc}") from exc
 
-            try:
-                text = str(response.json().get("text") or "")
-            except Exception as exc:
-                raise VoiceError("وصل رد غير صالح من خدمة فهم الصوت.") from exc
+        if response.status_code == 401:
+            raise VoiceError("GroqCloud رفض مفتاح API. راجع GROQ_API_KEY.")
+        if response.status_code == 429:
+            raise VoiceError("وصلت للحد المجاني للصوت مؤقتًا. جرّب بعد قليل.")
+        if not response.ok:
+            raise VoiceError(f"فشل فهم الصوت (HTTP {response.status_code}).")
 
-            text = " ".join(text.split()).strip()
-            if not text:
-                raise VoiceError("سمعت الصوت، لكن ما قدرت أفهم الكلام. جرّب مرة ثانية.")
-            return text
+        try:
+            payload=response.json()
+            text = str(payload.get('text') or '')
+            segments=payload.get('segments')
+            if isinstance(segments,list) and segments:
+                supported=any(isinstance(segment,dict) and float(segment.get('no_speech_prob',0))<.85 and float(segment.get('avg_logprob',0))>-1.5 for segment in segments)
+                if not supported:raise VoiceError('ما سمعت كلام واضح؛ أعد الجملة دون ضجيج.')
+        except VoiceError:raise
+        except Exception as exc:
+            raise VoiceError("وصل رد غير صالح من خدمة فهم الصوت.") from exc
+
+        text = " ".join(text.split()).strip()
+        if not text:
+            raise VoiceError("سمعت الصوت، لكن ما قدرت أفهم الكلام. جرّب مرة ثانية.")
+        return text
 
     @classmethod
     def _split_tts_text(cls, text: str) -> list[str]:

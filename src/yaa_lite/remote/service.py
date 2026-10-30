@@ -335,7 +335,7 @@ class RemoteAssistant:
 
 
 def build_remote_worker(settings, security, db, runtime, facebook, activity=None):
-    """Build a loopback listener only after the app has been unlocked."""
+    """Build the owner-enabled companion only after the app has been unlocked."""
     if not getattr(settings, 'remote_enabled', False):
         return None
     from .settings import load_remote_token
@@ -357,12 +357,23 @@ def build_remote_worker(settings, security, db, runtime, facebook, activity=None
                                 lambda text, **kwargs: holder['server'].publish(text, **kwargs),
                                 root, activity=activity)
     try:
-        server = MobileServer(token, assistant, inbox, port=int(settings.remote_port), activity=activity,
-                              keep_awake=getattr(settings,'remote_keep_awake',False))
+        home=getattr(settings,'remote_connection_mode','direct')=='home'
+        options={}
+        if home:
+            from .home import tls_context,endpoint,bind_address
+            context,_=tls_context(security)
+            public=getattr(settings,'remote_home_public_url','')
+            if public:endpoint(public)
+            options={'bind':bind_address(),'tls_context':context}
+        server = MobileServer(token, assistant, inbox, port=int(settings.remote_home_port if home else settings.remote_port), activity=activity,
+                              keep_awake=getattr(settings,'remote_keep_awake',False),**options)
     except Exception:
         assistant.close()
         raise
     holder['server'] = server
+    if home:
+        from .home import HomeWorker
+        return HomeWorker(server)
     if getattr(settings,'remote_connection_mode','direct')=='relay':
         from .relay_bridge import RelayWorker
         from .settings import load_relay_enrollment

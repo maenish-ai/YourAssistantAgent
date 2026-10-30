@@ -47,21 +47,24 @@ def test_fast_discovery_saves_results_and_does_not_fallback_to_slow_browser():
         def upsert_groups(self,rows):
             assert len(rows)==1
             return 1
-    class FB:
-        browser_bridge=Bridge()
-        db=DB()
-        def activity(self,*args): pass
-    ok,msg,count=fast_refresh_groups(FB())
-    assert ok and count==1 and 'تبويب' in msg
+    from yaa_lite.agent.facebook_service import FacebookService
+    from yaa_lite.config import Settings
+    service=FacebookService(DB(),Settings(),activity=lambda *args:None,browser_bridge=Bridge())
+    ok,msg,count=fast_refresh_groups(service)
+    assert ok and count==1 and service._fb is None
 
 
 def test_fast_status_does_not_claim_verified_if_only_cached():
     class Bridge:
         connected=False
+    from yaa_lite.agent.facebook_service import FacebookActionResult
     class FB:
         browser_bridge=Bridge()
         def status_code(self): return 'connected'
-    assert 'آخر فحص محفوظ' in fast_check_facebook(FB())
+        def verify_session(self):return FacebookActionResult(False,'لم أتأكد من الاتصال الحالي')
+        def open_manual_login(self):return FacebookActionResult(True,'فتحت صفحة Facebook')
+    text=fast_check_facebook(FB())
+    assert 'لم أتأكد' in text and 'فتحت صفحة' in text
 
 
 def test_voice_models_split_accuracy_and_speed_without_local_download():

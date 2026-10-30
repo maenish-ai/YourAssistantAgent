@@ -13,17 +13,19 @@ import webbrowser
 from tkinter import ttk
 
 from .voice.cloud_service import CloudVoiceService, VoiceCancelled
+from .agent.intent import normalized_command,explicit_example_only
 
 _INSTALLED = False
 _STREAM_PREFIX = "__YAA_STREAM_V250__:"
 
-_FB_OPEN = re.compile(r"^\s*(?:افتح|فتح|شغل|شغّل|open|launch)\s+(?:ال)?(?:فيس\s*بوك|فيسبوك|facebook)(?:\s+عندي|\s+الآن|\s+now)?\s*[.!؟]?$", re.I)
-_FB_REFRESH = re.compile(r"^\s*(?:حدث|حدّث|تحديث|جدد|جدّد|refresh|update|زامن)\s+(?:قائمة\s+)?(?:ال)?(?:مجموعات|جروبات|groups)(?:\s+(?:الفيس\s*بوك|فيسبوك|facebook|عندي))?(?:\s+(?:الآن|now))?\s*[.!؟]?$", re.I)
+_FB_OPEN = re.compile(r"^\s*(?:افتح(?:لي)?|فتح|شغل|فوت(?:ني)?|ادخل(?:ني)?|وديني|روح|open|launch)\s+(?:لي\s+)?(?:على\s+|ع\s*)?(?:ال)?(?:فيس\s*بوك|فيسبوك|facebook)(?:\s+عندي|\s+الان|\s+now)?\s*[.!؟]?$", re.I)
+_FB_REFRESH = re.compile(r"^\s*(?:حدث|حدّث|تحديث|جدد|جدّد|تعرف على|تعرّف على|اكتشف|جيب لي|شوف لي|refresh|update|discover|زامن)\s+(?:قائمة\s+)?(?:ال)?(?:مجموعات|جروبات|groups)(?:\s+(?:الفيس\s*بوك|فيسبوك|facebook|عندي))?(?:\s+(?:الآن|now))?\s*[.!؟]?$", re.I)
 _FB_CHECK = re.compile(r"(?:افحص|فحص|تحقق|شيك|تأكد|check|verify).{0,28}(?:فيس\s*بوك|فيسبوك|facebook)|(?:حالة|اتصال|status|connection).{0,20}(?:فيس\s*بوك|فيسبوك|facebook)", re.I)
 
 
 def fast_facebook_intent(text: str) -> str | None:
-    text = " ".join(str(text or "").strip().split())
+    text = normalized_command(text)
+    if explicit_example_only(text):return None
     # The dedicated publishing profile must not be checked/opened through the
     # normal extension connection by the generic Facebook fast path.
     if re.search(r'publishing|managed|النشر|المُدار|المدار', text, re.I):
@@ -32,7 +34,7 @@ def fast_facebook_intent(text: str) -> str | None:
         return "open"
     if _FB_REFRESH.fullmatch(text):
         return "refresh"
-    if _FB_CHECK.search(text):
+    if _FB_CHECK.search(text) and not re.search(r'منشور|بوست|اعلان|إعلان|جروب|مجموعات|صفحة|\bposts?\b|\bgroups?\b',text):
         return "check"
     return None
 
@@ -47,37 +49,9 @@ def _install_discovery_bridge() -> None:
 
 
 def fast_refresh_groups(fb, limit=120, deep=False):
-    """Refresh through the installed extension, never boot Playwright implicitly."""
-    bridge = getattr(fb, "browser_bridge", None)
-    if not bridge or not bridge.connected:
-        return False, "إضافة المتصفح مش متصلة. افتح Edge وتأكد أن إضافة Your Assistant Agent مفعلة، ثم جرّب تحديث المجموعات.", 0
-    try:
-        response = bridge.execute("discover_facebook_groups", limit=limit, deep=deep,
-                                  timeout=55 if deep else 15)
-    except TimeoutError:
-        return False, "تحديث المجموعات تجاوز المهلة المحددة وتوقف الانتظار. جرّب مرة ثانية.", 0
-    except Exception as exc:
-        return False, f"ما قدرت أحدث المجموعات من إضافة Edge: {type(exc).__name__}", 0
-    if not response.get("ok"):
-        return False, f"تعذر تحديث المجموعات: {response.get('error', 'تعذر قراءة صفحة المجموعات')}", 0
-    groups = []
-    for raw in response.get("groups") or []:
-        if not isinstance(raw, dict):
-            continue
-        url = str(raw.get("url") or "").strip()
-        name = str(raw.get("name") or "").strip()
-        if name and re.match(r"^https://(?:www\.)?facebook\.com/groups/[^/?#]+", url, re.I):
-            groups.append({"name": name[:180], "url": url, "tags": ""})
-    if not groups:
-        return False, "خلص الفحص السريع لكن ما لقيت مجموعات واضحة؛ ما مسحت المجموعات القديمة.", 0
-    try:
-        saved = fb.db.upsert_groups(groups)
-        fb._last_status = "connected"
-        fb._last_backend = "normal-browser-extension"
-        fb.activity("facebook_groups_fast_refreshed", f"discovered={len(groups)}; saved={saved}")
-        return True, f"حدّثت المجموعات بسرعة: عثرت على {len(groups)} وحفظت {saved}. تم إغلاق تبويب الفحص المؤقت.", len(groups)
-    except Exception as exc:
-        return False, f"قرأت المجموعات، لكن لم أقدر أحفظها: {type(exc).__name__}", 0
+    """Use the connected browser, falling back to the app controlled session on request."""
+    result=fb.discover_groups(limit=limit,deep=deep)
+    return result.ok,result.message,result.count
 
 
 def fast_check_facebook(fb):
@@ -92,31 +66,21 @@ def fast_check_facebook(fb):
                 return "Facebook متصل ✅ (فحص مباشر من المتصفح)."
             if state == "not_connected":
                 fb._last_status = "not_connected"
-                return "Facebook مش مسجل دخول حاليًا. افتح Facebook وسجل الدخول يدويًا ثم أعد الفحص."
+                return "Facebook يحتاج تسجيل الدخول. "+fb.open_manual_login().message
             fb._last_status = "error"
             if state == "checkpoint":
                 return "Facebook يطلب تحققًا أمنيًا. افتحه وأكمل التحقق يدويًا ثم أعد الفحص."
             return "إضافة المتصفح متصلة، لكن لم أتمكن من التحقق من جلسة Facebook. افتحه ثم أعد الفحص."
         except Exception:
             pass
-    code = fb.status_code() if hasattr(fb, "status_code") else "not_checked"
-    if code == "connected":
-        return "آخر فحص محفوظ: Facebook متصل. تعذر التأكد الآن مباشرة من إضافة المتصفح."
-    return "ما قدرت أتأكد من الاتصال بسرعة. افتح Edge وتأكد أن إضافة Your Assistant Agent متصلة؛ ما رح أفتح تسجيل الدخول تلقائيًا."
+    result=fb.verify_session()
+    if result.ok:return result.message
+    opened=fb.open_manual_login()
+    return result.message+'\n'+opened.message
 
 
 def fast_open_facebook(fb):
-    bridge = getattr(fb, "browser_bridge", None)
-    if bridge and bridge.connected:
-        try:
-            result = bridge.execute("open_url", url="https://www.facebook.com/", active=True, timeout=4)
-            if result.get("ok"):
-                return "فتحت Facebook في Edge ✅. تقدر تتابع استخدام المساعد فورًا."
-        except Exception:
-            pass
-    ok = webbrowser.open("https://www.facebook.com/", new=2)
-    return ("أرسلت طلب فتح Facebook للمتصفح ✅، ومش رح أظل أنتظر تحميل الصفحة." if ok
-            else "تعذر فتح Facebook تلقائيًا. افتحه من المتصفح ثم جرب مجددًا.")
+    return fb.open_manual_login().message
 
 
 def _install_facebook_fast_paths() -> None:

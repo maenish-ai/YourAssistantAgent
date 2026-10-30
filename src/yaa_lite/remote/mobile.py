@@ -1,8 +1,8 @@
-"""Authenticated loopback API for the Android companion.
+"""Authenticated Android API with loopback and explicit personal HTTPS modes.
 
-A local HTTPS reverse proxy (for example Tailscale Serve) supplies the external
-connection. This module never listens on a LAN/public interface and does not
-execute application tasks on HTTP request threads.
+Legacy mode stays on loopback for an owner's reverse proxy. Personal hosting
+binds the home interfaces only with a TLS context. Application tasks are queued
+rather than executed by HTTP request threads.
 """
 from __future__ import annotations
 
@@ -15,6 +15,9 @@ from pathlib import Path
 import queue
 import re
 import secrets
+import socket
+import ssl
+import sys
 import threading
 import time
 from urllib.parse import parse_qs, urlsplit
@@ -33,7 +36,7 @@ class MobileServerError(RuntimeError):
 
 
 class MobileServer:
-    def __init__(self, token: str, handler, inbox: Path, port: int = 8766, activity=None, keep_awake=False):
+    def __init__(self, token: str, handler, inbox: Path, port: int = 8766, activity=None, keep_awake=False, bind='127.0.0.1', tls_context=None):
         if not isinstance(token, str) or not _TOKEN.fullmatch(token):
             raise MobileServerError('Invalid Android pairing token')
         if not 0 <= int(port) <= 65535:
@@ -42,6 +45,9 @@ class MobileServer:
         self.handler = handler
         self.inbox = Path(inbox)
         self.port = int(port)
+        if bind not in ('127.0.0.1','0.0.0.0','::') or (bind!='127.0.0.1' and tls_context is None):
+            raise MobileServerError('Non-loopback connections require HTTPS')
+        self.bind,self.tls_context=bind,tls_context
         self.activity = activity or (lambda *_: None)
         from .power import AwakeGuard
         self._power = AwakeGuard(keep_awake, activity=self.activity)
@@ -184,6 +190,8 @@ class MobileServer:
 
         class Handler(BaseHTTPRequestHandler):
             protocol_version = 'HTTP/1.1'
+            server_version = 'YourAssistant'
+            sys_version = ''
 
             def setup(self):
                 super().setup()
@@ -387,9 +395,27 @@ class MobileServer:
 
         class Server(ThreadingHTTPServer):
             daemon_threads = True
+            address_family=socket.AF_INET6 if ':' in companion.bind else socket.AF_INET
+            def server_bind(self):
+                if self.address_family==socket.AF_INET6:
+                    self.socket.setsockopt(socket.IPPROTO_IPV6,socket.IPV6_V6ONLY,0)
+                super().server_bind()
+            def handle_error(self,request,address):
+                if not isinstance(sys.exc_info()[1],(ConnectionError,ssl.SSLError,TimeoutError)):
+                    companion.activity("remote_transport_error",type(sys.exc_info()[1]).__name__)
+            def process_request(self,request,address):
+                if not self.slots.acquire(blocking=False):request.close();return
+                try:super().process_request(request,address)
+                except Exception:self.slots.release();raise
+            def process_request_thread(self,request,address):
+                try:super().process_request_thread(request,address)
+                finally:self.slots.release()
 
         try:
-            self._server = Server(('127.0.0.1', self.port), Handler)
+            self._server = Server((self.bind, self.port), Handler)
+            self._server.slots=threading.BoundedSemaphore(32)
+            if self.tls_context:
+                self._server.socket=self.tls_context.wrap_socket(self._server.socket,server_side=True,do_handshake_on_connect=False)
         except OSError as exc:
             raise MobileServerError('Android companion port is unavailable') from exc
         self.port = self._server.server_address[1]
@@ -399,7 +425,7 @@ class MobileServer:
         self._worker.start()
         self._http_thread.start()
         self._power.start()
-        self.activity('remote_started', f'Android loopback companion:127.0.0.1:{self.port}')
+        self.activity('remote_started', f'Android companion port:{self.port}, TLS:{self.tls_context is not None}')
         return True
 
     def stop(self) -> None:

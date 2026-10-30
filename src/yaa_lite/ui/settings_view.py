@@ -15,12 +15,13 @@ from . import theme
 class SettingsView(ttk.Frame):
     """ChatGPT-style Settings: category rail on the left, one-language content on the right."""
 
-    def __init__(self, master, settings: Settings, on_save, security: SecurityManager | None = None, remote_status=None):
+    def __init__(self, master, settings: Settings, on_save, security: SecurityManager | None = None, remote_status=None, remote_ready=None):
         super().__init__(master, padding=0)
         self.settings = settings
         self.on_save = on_save
         self.security = security
         self.remote_status = remote_status
+        self.remote_ready = remote_ready
         self.language = settings.interface_language
         self.vars: dict[str, tk.Variable] = {}
         self.entries: dict[str, ttk.Entry] = {}
@@ -136,6 +137,12 @@ class SettingsView(ttk.Frame):
     def _row_check(self,box,row,label,name,value):
         v=self._bool(name,value);ttk.Checkbutton(box,text=label,variable=v).grid(row=row,column=0,columnspan=2,sticky="w",pady=6);return v
 
+    def _stack_entry(self,box,row,label,name,value):
+        ttk.Label(box,text=label,wraplength=500).grid(row=row,column=0,columnspan=2,sticky='w',pady=(8,3))
+        variable=self._str(name,value);entry=ttk.Entry(box,textvariable=variable,width=24)
+        entry.grid(row=row+1,column=0,columnspan=2,sticky='ew',pady=(0,6));self.entries[name]=entry
+        return entry
+
     def show_category(self,key):
         self.current=key;self._clear();titles={
             "general":self.t("عام","General"),"ai":self.t("Hammer والذكاء","AI & Hammer"),"facebook":"Facebook","backup":self.t("النسخ الاحتياطي","Backup"),
@@ -191,6 +198,66 @@ class SettingsView(ttk.Frame):
         ttk.Button(g,text=self.t("اختيار المجلد", "Choose folder"),command=self._choose_github_checkout).grid(row=3,column=1,sticky="w",pady=5)
 
     def _page_pairing(self):
+        self._pairing_page_mode="home"
+        b=self._section(self.t("استضافة خاصة على هذا الكمبيوتر","Private hosting on this computer"),self.t(
+            "اتصال HTTPS مباشر بين هاتفك والكمبيوتر. لا يلزم حساب استضافة أو تطبيق آخر. ابدأ داخل شبكة البيت، ثم جهّز الراوتر للوصول من الخارج.",
+            "Direct HTTPS between your phone and computer. No hosting account or additional app. Start on home Wi-Fi, then configure your router for access from outside."))
+        self._remote_status_label=ttk.Label(b,text='',style="CardTitle.TLabel",wraplength=510)
+        self._remote_status_label.grid(row=1,column=0,columnspan=2,sticky='w',pady=8)
+        self._qr_panel=ttk.Frame(b);self._qr_panel.grid(row=2,column=0,columnspan=2,sticky='ew')
+        ttk.Label(self._qr_panel,text=self.t("اضغط تشغيل وعرض QR لإنشاء اتصال هذا الكمبيوتر.","Tap Start hosting and show QR to set up this computer."),wraplength=500).pack(anchor='w')
+        ttk.Button(b,text=self.t("تشغيل وعرض QR","Start hosting and show QR"),style="Accent.TButton",command=self._save_home_pairing).grid(row=3,column=0,sticky='w',pady=8)
+        permissions=self._section(self.t("١  •  شغّل الاستضافة واختر الصلاحيات","1  •  Start hosting and choose permissions"))
+        self._row_check(permissions,1,self.t("الشاشة والنقر والكتابة ونقل الملفات","Screen, mouse, keyboard and file transfers"),'remote_desktop_enabled',self.settings.remote_desktop_enabled)
+        self._row_check(permissions,2,self.t("مساعد الكمبيوتر — المحادثة والعناصر عبر Groq","Computer AI — uses Groq"),'remote_ai_enabled',self.settings.remote_ai_enabled)
+        self._row_check(permissions,3,self.t("إتاحة كل الأقراص المحلية للهاتف","Expose all local drives to the phone"),'remote_files_all_drives',self.settings.remote_files_all_drives)
+        self._row_check(permissions,4,self.t("منع السكون التلقائي أثناء توصيل الشاحن","Prevent idle sleep while connected to AC"),'remote_keep_awake',self.settings.remote_keep_awake)
+        self._row_entry(permissions,5,self.t("منفذ HTTPS على الكمبيوتر","Computer HTTPS port"),'remote_home_port',self.settings.remote_home_port,width=10)
+        self._str('remote_home_public_url',self.settings.remote_home_public_url)
+        self._str('remote_home_lan_url',self.settings.remote_home_lan_url)
+        ttk.Button(permissions,text=self.t("تشغيل الاستضافة على الكمبيوتر وعرض QR","Start hosting on this computer and show QR"),style="Accent.TButton",command=self._save_home_pairing).grid(row=6,column=0,columnspan=2,sticky='w',pady=10)
+        network=self._section(self.t("٢  •  من خارج البيت — إعداد مرة واحدة","2  •  Away from home — one-time network setup"),self.t(
+            "يلزم عنوان IPv4 عام مع توجيه منفذ TCP من الراوتر إلى الكمبيوتر، أو IPv6 عام مع سماح الجدار الناري. إذا كانت الشبكة خلف CGNAT ولا يوجد IPv6 متاح، فلن يعمل الوصول المباشر من الخارج ضمن هذه الشروط. QR لا يغيّر قيود الشبكة.",
+            "Requires public IPv4 plus a TCP router port forward, or reachable public IPv6 with firewall permission. If your connection uses CGNAT and no reachable IPv6, direct access away from home is unavailable under these constraints. QR does not change network routing."))
+        self._stack_entry(network,1,self.t("عنوان HTTPS العام — اختياري داخل البيت","Public HTTPS URL — optional on home Wi-Fi"),'remote_home_public_url',self.settings.remote_home_public_url)
+        ttk.Label(network,text=self.t("مثال IPv4: https://PUBLIC-IP:8443  |  IPv6: https://[IPv6]:8443. استخدم عنوانك الحقيقي. تغيير العنوان يستلزم إعادة مسح QR.","IPv4 example: https://PUBLIC-IP:8443 | IPv6: https://[IPv6]:8443. Use your real address. Scan again if addresses change."),wraplength=500,style='Muted.TLabel').grid(row=3,column=0,columnspan=2,sticky='w',pady=6)
+        self._stack_entry(network,4,self.t("عنوان محلي مخصص — فارغ للاكتشاف التلقائي","Custom LAN HTTPS URL — blank detects automatically"),'remote_home_lan_url',self.settings.remote_home_lan_url)
+        helpbox=self._section(self.t("٣  •  امسح الرمز بهاتفك","3  •  Scan with your phone"),self.t(
+            "اسمح للبرنامج في جدار Windows الناري، ثم افتح Android واضغط مسح QR وأنت على شبكة البيت. التطبيق يثبت هوية الكمبيوتر من الشهادة داخل الرمز، ويحاول العنوان المحلي ثم العام. يبقى الكمبيوتر مستيقظاً والبرنامج مفتوح القفل. الشاشة والملفات لا تمر بخادم خارجي؛ مساعد Groq له اتصال سحابي منفصل.",
+            "Allow the app in Windows Firewall, then tap Scan QR on Android while on home Wi-Fi. The QR pins the computer certificate; the phone tries LAN and public addresses. Keep the computer awake and assistant unlocked. Screen and file data use no external relay; Groq AI uses its separate cloud connection."))
+        ttk.Button(helpbox,text=self.t("إيقاف اتصال الهاتف","Disable phone access"),command=self._disable_phone).grid(row=1,column=0,sticky='w',pady=6)
+        ttk.Button(helpbox,text=self.t("إلغاء اقتران الهواتف وتغيير المفتاح","Revoke paired phones and rotate key"),command=self._regenerate_pairing_token).grid(row=2,column=0,sticky='w',pady=6)
+        ttk.Button(helpbox,text=self.t("إعداد الخادم الوسيط القديم — اختياري","Legacy relay configuration — optional"),command=self._show_relay_settings).grid(row=3,column=0,sticky='w',pady=6)
+        self._refresh_remote_status();self._poll_pairing_status()
+        if self.settings.remote_connection_mode=='home' and self.settings.remote_enabled:self._show_pairing_qr()
+
+    def _show_relay_settings(self):
+        self._clear();self._page_relay_pairing();self._fit_settings_width(self._canvas.winfo_width());self._canvas.yview_moveto(0)
+
+    def _save_home_pairing(self):
+        from ..remote.home import endpoint,tls_context
+        from ..remote.settings import load_remote_token,generate_remote_token
+        try:
+            if not self.security or not self.security.unlocked:raise ValueError(self.t('افتح قفل البرنامج أولاً.','Unlock the assistant first.'))
+            updated=replace(self.settings)
+            updated.remote_home_port=int(self._value('remote_home_port',8443))
+            if not 1024<=updated.remote_home_port<=65535:raise ValueError(self.t('اختر منفذاً بين 1024 و65535.','Choose a port between 1024 and 65535.'))
+            for name in ('remote_home_public_url','remote_home_lan_url'):
+                value=str(self._value(name,'')).strip();setattr(updated,name,endpoint(value) if value else '')
+            for name in ('remote_desktop_enabled','remote_ai_enabled','remote_files_all_drives','remote_keep_awake'):
+                setattr(updated,name,bool(self._value(name,getattr(updated,name))))
+            if updated.remote_ai_enabled and not updated.remote_desktop_enabled:raise ValueError(self.t('فعّل الشاشة والملفات لاستخدام مساعد الكمبيوتر.','Enable screen and files to use computer AI.'))
+            tls_context(self.security)
+            if not load_remote_token(self.security):generate_remote_token(self.security)
+            updated.remote_connection_mode='home';updated.remote_enabled=True
+            updated.save();self.settings=updated;self.on_save(updated)
+            self._refresh_remote_status()
+            if self._show_pairing_qr():self.status.configure(text=self.t('إعداد الراوتر مطلوب للوصول من الخارج؛ جرّب داخل البيت أولاً.','Router setup is required for access from outside; test on home Wi-Fi first.'))
+        except (ValueError,OSError,SecurityError) as exc:self.status.configure(text=str(exc))
+
+    def _page_relay_pairing(self):
+        self._pairing_page_mode="relay"
+        ttk.Button(self.content,text=self.t("العودة للاستضافة على هذا الكمبيوتر","Back to hosting on this computer"),command=lambda:self.show_category("pairing")).pack(anchor="w",pady=8)
         b=self._section(self.t("هاتفك. كمبيوترك. اتصال واحد.","Your phone. Your computer. Connected."),self.t(
             "الشاشة والملفات والمساعد في تطبيق واحد. جهّز الربط مرة واحدة، ثم امسح الرمز بهاتفك.",
             "Screen, files and assistant in one app. Set up the connection once, then scan with your phone."))
@@ -251,6 +318,7 @@ class SettingsView(ttk.Frame):
         except Exception:self.status.configure(text=self.t('تعذر استيراد ملف إعداد الخادم.','Could not import server setup file.'))
 
     def _save_pairing(self,show_qr=False):
+        if getattr(self,"_pairing_page_mode","")=="home":return self._save_home_pairing()
         from ..remote.settings import save_relay_enrollment,load_relay_enrollment,load_remote_token,generate_remote_token
         from ..remote.relay_protocol import origin
         try:
@@ -275,14 +343,18 @@ class SettingsView(ttk.Frame):
         from ..remote.settings import pairing_payload,load_remote_token
         try:
             if not self.security or not self.security.unlocked:raise ValueError(self.t('افتح قفل البرنامج أولاً.','Unlock the app first.'))
-            if self.settings.remote_connection_mode!='relay' or not self.settings.remote_relay_url:raise ValueError(self.t('الخادم غير مجهّز بعد. استورد ملف إعداد الخادم في الخطوة ١؛ بعدها سيظهر الرمز هنا.','Relay is not configured yet. Import the server setup in step 1, then your QR will appear here.'))
-            payload=pairing_payload(self.settings.remote_relay_url,load_remote_token(self.security))
-            import qrcode
+            if getattr(self,'_pairing_page_mode','')=='home':
+                if self.settings.remote_connection_mode!='home' or not self.settings.remote_enabled:raise ValueError(self.t('اضغط تشغيل الاستضافة على الكمبيوتر أولاً ليظهر QR.','Start hosting on this computer first to display QR.'))
+                if self.remote_ready and not self.remote_ready():raise ValueError(self.t('تعذر تشغيل خادم الكمبيوتر. راجع المنفذ وحالة الاتصال قبل الاقتران.','Computer server did not start. Check its port and connection status before pairing.'))
+                from ..remote.home import pairing_payload as home_payload
+                payload=home_payload(self.security,load_remote_token(self.security),self.settings.remote_home_port,self.settings.remote_home_public_url,self.settings.remote_home_lan_url)
+            else:
+                if self.settings.remote_connection_mode!='relay' or not self.settings.remote_relay_url:raise ValueError(self.t('الخادم غير مجهّز بعد. استورد ملف إعداد الخادم في الخطوة ١؛ بعدها سيظهر الرمز هنا.','Relay is not configured yet. Import the server setup in step 1, then your QR will appear here.'))
+                payload=pairing_payload(self.settings.remote_relay_url,load_remote_token(self.security))
             from PIL import ImageTk
             # Keep integer module sizes so scanners see sharp edges at any DPI.
-            code=qrcode.QRCode(box_size=5,border=4);code.add_data(payload);code.make(fit=True)
-            matrix=code.modules_count+8;code.box_size=max(2,min(6,300//matrix))
-            image=code.make_image(fill_color='black',back_color='white').convert('RGB')
+            from .pairing_qr import pairing_qr_image
+            image=pairing_qr_image(payload)
             panel=getattr(self,'_qr_panel',None)
             if panel is None or not panel.winfo_exists():
                 dialog=tk.Toplevel(self);dialog.title(self.t('اقتران الهاتف','Pair phone'));panel=ttk.Frame(dialog,padding=18);panel.pack()
@@ -291,6 +363,7 @@ class SettingsView(ttk.Frame):
             label=ttk.Label(panel,image=photo);label.image=photo;label.pack(anchor='w',pady=8)
             ttk.Label(panel,text=self.t('افتح Android واضغط مسح QR. هذا الرمز خاص بك.','Open Android and tap Scan QR. Keep this code private.'),wraplength=480).pack(anchor='w')
             self._canvas.yview_moveto(0)
+            return True
 
         except Exception as exc:self.status.configure(text=str(exc) if isinstance(exc,(ValueError,SecurityError)) else self.t('تعذر عرض رمز الاقتران.','Could not show pairing QR.'))
 
@@ -315,7 +388,10 @@ class SettingsView(ttk.Frame):
         label=getattr(self,"_remote_status_label",None)
         if label is not None:
             text=self.remote_status() if self.remote_status else self.t("احفظ الإعدادات لتطبيق الاتصال.", "Save settings to apply the connection.")
-            if self.current=='pairing' and not self.settings.remote_relay_url:
+            if self.current=='pairing' and getattr(self,'_pairing_page_mode','')=='home':
+                if self.settings.remote_connection_mode!='home' or not self.settings.remote_enabled:
+                    text=self.t('الاستضافة المحلية متوقفة — اضغط تشغيل الاستضافة أدناه','Home hosting is stopped — start hosting below')
+            elif self.current=='pairing' and not self.settings.remote_relay_url:
                 text=self.t('١ / ٣  •  الخادم غير مجهّز — ابدأ باستيراد ملف الإعداد','1 / 3  •  Relay not configured — import server setup first')
             label.configure(text=text)
 

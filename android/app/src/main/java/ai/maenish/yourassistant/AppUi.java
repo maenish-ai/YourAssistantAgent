@@ -26,7 +26,7 @@ final class AppUi {
         activity.setContentView(root);return root;
     }
     static TextView label(Context c,String text,int size,boolean muted){
-        TextView v=new TextView(c);v.setText(text);v.setTextSize(size);v.setTextColor(muted?MUTED:TEXT);
+        TextView v=new TextView(c);v.setText(text);v.setTextSize(size);v.setTextDirection(View.TEXT_DIRECTION_FIRST_STRONG);v.setTextColor(muted?MUTED:TEXT);
         v.setPadding(dp(c,4),dp(c,5),dp(c,4),dp(c,5));v.setLineSpacing(dp(c,2),1);return v;
     }
     static void header(Activity activity,LinearLayout root,String title,String subtitle,boolean back){
@@ -50,7 +50,7 @@ final class AppUi {
         b.setOnClickListener(v->action.run());return b;
     }
     static EditText field(Context c,String hint){
-        EditText v=new EditText(c);v.setHint(hint);v.setTextColor(TEXT);v.setHintTextColor(MUTED);v.setTextSize(14);
+        EditText v=new EditText(c);v.setHint(hint);v.setTextDirection(View.TEXT_DIRECTION_FIRST_STRONG);v.setTextColor(TEXT);v.setHintTextColor(MUTED);v.setTextSize(14);
         GradientDrawable bg=shape(PANEL,dp(c,12));bg.setStroke(dp(c,1),BORDER);v.setBackground(bg);
         v.setPadding(dp(c,14),dp(c,12),dp(c,14),dp(c,12));return v;
     }

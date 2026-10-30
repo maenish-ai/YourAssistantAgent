@@ -421,7 +421,7 @@ class App(tk.Tk):
         elif view == "backup":
             widget = BackupView(self.content, self.settings_obj, self.backup)
         elif view == "settings":
-            widget = SettingsView(self.content, self.settings_obj, self._settings_saved, self.security, remote_status=self.remote_status_text)
+            widget = SettingsView(self.content, self.settings_obj, self._settings_saved, self.security, remote_status=self.remote_status_text,remote_ready=self.remote_connection_ready)
         else:
             return
         self._view_widget = widget
@@ -612,6 +612,11 @@ class App(tk.Tk):
             # Pairing credentials must never appear in UI errors or activity logs.
             self._remote_status = self.t("تعذر تشغيل اتصال Android. راجع مفتاح الاقتران والمنفذ وإعدادات الاتصال.", "Could not start Android connection. Check the pairing token, port and connection settings.")
             self._activity("remote_start_error", type(exc).__name__)
+
+    def remote_connection_ready(self):
+        worker=getattr(self,"remote_worker",None)
+        server=getattr(worker,"server",worker)
+        return bool(server and server._accepting.is_set())
 
     def remote_status_text(self):
         worker = getattr(self, "remote_worker", None)

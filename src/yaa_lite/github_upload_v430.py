@@ -510,6 +510,8 @@ def apply_v430_ui() -> None:
                       command=lambda: upload(self)).pack(side='left', padx=4)
 
     def send(self):
+        if getattr(self,'_v300_mic_active',False):
+            self._v300_finish_dictation();return
         text = self.input.get('1.0', 'end-1c').strip()
         if is_upload_request(text):
             return upload(self)

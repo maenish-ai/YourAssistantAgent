@@ -61,7 +61,7 @@ def pairing_view(tmp_path,monkeypatch):
     root.geometry('1100x760'); App._styles(root)
     security=SecurityManager(tmp_path/'security');security.setup('',mode='none')
     calls=[];view=SettingsView(root,Settings(interface_language='en'),calls.append,security,remote_status=lambda:'Test relay connecting')
-    view.pack(fill='both',expand=True);view.show_category('pairing');root.update()
+    view.pack(fill='both',expand=True);view.show_category('pairing');view._show_relay_settings();root.update()
     try: yield view,security,calls,root
     finally: view.destroy();root.destroy()
 

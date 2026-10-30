@@ -22,6 +22,9 @@ final class ApiClient {
     private final String baseUrl;
     private final String token;
     private RelayTransport relay;
+    private HomeProfile home;
+    private String selectedOrigin;
+    static boolean automaticOrigin(String url){return url!=null&&(url.startsWith("home+")||url.startsWith("relay+https://"));}
     private final AtomicReference<HttpsURLConnection> active = new AtomicReference<>();
     private volatile boolean closed;
     interface Progress { void update(long transferred,long total); }
@@ -35,6 +38,12 @@ final class ApiClient {
     }
 
     ApiClient(String url, String token) throws ApiException {
+        if(url!=null&&url.startsWith("home+")){
+            try{
+                if(token==null||!token.matches("[A-Za-z0-9_-]{32,128}"))throw new Exception();
+                home=HomeProfile.decode(url);this.baseUrl=home.encode();this.token=token;return;
+            }catch(Exception e){throw new ApiException("امسح QR المباشر من برنامج الكمبيوتر مرة أخرى؛ بيانات الربط غير صالحة.");}
+        }
         if(url!=null && url.startsWith("relay+https://")){
             relay=new RelayTransport(url.substring(6),token);this.baseUrl=url;this.token=token;return;
         }
@@ -98,11 +107,13 @@ final class ApiClient {
         if(relay!=null){relay.download(path,output);return;}
         HttpsURLConnection connection = null;
         try {
+            ensureHomeOrigin();
             if (closed) throw new ApiException("انقطع الاتصال.");
-            connection = (HttpsURLConnection) new URL(baseUrl + "/v1/files/download?path=" + encode(path)).openConnection();
+            connection = (HttpsURLConnection) new URL((home==null?baseUrl:selectedOrigin) + "/v1/files/download?path=" + encode(path)).openConnection();
             active.set(connection);
+            if(home!=null)home.apply(connection);
             connection.setInstanceFollowRedirects(false);
-            connection.setConnectTimeout(10000); connection.setReadTimeout(35000);
+            connection.setConnectTimeout(home==null?10000:5000); connection.setReadTimeout(35000);
             connection.setRequestProperty("Authorization", "Bearer " + token);
             int status = connection.getResponseCode();
             if (status != 200) throw new ApiException("تعذر تنزيل الملف (HTTP " + status + ").", status);
@@ -143,15 +154,36 @@ final class ApiClient {
             if("POST".equals(method)&&response.optString("job_id","").isEmpty())throw new ApiException("الرد غير مكتمل؛ افحص المحادثة قبل إعادة الإرسال.");
             return response;
         }
+        if(home!=null&&"GET".equals(method))return homeGet(path);
+        ensureHomeOrigin();
+        return requestAt(home==null?baseUrl:selectedOrigin,method,path,bytes,file,requestId,uploadMime);
+    }
+
+    private void ensureHomeOrigin()throws ApiException {
+        if(home!=null&&selectedOrigin==null)homeGet("/v1/capabilities");
+    }
+    private JSONObject homeGet(String path)throws ApiException {
+        java.util.List<String> candidates=new java.util.ArrayList<>();
+        if(selectedOrigin!=null)candidates.add(selectedOrigin);
+        for(String url:home.urls)if(!candidates.contains(url))candidates.add(url);
+        for(String url:candidates){
+            try{JSONObject result=requestAt(url,"GET",path,null,null,null,"application/json");selectedOrigin=url;return result;}
+            catch(ApiException e){if(e.status>=0||closed)throw e;}
+        }
+        selectedOrigin=null;
+        throw new ApiException("تعذر الوصول المباشر للكمبيوتر. داخل البيت افحص Wi-Fi والجدار الناري؛ من الخارج افحص عنوان الراوتر وتوجيه المنفذ. تحقق أيضاً من وقت الجهازين وهوية QR.");
+    }
+    private JSONObject requestAt(String address,String method,String path,byte[] bytes,File file,String requestId,String uploadMime)throws ApiException {
         HttpsURLConnection connection = null;
         try {
             if (closed) throw new ApiException("انقطع الاتصال؛ أعد الربط أولاً.");
-            connection = (HttpsURLConnection) new URL(baseUrl + path).openConnection();
+            connection = (HttpsURLConnection) new URL(address + path).openConnection();
             active.set(connection);
             if (closed) throw new ApiException("انقطع الاتصال؛ أعد الربط أولاً.");
             connection.setInstanceFollowRedirects(false);
-            connection.setConnectTimeout(10000);
+            connection.setConnectTimeout(home==null?10000:5000);
             connection.setReadTimeout(35000);
+            if(home!=null)home.apply(connection);
             connection.setRequestMethod(method);
             connection.setRequestProperty("Authorization", "Bearer " + token);
             connection.setRequestProperty("Accept", "application/json");

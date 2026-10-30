@@ -21,6 +21,7 @@ from .config import Settings
 from .review_voice_v270 import pending_signature, pending_is_fresh
 from .stability_v260 import _CANCEL, TurnCancelled, _check_cancel, local_github_status, open_github_desktop
 from .ui import theme
+from .ui.native_text import text_widget
 
 # No TTS imports, no background microphone and no voice engine preloading.
 REQUEST_DEADLINE_MS = 50_000
@@ -43,8 +44,8 @@ def requires_local_tools(text: str) -> bool:
     the existing explicit allowlist and owner approval boundary.
     """
     return bool(re.search(
-        r'(?:افتح|شغّل|شغل|اضبط|احذف|حذف|امسح|ارفع|نزّل|انشر|ابعث|أرسل|ارسل|جدول|سوي|سوّي|اعمل|أعمل|افحص|فحص|عدل|عدّل|حدّث|حدث|'
-        r'فيس\s?بوك|جروب|قروب|متصفح|تصفح|واتساب|تلغرام|تليجرام|جيت[ -]?هاب|github|\bgit\b|\brepo\b|'
+        r'(?:افتح|فوت|ادخل|إدخل|روح|وديني|تعرف|تعرّف|جيبلي|شغّل|شغل|اضبط|احذف|حذف|امسح|ارفع|نزّل|انشر|ابعث|أرسل|ارسل|جدول|سوي|سوّي|اعمل|أعمل|افحص|فحص|عدل|عدّل|حدّث|حدث|'
+        r'فيس\s?بوك|جروب|قروب|صفحة|صفحتي|الصفحات|متصفح|تصفح|واتساب|تلغرام|تليجرام|جيت[ -]?هاب|github|\bgit\b|\brepo\b|'
         r'الملفات|المجلد|المهمة|المهام|الكمبيوتر|المجموعات|\bopen\b|\bupload\b|'
         r'\bdelete\b|\bpublish\b|\bdownload\b|\btask\b|\bfacebook\b|\bbrowser\b|\bgroups?\b|'
         r'\brefresh\b|\bverify\b|\bbackup\b|\bschedule\b|\bpost\b)',
@@ -169,6 +170,7 @@ def apply_text_first_v300() -> None:
         self._v270_preview_cancel = None
         self._v270_last_review = ''
         self._v300_mic_active = False
+        self._v300_mic_finishing = False
         self._v300_mic_generation = 0
         self._v300_mic_cancel = None
         self._v300_mic_service = None
@@ -199,7 +201,7 @@ def apply_text_first_v300() -> None:
         chat_container.grid(row=1, column=0, sticky='nsew', padx=18, pady=(12, 0))
         chat_container.grid_columnconfigure(0, weight=1)
         chat_container.grid_rowconfigure(0, weight=1)
-        self.chat = tk.Text(chat_container, state='disabled', wrap='word', bd=0, relief='flat',
+        self.chat = text_widget(chat_container,rtl=self.settings.interface_language=="ar", state='disabled', wrap='word', bd=0, relief='flat',
                             highlightthickness=0, bg=theme.BG, fg=theme.TEXT,
                             selectbackground=theme.SIDEBAR_ACTIVE, font=('Segoe UI', 12),
                             padx=21, pady=15, spacing1=3, spacing2=4, spacing3=16)
@@ -247,7 +249,7 @@ def apply_text_first_v300() -> None:
         footer.columnconfigure(0, weight=1)
         tk.Label(footer, text=_visual_arabic(self.t('اكتب رسالتك أو استخدم الإملاء', 'Write your message or use dictation')),
                  bg=theme.PANEL, fg=theme.MUTED, font=('Segoe UI', 10)).grid(row=0, column=0, sticky='w', pady=(0, 7))
-        self.input = tk.Text(footer, height=3, wrap='word', undo=True,
+        self.input = text_widget(footer,rtl=self.settings.interface_language=="ar", height=3, wrap='word', undo=True,
                              bg=theme.INPUT, fg=theme.TEXT, insertbackground=theme.TEXT,
                              selectbackground=theme.SIDEBAR_ACTIVE, font=('Segoe UI', 12),
                              padx=13, pady=11, highlightthickness=1, highlightbackground=theme.BORDER,
@@ -318,8 +320,9 @@ def apply_text_first_v300() -> None:
 
     def update_buttons(self):
         try:
-            self.send_btn.configure(state='disabled' if self.busy else 'normal')
+            self.send_btn.configure(state='disabled' if self.busy or getattr(self,'_v300_mic_active',False) else 'normal')
             self._v270_approve_button.configure(state='disabled' if self.busy else 'normal')
+            self._v300_mic_button.configure(state='disabled' if getattr(self,'_v300_mic_finishing',False) else 'normal')
             self._v300_mic_button.configure(text=_visual_arabic(self.t('■ إنهاء الإملاء', '■ Stop dictation') if self._v300_mic_active
                                               else self.t('🎙 إملاء نص', '🎙 Dictate text')))
         except tk.TclError:
@@ -342,6 +345,8 @@ def apply_text_first_v300() -> None:
         self._v300_update_buttons()
 
     def send(self):
+        if getattr(self,'_v300_mic_active',False):
+            self._v300_finish_dictation();return
         text = self.input.get('1.0', 'end-1c').strip()
         if not text:
             return
@@ -504,7 +509,7 @@ def apply_text_first_v300() -> None:
 
     def start_or_stop_dictation(self):
         if self._v300_mic_active:
-            self._v300_stop_dictation()
+            self._v300_finish_dictation()
             return
         if not bool(getattr(self.settings, 'voice_enabled', True)):
             self.status.configure(text=self.t('فعّل الإملاء من الإعدادات.', 'Enable dictation in Settings.'))
@@ -516,6 +521,7 @@ def apply_text_first_v300() -> None:
         self._v300_mic_generation += 1
         generation = self._v300_mic_generation
         self._v300_mic_active = True
+        self._v300_mic_finishing = False
         cancel = threading.Event()
         self._v300_mic_cancel = cancel
         self.status.configure(text=self.t('🎙 أسمعك… النص يظهر بعد كل جملة', '🎙 Listening… text appears after each phrase'))
@@ -525,9 +531,8 @@ def apply_text_first_v300() -> None:
         def work():
             # Repeated cloud STT turns with NO speech synthesis and NO auto-send.
             # Silence is harmless. At most one Whisper request at a time.
-            while not cancel.is_set():
+            while not cancel.is_set() and not service.finish_event.is_set():
                 try:
-                    service.reset_cancel()
                     snippet = normalize_listen_text(service.listen_once(mode='dictation'))
                     if snippet and not cancel.is_set():
                         self._v300_mic_queue.put(('text', generation, snippet))
@@ -546,7 +551,15 @@ def apply_text_first_v300() -> None:
             self._v300_mic_queue.put(('done', generation, ''))
         threading.Thread(target=work, name='yaa-v300-dictation', daemon=True).start()
 
+    def finish_dictation(self):
+        if not self._v300_mic_active:return
+        self._v300_mic_finishing=True
+        if self._v300_mic_service:self._v300_mic_service.finish()
+        self._v300_update_buttons()
+        self.status.configure(text=self.t('جارٍ تفريغ آخر جملة… انتظر قبل الإرسال.','Transcribing the final phrase… wait before sending.'))
+
     def stop_dictation(self):
+        self._v300_mic_finishing = False
         self._v300_mic_active = False
         self._v300_mic_generation += 1
         if self._v300_mic_cancel:
@@ -573,11 +586,14 @@ def apply_text_first_v300() -> None:
                     self.status.configure(text=self.t('✅ أضفت الكلام للنص؛ يمكنك المتابعة',
                                                        '✅ Text added; keep speaking or press Send'))
                 elif kind == 'error':
-                    self.status.configure(text=str(value)[:160])
                     self._v300_stop_dictation()
+                    self.status.configure(text=str(value)[:160])
                 elif kind == 'done' and self._v300_mic_active:
                     self._v300_mic_active = False
+                    self._v300_mic_finishing = False
+                    self._v300_mic_service = None
                     self._v300_update_buttons()
+                    self.status.configure(text=self.t('الإملاء جاهز؛ راجع النص ثم أرسله.','Dictation is ready; review the text, then send.'))
         except queue.Empty:
             pass
 
@@ -634,6 +650,7 @@ def apply_text_first_v300() -> None:
     ChatWindow._v300_timeout = timeout
     ChatWindow._v300_refresh_approval = refresh_approval
     ChatWindow._v300_toggle_dictation = start_or_stop_dictation
+    ChatWindow._v300_finish_dictation = finish_dictation
     ChatWindow._v300_stop_dictation = stop_dictation
     ChatWindow._v300_poll_dictation = poll_dictation
     ChatWindow._v270_approve = approve

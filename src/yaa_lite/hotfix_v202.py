@@ -94,56 +94,9 @@ def _install_browser_bridge_group_action() -> None:
 
 
 def _install_facebook_group_fix() -> None:
-    from .agent.facebook_service import FacebookActionResult, FacebookService
-
-    if getattr(FacebookService, "_yaa_v202_browser_patched", False):
-        return
-    original = FacebookService.discover_groups
-
-    def discover_groups(self, limit: int = 500):
-        limit = max(1, min(int(limit), 1000))
-        bridge = getattr(self, "browser_bridge", None)
-        mode = getattr(self.settings, "facebook_browser_mode", "extension_first")
-        if mode == "extension_first" and bridge is not None and bridge.connected:
-            try:
-                result = bridge.execute(
-                    "discover_facebook_groups", limit=limit, timeout=55
-                )
-                groups = result.get("groups") if isinstance(result, dict) else None
-                if isinstance(result, dict) and result.get("ok") and isinstance(groups, list):
-                    cleaned = []
-                    for item in groups:
-                        if not isinstance(item, dict):
-                            continue
-                        name = str(item.get("name") or "").strip()
-                        url = str(item.get("url") or "").strip()
-                        if name and "/groups/" in url:
-                            cleaned.append({"name": name[:180], "url": url, "tags": ""})
-                    count = self.db.upsert_groups(cleaned)
-                    self._last_status = "connected"
-                    self._last_backend = "normal-browser-extension"
-                    self.activity("facebook_groups_discovered", f"saved={count}; backend=extension")
-                    return FacebookActionResult(
-                        True,
-                        self._t(
-                            f"تم التعرف على {count} مجموعة من حساب Facebook المفتوح وحفظها.",
-                            f"Discovered and saved {count} groups from the open Facebook account.",
-                        ),
-                        count=count,
-                    )
-                error = (
-                    str(result.get("error") or "extension returned no groups")
-                    if isinstance(result, dict)
-                    else "invalid extension result"
-                )
-                self.activity("browser_extension_fallback", f"groups: {error}")
-            except Exception as exc:
-                self.activity("browser_extension_fallback", f"groups: {type(exc).__name__}: {exc}")
-
-        # Fallback remains the dedicated managed Chromium profile.
-        return original(self, limit)
-
-    FacebookService.discover_groups = discover_groups
+    # The complete extension/managed-session flow lives in FacebookService.
+    # Replacing it at bootstrap used to bypass fixes and discard new options.
+    from .agent.facebook_service import FacebookService
     FacebookService._yaa_v202_browser_patched = True
 
 

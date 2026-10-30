@@ -109,13 +109,14 @@ def test_cancel_closes_stream_without_leaving_files(tmp_path):
 def test_cloud_service_uses_capture_v280(monkeypatch, tmp_path):
     from yaa_lite.voice import capture_v280
     values=[]
-    def record(path, settings, event, callback):
-        values.append((path,settings,event,callback))
+    def record(path, settings, event, callback, *, finish_event=None):
+        values.append((path,settings,event,callback,finish_event))
     monkeypatch.setattr(capture_v280,'capture_wav',record)
     svc=CloudVoiceService(SimpleNamespace(voice_input_device='auto'))
     svc._record_wav(tmp_path/'input.wav')
     assert len(values)==1
     assert values[0][2] is svc.cancel_event
+    assert values[0][4] is svc.finish_event
 
 
 def test_launcher_loads_repair_last():

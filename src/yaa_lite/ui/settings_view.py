@@ -9,6 +9,7 @@ from ..agent.hammer_agent import HAMMER_LICENSE, HAMMER_MODEL_LABEL
 from ..config import Settings
 from ..security.manager import SecurityManager, SecurityError
 from .i18n import ui_text
+from . import theme
 
 
 class SettingsView(ttk.Frame):
@@ -46,16 +47,48 @@ class SettingsView(ttk.Frame):
             ("advanced",self.t("متقدم","Advanced")),
         ]
         self.cat_buttons={}
+        self._status_after=None
         for key,label in cats:
-            b=ttk.Button(left,text=label,command=lambda k=key:self.show_category(k));b.pack(fill="x",pady=2);self.cat_buttons[key]=b
+            b=ttk.Button(left,text=label,style="Nav.TButton",command=lambda k=key:self.show_category(k));b.pack(fill="x",pady=2);self.cat_buttons[key]=b
         self.right=ttk.Frame(self,padding=(18,22,26,20));self.right.grid(row=0,column=1,sticky="nsew");self.right.columnconfigure(0,weight=1);self.right.rowconfigure(1,weight=1)
         self.header=ttk.Label(self.right,text="",style="Title.TLabel");self.header.grid(row=0,column=0,sticky="w",pady=(0,12))
-        self.content=ttk.Frame(self.right);self.content.grid(row=1,column=0,sticky="nsew");self.content.columnconfigure(0,weight=1)
+        viewport=ttk.Frame(self.right);viewport.grid(row=1,column=0,sticky="nsew");viewport.columnconfigure(0,weight=1);viewport.rowconfigure(0,weight=1)
+        self._canvas=tk.Canvas(viewport,bg=theme.BG,highlightthickness=0,width=420)
+        self._canvas.grid(row=0,column=0,sticky="nsew")
+        scrollbar=ttk.Scrollbar(viewport,orient="vertical",command=self._canvas.yview);scrollbar.grid(row=0,column=1,sticky="ns")
+        self._canvas.configure(yscrollcommand=scrollbar.set)
+        self.content=ttk.Frame(self._canvas);self.content.columnconfigure(0,weight=1)
+        content_window=self._canvas.create_window((0,0),window=self.content,anchor="nw")
+        self.content.bind("<Configure>",lambda e:self._canvas.configure(scrollregion=self._canvas.bbox("all")))
+        def fit_width(event):
+            width=event if isinstance(event,int) else event.width
+            self._canvas.itemconfigure(content_window,width=width)
+            def wrap(parent):
+                for child in parent.winfo_children():
+                    if isinstance(child,ttk.Label) and int(child.cget('wraplength') or 0)>0:
+                        child.configure(wraplength=max(180,width-48))
+                    wrap(child)
+            wrap(self.content)
+        self._canvas.bind("<Configure>",fit_width)
+        self._fit_settings_width=fit_width
+        top=self.winfo_toplevel()
+        self._wheel_id=top.bind("<MouseWheel>",self._scroll_settings,add="+")
+        self.bind("<Destroy>",self._destroy_settings,add="+")
         footer=ttk.Frame(self.right);footer.grid(row=2,column=0,sticky="ew",pady=(14,0))
         ttk.Button(footer,text=self.t("حفظ وتطبيق","Save & apply"),style="Accent.TButton",command=self.save).pack(side="right")
         self.status=ttk.Label(footer,text="",style="Muted.TLabel");self.status.pack(side="left")
 
+    def _scroll_settings(self,event):
+        if str(event.widget).startswith(str(self)):
+            self._canvas.yview_scroll(-int(event.delta/120) if abs(event.delta)>=120 else (-1 if event.delta>0 else 1),"units")
+
+    def _destroy_settings(self,event):
+        if event.widget is self:
+            if self._status_after:self.after_cancel(self._status_after)
+            if self._wheel_id:self.winfo_toplevel().unbind("<MouseWheel>",self._wheel_id)
+
     def _clear(self):
+        if self._status_after:self.after_cancel(self._status_after);self._status_after=None
         for w in self.content.winfo_children():w.destroy()
         self.vars={}; self.entries={}; self.combo_maps={}
 
@@ -111,7 +144,9 @@ class SettingsView(ttk.Frame):
             "desktop":self.t("التحكم بالكمبيوتر","Computer control"),
             "security":self.t("الأمان والصلاحيات","Security & permissions"),"notifications":self.t("التنبيهات","Notifications"),
             "appearance":self.t("المظهر واللغة","Appearance & language"),"voice":self.t("الصوت","Voice"),"memory":self.t("الذاكرة والتعلم","Memory & learning"),"advanced":self.t("متقدم","Advanced")}
-        self.header.config(text=titles[key]);getattr(self,f"_page_{key}")()
+        self.header.config(text=titles[key])
+        for name,button in self.cat_buttons.items():button.configure(style="ActiveNav.TButton" if name==key else "Nav.TButton")
+        getattr(self,f"_page_{key}")();self._fit_settings_width(self._canvas.winfo_width());self._canvas.yview_moveto(0)
 
     def _page_general(self):
         b=self._section(self.t("بدء التشغيل","Startup"))
@@ -156,20 +191,50 @@ class SettingsView(ttk.Frame):
         ttk.Button(g,text=self.t("اختيار المجلد", "Choose folder"),command=self._choose_github_checkout).grid(row=3,column=1,sticky="w",pady=5)
 
     def _page_pairing(self):
-        b=self._section(self.t("ربط تلقائي بدون VPN", "Automatic connection without a VPN"),self.t(
-            "بعد تجهيز استضافة الخادم مرة واحدة، احفظ عنوانه ومفتاح تسجيله هنا. بعدها يكفي مسح QR بالهاتف؛ الاتصال يعيد نفسه تلقائياً طالما الكمبيوتر والبرنامج شغّالان. مفتاح تسجيل الخادم لا يصل إلى الهاتف.",
-            "After deploying the relay once, save its URL and enrollment key here. The phone then pairs by scanning QR and reconnects automatically. The server enrollment key is never sent to the phone."))
-        ttk.Button(b,text=self.t("استيراد ملف إعداد الخادم", "Import server setup file"),command=self._import_relay_setup).grid(row=8,column=0,columnspan=2,sticky='e',pady=8)
-        self._row_entry(b,1,self.t("عنوان HTTPS للخادم", "Relay HTTPS address"),"remote_relay_url",self.settings.remote_relay_url)
-        self._row_entry(b,2,self.t("مفتاح تسجيل الخادم — فارغ للإبقاء", "Server enrollment key — blank keeps it"),"relay_enrollment_input","",show='•')
-        ttk.Button(b,text=self.t("تفعيل وحفظ الاتصال التلقائي", "Enable and save automatic connection"),command=self._save_pairing).grid(row=3,column=0,columnspan=2,sticky='w',pady=8)
-        ttk.Button(b,text=self.t("عرض QR لإقران الهاتف", "Show phone pairing QR"),command=self._show_pairing_qr).grid(row=4,column=0,columnspan=2,sticky='w',pady=8)
-        ttk.Label(b,text=self.t("امسح الرمز من تطبيق الهاتف. الرمز يمنح الوصول لجهازك؛ تغيير مفتاح الاقتران من Android وGitHub يلغي وصول الهواتف القديمة.",
-                               "Scan using the phone app. The QR grants device access; rotating the pairing key under Android & GitHub revokes old phones."),wraplength=650).grid(row=5,column=0,columnspan=2,sticky='w')
-        self._remote_status_label=ttk.Label(b,text='',wraplength=650)
-        self._remote_status_label.grid(row=6,column=0,columnspan=2,sticky='w',pady=8)
-        ttk.Button(b,text=self.t("تحديث الحالة", "Refresh status"),command=self._refresh_remote_status).grid(row=7,column=0,sticky='w')
-        self._refresh_remote_status()
+        b=self._section(self.t("هاتفك. كمبيوترك. اتصال واحد.","Your phone. Your computer. Connected."),self.t(
+            "الشاشة والملفات والمساعد في تطبيق واحد. جهّز الربط مرة واحدة، ثم امسح الرمز بهاتفك.",
+            "Screen, files and assistant in one app. Set up the connection once, then scan with your phone."))
+        self._remote_status_label=ttk.Label(b,text='',style="CardTitle.TLabel",wraplength=510)
+        self._remote_status_label.grid(row=1,column=0,columnspan=2,sticky='w',pady=8)
+        self._qr_panel=ttk.Frame(b);self._qr_panel.grid(row=2,column=0,columnspan=2,sticky='ew',pady=8)
+        ttk.Label(self._qr_panel,text=self.t("QR يظهر هنا بعد استيراد إعداد الخادم.","Your QR appears here after importing server setup."),style="Muted.TLabel",wraplength=500).pack(anchor='w')
+        ttk.Button(b,text=self.t("عرض QR وإقران الهاتف","Show pairing QR"),style="Accent.TButton",command=self._show_pairing_qr).grid(row=3,column=0,sticky='w',pady=8)
+        ttk.Button(b,text=self.t("تحديث الحالة","Refresh status"),command=self._refresh_remote_status).grid(row=3,column=1,sticky='e')
+        setup=self._section(self.t("١  •  إعداد الاتصال مرة واحدة","1  •  One-time connection setup"),self.t(
+            "للوصول من خارج البيت يلزم خادم HTTPS منشور. لا يتوفر خادم عام تلقائياً مع تثبيت البرنامج. استورد ملف الإعداد الذي ينتج عن نشر خادمك.",
+            "Access away from home requires a hosted HTTPS relay. Installing this app does not provision a public server. Import the setup file from your deployment."))
+        ttk.Button(setup,text=self.t("استيراد ملف إعداد الخادم","Import server setup file"),style="Accent.TButton",command=self._import_relay_setup).grid(row=1,column=0,columnspan=2,sticky='w',pady=8)
+        manual=ttk.Frame(setup)
+        def toggle():
+            if manual.winfo_manager():manual.grid_remove()
+            else:manual.grid(row=3,column=0,columnspan=2,sticky='ew')
+        ttk.Button(setup,text=self.t("إعداد الخادم يدوياً — متقدم","Manual server setup — advanced"),command=toggle).grid(row=2,column=0,columnspan=2,sticky='w')
+        manual.columnconfigure(1,weight=1)
+        self._row_entry(manual,1,self.t("عنوان HTTPS للخادم","Relay HTTPS address"),'remote_relay_url',self.settings.remote_relay_url,width=32)
+        self._row_entry(manual,2,self.t("مفتاح تسجيل الخادم","Server enrollment key"),'relay_enrollment_input','',show='•',width=32)
+        permissions=self._section(self.t("٢  •  صلاحيات هاتفك","2  •  Phone permissions"),self.t(
+            "الرمز يسمح لهاتفك باستخدام الصلاحيات المحددة هنا. تغيير مفتاح الاقتران يلغي وصول الهواتف القديمة.",
+            "The QR grants your phone the permissions selected here. Rotating the pairing key revokes previously paired phones."))
+        self._row_check(permissions,1,self.t("الشاشة والنقر والكتابة ونقل الملفات","Screen, mouse, keyboard and file transfers"),'remote_desktop_enabled',self.settings.remote_desktop_enabled)
+        self._row_check(permissions,2,self.t("مساعد الكمبيوتر الذكي — بموافقة على المهمة","Computer AI — task approval required"),'remote_ai_enabled',self.settings.remote_ai_enabled)
+        self._row_check(permissions,3,self.t("إتاحة كل الأقراص المحلية للهاتف","Expose all local drives to the phone"),'remote_files_all_drives',self.settings.remote_files_all_drives)
+        self._row_check(permissions,4,self.t("منع السكون التلقائي أثناء الربط وعلى الشاحن", "Prevent idle sleep while connected to AC"),'remote_keep_awake',self.settings.remote_keep_awake)
+        ttk.Button(permissions,text=self.t("حفظ الصلاحيات وتفعيل الربط وعرض QR","Save permissions, enable connection and show QR"),style="Accent.TButton",command=lambda:self._save_pairing(show_qr=True)).grid(row=5,column=0,columnspan=2,sticky='w',pady=8)
+        helpbox=self._section(self.t("٣  •  افتح التطبيق على هاتفك","3  •  Open the phone app"),self.t(
+            "اضغط مسح QR في Android ووجّه الكاميرا إلى الرمز أعلاه. يُحفظ الاقتران ويُعاد الاتصال أثناء فتح التطبيق. الكمبيوتر يجب أن يبقى مستيقظاً والبرنامج مفتوح القفل. التحكم داخل جلسة Windows الحالية؛ شاشة القفل وUAC غير متاحتين.",
+            "Tap Scan QR on Android and point the camera at the code above. Pairing is saved; reconnection runs while the phone app is open. Keep the computer awake and the assistant unlocked. Windows lock screens and UAC remain unavailable."))
+        ttk.Button(helpbox,text=self.t("إلغاء اقتران الهواتف وتغيير المفتاح","Revoke paired phones and rotate key"),command=self._regenerate_pairing_token).grid(row=1,column=0,sticky='w',pady=5)
+        ttk.Button(helpbox,text=self.t("إيقاف اتصال الهاتف على هذا الكمبيوتر","Disable phone access on this computer"),command=self._disable_phone).grid(row=2,column=0,sticky='w',pady=5)
+        self._refresh_remote_status();self._poll_pairing_status()
+        if self.settings.remote_connection_mode=='relay' and self.settings.remote_relay_url:self._show_pairing_qr()
+
+    def _poll_pairing_status(self):
+        self._status_after=None
+        if self.current=='pairing' and self.winfo_exists():
+            self._refresh_remote_status();self._status_after=self.after(2500,self._poll_pairing_status)
+
+    def _disable_phone(self):
+        updated=replace(self.settings);updated.remote_enabled=False;updated.save();self.settings=updated;self.on_save(updated);self._refresh_remote_status()
 
     def _import_relay_setup(self):
         import json
@@ -182,10 +247,10 @@ class SettingsView(ttk.Frame):
             if set(data)!={'relay_url','enrollment_key'} or any(not isinstance(value,str) for value in data.values()):raise ValueError('Invalid setup file')
             self.vars['remote_relay_url'].set(data['relay_url'])
             self.vars['relay_enrollment_input'].set(data['enrollment_key'])
-            self._save_pairing()
+            self._save_pairing(show_qr=True)
         except Exception:self.status.configure(text=self.t('تعذر استيراد ملف إعداد الخادم.','Could not import server setup file.'))
 
-    def _save_pairing(self):
+    def _save_pairing(self,show_qr=False):
         from ..remote.settings import save_relay_enrollment,load_relay_enrollment,load_remote_token,generate_remote_token
         from ..remote.relay_protocol import origin
         try:
@@ -193,28 +258,40 @@ class SettingsView(ttk.Frame):
             updated=replace(self.settings)
             updated.remote_relay_url=origin(self._value('remote_relay_url',self.settings.remote_relay_url))
             enrollment=str(self._value('relay_enrollment_input','')).strip()
+            if not enrollment and not load_relay_enrollment(self.security):raise ValueError(self.t('أدخل مفتاح تسجيل الخادم أولاً.','Enter the relay enrollment key first.'))
+            for name in ('remote_desktop_enabled','remote_ai_enabled','remote_files_all_drives','remote_keep_awake'):
+                if name in self.vars:setattr(updated,name,bool(self._value(name,getattr(updated,name))))
+            if updated.remote_ai_enabled and not updated.remote_desktop_enabled:raise ValueError(self.t('فعّل الشاشة والملفات لاستخدام مساعد الكمبيوتر.','Enable screen and files to use computer AI.'))
             if enrollment:save_relay_enrollment(self.security,enrollment)
-            if not load_relay_enrollment(self.security):raise ValueError(self.t('أدخل مفتاح تسجيل الخادم أولاً.','Enter the relay enrollment key first.'))
             if not load_remote_token(self.security):generate_remote_token(self.security)
             updated.remote_enabled=True;updated.remote_connection_mode='relay'
             updated.save();self.settings=updated;self.on_save(updated)
             if 'relay_enrollment_input' in self.vars:self.vars['relay_enrollment_input'].set('')
-            self.status.configure(text=self.t('تم الحفظ؛ اتصال الخادم في الخلفية.','Saved; connecting to relay in background.'));self._refresh_remote_status()
+            self.status.configure(text=self.t('تم الحفظ؛ جارٍ الاتصال بالخادم.','Saved; connecting to relay.'));self._refresh_remote_status()
+            if show_qr:self._show_pairing_qr()
         except (ValueError,OSError,SecurityError) as exc:self.status.configure(text=str(exc))
 
     def _show_pairing_qr(self):
         from ..remote.settings import pairing_payload,load_remote_token
         try:
             if not self.security or not self.security.unlocked:raise ValueError(self.t('افتح قفل البرنامج أولاً.','Unlock the app first.'))
-            if self.settings.remote_connection_mode!='relay':raise ValueError(self.t('احفظ إعداد الخادم أولاً.','Save relay configuration first.'))
+            if self.settings.remote_connection_mode!='relay' or not self.settings.remote_relay_url:raise ValueError(self.t('الخادم غير مجهّز بعد. استورد ملف إعداد الخادم في الخطوة ١؛ بعدها سيظهر الرمز هنا.','Relay is not configured yet. Import the server setup in step 1, then your QR will appear here.'))
             payload=pairing_payload(self.settings.remote_relay_url,load_remote_token(self.security))
             import qrcode
             from PIL import ImageTk
-            image=qrcode.make(payload).convert('RGB');image.thumbnail((450,450))
-            dialog=tk.Toplevel(self);dialog.title(self.t('اقتران الهاتف','Pair phone'))
-            photo=ImageTk.PhotoImage(image,master=dialog)
-            label=ttk.Label(dialog,image=photo);label.image=photo;label.pack(padx=20,pady=15)
-            ttk.Label(dialog,text=self.t('افتح تطبيق Android واضغط مسح QR. احتفظ بهذا الرمز لنفسك.','Open Android and tap Scan QR. Keep this code private.'),wraplength=440).pack(padx=15,pady=10)
+            # Keep integer module sizes so scanners see sharp edges at any DPI.
+            code=qrcode.QRCode(box_size=5,border=4);code.add_data(payload);code.make(fit=True)
+            matrix=code.modules_count+8;code.box_size=max(2,min(6,300//matrix))
+            image=code.make_image(fill_color='black',back_color='white').convert('RGB')
+            panel=getattr(self,'_qr_panel',None)
+            if panel is None or not panel.winfo_exists():
+                dialog=tk.Toplevel(self);dialog.title(self.t('اقتران الهاتف','Pair phone'));panel=ttk.Frame(dialog,padding=18);panel.pack()
+            for child in panel.winfo_children():child.destroy()
+            photo=ImageTk.PhotoImage(image,master=panel)
+            label=ttk.Label(panel,image=photo);label.image=photo;label.pack(anchor='w',pady=8)
+            ttk.Label(panel,text=self.t('افتح Android واضغط مسح QR. هذا الرمز خاص بك.','Open Android and tap Scan QR. Keep this code private.'),wraplength=480).pack(anchor='w')
+            self._canvas.yview_moveto(0)
+
         except Exception as exc:self.status.configure(text=str(exc) if isinstance(exc,(ValueError,SecurityError)) else self.t('تعذر عرض رمز الاقتران.','Could not show pairing QR.'))
 
     def _page_desktop(self):
@@ -227,6 +304,7 @@ class SettingsView(ttk.Frame):
                                "Computer AI sends visible window labels/elements to Groq. It does not send screenshots or file contents. Approve the task before its steps execute."),wraplength=650).grid(row=3,column=0,columnspan=2,sticky="w",pady=8)
         f=self._section(self.t("مجلد الملفات المتاح للهاتف", "Phone file area"),self.t("الافتراضي هو مجلد المستخدم. اختر مجلداً أو قرصاً آخر إذا أردت إتاحته للهاتف. رفع ملف بنفس اسم ملف موجود يُرفض.",
                                                                                   "Defaults to your home folder. Choose another folder or drive to expose it to the phone. Uploads never overwrite existing files."))
+        self._row_check(f,0,self.t("إتاحة كل الأقراص المحلية للهاتف", "Expose all local drives to the phone"),"remote_files_all_drives",self.settings.remote_files_all_drives)
         self._row_entry(f,1,self.t("المجلد", "Folder"),"remote_files_root",self.settings.remote_files_root)
         def choose():
             folder=filedialog.askdirectory(parent=self,mustexist=True)
@@ -237,6 +315,8 @@ class SettingsView(ttk.Frame):
         label=getattr(self,"_remote_status_label",None)
         if label is not None:
             text=self.remote_status() if self.remote_status else self.t("احفظ الإعدادات لتطبيق الاتصال.", "Save settings to apply the connection.")
+            if self.current=='pairing' and not self.settings.remote_relay_url:
+                text=self.t('١ / ٣  •  الخادم غير مجهّز — ابدأ باستيراد ملف الإعداد','1 / 3  •  Relay not configured — import server setup first')
             label.configure(text=text)
 
     def _choose_github_checkout(self):
@@ -282,7 +362,8 @@ class SettingsView(ttk.Frame):
             # Restart immediately so an old token cannot authorize new requests.
             self.on_save(self.settings)
             self._refresh_remote_status()
-            self._show_pairing_token()
+            if self.current=="pairing":self._show_pairing_qr()
+            else:self._show_pairing_token()
         except (OSError,SecurityError) as exc:
             self.status.configure(text=str(exc))
 
@@ -395,12 +476,13 @@ class SettingsView(ttk.Frame):
         v=self.vars.get(name);return v.get() if v is not None else default
 
     def save(self):
-        if self.current == "pairing":return self._save_pairing()
+        if self.current == "pairing":return self._save_pairing(show_qr=True)
         if self.current == "desktop":
             try:
                 updated=replace(self.settings)
                 updated.remote_desktop_enabled=bool(self._value('remote_desktop_enabled',False))
                 updated.remote_ai_enabled=bool(self._value('remote_ai_enabled',False)) and updated.remote_desktop_enabled
+                updated.remote_files_all_drives=bool(self._value('remote_files_all_drives',False))
                 folder=str(self._value('remote_files_root','')).strip()
                 if folder and not Path(folder).expanduser().is_dir():raise ValueError(self.t('مجلد الملفات غير موجود.','File folder does not exist.'))
                 updated.remote_files_root=str(Path(folder).expanduser().resolve()) if folder else ''

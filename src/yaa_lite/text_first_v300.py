@@ -92,7 +92,7 @@ def _visual_arabic(value: str) -> str:
 
 
 def _btn(master, label, action, *, primary=False, quiet=False, width=None):
-    bg = theme.ACCENT if primary else (theme.BG if quiet else theme.PANEL)
+    bg = theme.BUTTON if primary else (theme.BG if quiet else theme.PANEL)
     fg = '#ffffff' if primary else theme.TEXT
     hover = theme.ACCENT_HOVER if primary else theme.SIDEBAR_HOVER
     button = tk.Button(master, text=_visual_arabic(label), command=action, font=('Segoe UI', 10, 'bold' if primary else 'normal'),

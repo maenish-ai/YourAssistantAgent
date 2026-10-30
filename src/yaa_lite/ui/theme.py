@@ -3,18 +3,18 @@ from __future__ import annotations
 import os
 
 LIGHT = {
-    "BG": "#f7f7f8", "PANEL": "#ffffff", "TEXT": "#202123", "MUTED": "#6b7280",
-    "ACCENT": "#5b5bd6", "ACCENT_HOVER": "#4b4bc4", "BORDER": "#e5e7eb",
-    "USER_BUBBLE": "#eef2ff", "AI_BUBBLE": "#ffffff", "SIDEBAR": "#f0f1f4",
-    "SIDEBAR_HOVER": "#e5e7eb", "SIDEBAR_ACTIVE": "#dddff7", "SUCCESS": "#087f5b",
+    "BG": "#f3f5fb", "PANEL": "#ffffff", "TEXT": "#182238", "MUTED": "#61708a",
+    "ACCENT": "#6750d8", "BUTTON": "#6750d8", "ACCENT_HOVER": "#543fc0", "BORDER": "#e1e6f1",
+    "USER_BUBBLE": "#ece8ff", "AI_BUBBLE": "#ffffff", "SIDEBAR": "#eaf0fa",
+    "SIDEBAR_HOVER": "#dfe6f4", "SIDEBAR_ACTIVE": "#e0dafa", "SUCCESS": "#087f5b",
     "DANGER": "#b42318", "WARNING": "#b54708", "INPUT": "#ffffff",
 }
 DARK = {
-    "BG": "#171717", "PANEL": "#212121", "TEXT": "#f4f4f5", "MUTED": "#a1a1aa",
-    "ACCENT": "#8b8bf5", "ACCENT_HOVER": "#7777e8", "BORDER": "#3f3f46",
-    "USER_BUBBLE": "#2b2b3b", "AI_BUBBLE": "#212121", "SIDEBAR": "#111111",
-    "SIDEBAR_HOVER": "#2b2b2b", "SIDEBAR_ACTIVE": "#303047", "SUCCESS": "#34d399",
-    "DANGER": "#f97066", "WARNING": "#fdb022", "INPUT": "#2b2b2b",
+    "BG": "#0c111e", "PANEL": "#171f31", "TEXT": "#eef2ff", "MUTED": "#a2afc9",
+    "ACCENT": "#b2a0ff", "BUTTON": "#7154d1", "ACCENT_HOVER": "#6747bf", "BORDER": "#2c374e",
+    "USER_BUBBLE": "#2f2853", "AI_BUBBLE": "#171f31", "SIDEBAR": "#101829",
+    "SIDEBAR_HOVER": "#202b43", "SIDEBAR_ACTIVE": "#332d56", "SUCCESS": "#5cddb3",
+    "DANGER": "#ff9aab", "WARNING": "#fdbf68", "INPUT": "#171f31",
 }
 
 

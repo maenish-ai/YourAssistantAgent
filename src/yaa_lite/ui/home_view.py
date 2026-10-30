@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import socket
+import tkinter as tk
+from . import theme
+from .resources import asset_path
+from .. import __version__
 from tkinter import ttk
 
 from ..agent.facebook_service import FacebookService
@@ -11,7 +15,7 @@ from .i18n import ui_text
 
 class HomeView(ttk.Frame):
     def __init__(self, master, settings, runtime, facebook: FacebookService, backup: BackupService,
-                 browser_bridge=None, on_navigate=None, on_new_chat=None):
+                 browser_bridge=None, on_navigate=None, on_new_chat=None, on_pair_phone=None, remote_status=None):
         super().__init__(master, padding=24)
         self.settings = settings
         self.runtime = runtime
@@ -20,6 +24,8 @@ class HomeView(ttk.Frame):
         self.browser_bridge = browser_bridge
         self.on_navigate = on_navigate or (lambda *_: None)
         self.on_new_chat = on_new_chat or (lambda: None)
+        self.on_pair_phone=on_pair_phone or (lambda:self.on_navigate("settings"))
+        self.remote_status=remote_status or (lambda: "")
         self.db = ChatDB()
         self.language = settings.interface_language
         self._build()
@@ -31,14 +37,20 @@ class HomeView(ttk.Frame):
 
     def _build(self):
         self.columnconfigure(0, weight=1)
-        ttk.Label(self, text=self.t("مرحبًا 👋", "Welcome 👋"), style="Title.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(self, text=self.t("هذه صورة سريعة عن المساعد والشغل الحالي.", "Here is a quick view of your assistant and current work."), style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(4, 18))
+        hero=tk.Frame(self,bg=theme.PANEL,padx=24,pady=18);hero.grid(row=0,column=0,sticky="ew");hero.columnconfigure(0,weight=1)
+        tk.Label(hero,text=self.t("كل شغلك. أقرب إليك.","Your workspace, within reach."),bg=theme.PANEL,fg=theme.TEXT,font=("Segoe UI",26,"bold"),anchor='w').grid(row=0,column=0,sticky='w')
+        tk.Label(hero,text="YOUR ASSISTANT  /  "+__version__,bg=theme.PANEL,fg=theme.ACCENT,font=("Segoe UI",10,"bold")).grid(row=1,column=0,sticky='w',pady=8)
+        try:
+            self._logo=tk.PhotoImage(file=str(asset_path('brand_mark_128.png')))
+            tk.Label(hero,image=self._logo,bg=theme.PANEL).grid(row=0,column=1,rowspan=2,padx=(16,0))
+        except tk.TclError:pass
+        ttk.Label(self, text=self.t("مساعدك، ملفاتك وكمبيوترك — من مكان واحد.", "Your assistant, files and computer — in one place."), style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(4, 18))
 
         cards = ttk.Frame(self)
         cards.grid(row=2, column=0, sticky="ew")
         for i in range(4):
             cards.columnconfigure(i, weight=1)
-        self.agent = self._card(cards, 0, "Qwen3", "—")
+        self.agent = self._card(cards, 0, "GroqCloud", "—")
         self.fb = self._card(cards, 1, "Facebook", "—")
         self.backup_card = self._card(cards, 2, self.t("النسخ الاحتياطي", "Backup"), "—")
         self.net = self._card(cards, 3, self.t("الإنترنت", "Internet"), "—")
@@ -48,15 +60,17 @@ class HomeView(ttk.Frame):
         ttk.Button(qa, text=self.t("محادثة جديدة", "New chat"), style="Accent.TButton", command=self.on_new_chat).pack(side="left", padx=(0, 8))
         ttk.Button(qa, text=self.t("حالة التنفيذ", "Live status"), command=lambda: self.on_navigate("status")).pack(side="left", padx=8)
         ttk.Button(qa, text="Facebook", command=lambda: self.on_navigate("facebook")).pack(side="left", padx=8)
-        ttk.Button(qa, text=self.t("نسخ الآن", "Backup now"), command=self._backup_now).pack(side="left", padx=8)
+        ttk.Button(qa, text=self.t("ربط الهاتف QR", "Pair phone QR"), style="Accent.TButton",command=self.on_pair_phone).pack(side="left", padx=8)
 
+        self.phone_status=ttk.Label(self,text=self.remote_status(),style="Muted.TLabel",wraplength=720)
+        self.phone_status.grid(row=5,column=0,sticky="w",pady=12)
         middle = ttk.Frame(self)
         middle.grid(row=4, column=0, sticky="nsew")
         middle.columnconfigure(0, weight=1)
         middle.columnconfigure(1, weight=1)
         self.tasks_box = ttk.LabelFrame(middle, text=self.t("المهام القادمة", "Upcoming tasks"), padding=14)
         self.tasks_box.grid(row=0, column=0, sticky="nsew", padx=(0, 7))
-        self.suggestions_box = ttk.LabelFrame(middle, text=self.t("اقتراحات Qwen", "Qwen suggestions"), padding=14)
+        self.suggestions_box = ttk.LabelFrame(middle, text=self.t("خطوتك التالية", "Next steps"), padding=14)
         self.suggestions_box.grid(row=0, column=1, sticky="nsew", padx=(7, 0))
 
     def _card(self, parent, col, title, value):
@@ -81,6 +95,7 @@ class HomeView(ttk.Frame):
             self.db.add_activity("backup_error", f"{type(exc).__name__}: {exc}")
 
     def refresh(self):
+        self.phone_status.configure(text=self.remote_status())
         self.agent.config(text=self.t("جاهز" if self.runtime.loaded_profile else "يتم التجهيز", "Ready" if self.runtime.loaded_profile else "Preparing"))
         self.fb.config(text=self.facebook.status_text())
         st = self.backup.status()
@@ -106,7 +121,7 @@ class HomeView(ttk.Frame):
             if not st.last_backup:
                 suggestions.append(self.t("ما في نسخة احتياطية بعد. اعمل أول Backup.", "No backup exists yet. Create the first backup."))
             if not rules:
-                suggestions.append(self.t("إذا عندك شغل متكرر، احكيه لـQwen وحوله لمهمة مجدولة.", "Tell Qwen about recurring work and turn it into a scheduled task."))
+                suggestions.append(self.t("إذا عندك شغل متكرر، احكيه للمساعد وحوله لمهمة مجدولة.", "Tell your assistant about recurring work and turn it into a scheduled task."))
         if not suggestions:
             suggestions = [self.t("كل شيء هادئ حاليًا.", "Everything looks quiet right now.")]
         for s in suggestions[:4]:

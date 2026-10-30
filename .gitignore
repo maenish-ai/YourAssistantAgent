@@ -8,3 +8,8 @@ runtime/*
 *.yaa
 .env
 desktop-setup.json
+android-signing-private/
+*.jks
+*.keystore
+github-secrets.json
+android/local.properties

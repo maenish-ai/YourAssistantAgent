@@ -48,7 +48,8 @@ public final class MainActivity extends Activity {
     private ApiClient api;
     private EditText serverField, tokenField, composer;
     private TextView status;
-    private Button connectButton, disconnectButton, sendButton, attachButton, newChatButton;
+    private Button connectButton, disconnectButton, sendButton, attachButton, newChatButton, desktopButton, filesButton, computerButton;
+    private boolean desktopAllowed, filesAllowed, aiAllowed;
     private LinearLayout connectionFields, transcript;
     private ScrollView scroll;
     private boolean resumed, destroyed, connected, busy, polling;
@@ -83,104 +84,53 @@ public final class MainActivity extends Activity {
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
 
     private void buildViews() {
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
-        root.setPadding(dp(12), dp(10), dp(12), dp(10));
-        root.setOnApplyWindowInsetsListener((view, insets) -> {
-            view.setPadding(dp(12) + insets.getSystemWindowInsetLeft(), dp(10) + insets.getSystemWindowInsetTop(),
-                    dp(12) + insets.getSystemWindowInsetRight(), dp(10) + insets.getSystemWindowInsetBottom());
-            return insets;
-        });
-        setContentView(root);
-        TextView title = label("مساعدك على كمبيوتر البيت", 21);
-        root.addView(title);
-        Button scan=button("مسح QR — ربط الكمبيوتر تلقائياً",()->{
+        LinearLayout root=AppUi.root(this);
+        AppUi.header(this,root,"Your Assistant","كمبيوترك معك • Android "+BuildConfig.VERSION_NAME,false);
+        LinearLayout pairing=AppUi.card(this);
+        pairing.addView(label("ربط هاتفك بكمبيوتر البيت",16));
+        pairing.addView(button("مسح QR وإقران الكمبيوتر",()->{
             IntentIntegrator scanner=new IntentIntegrator(this);
             scanner.setDesiredBarcodeFormats(IntentIntegrator.QR_CODE);
-            scanner.setPrompt("وجّه الكاميرا إلى QR الظاهر في برنامج الكمبيوتر");
+            scanner.setPrompt("افتح ربط الهاتف في برنامج Windows وامسح الرمز");
             scanner.setBeepEnabled(false);scanner.setOrientationLocked(false);scanner.initiateScan();
-        });
-        root.addView(scan);
-        connectionFields = new LinearLayout(this);
-        connectionFields.setOrientation(LinearLayout.VERTICAL);
-        root.addView(connectionFields);
-        serverField = field("رابط HTTPS الذي أعددته للكمبيوتر", false);
-        serverField.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-        connectionFields.addView(serverField);
-        tokenField = field("رمز الاقتران من إعدادات الكمبيوتر", true);
-        tokenField.setSaveEnabled(false);
-        tokenField.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
-        connectionFields.addView(tokenField);
-        connectButton = button("حفظ واتصال", this::connect);
-        connectionFields.addView(connectButton);
-        LinearLayout connectionActions = row();
-        Button showSettings = button("إعداد الاتصال", () -> connectionFields.setVisibility(
-                connectionFields.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE));
-        disconnectButton = button("قطع الاتصال", this::disconnect);
-        connectionActions.addView(button("اتصال",()->{
-            if(serverField.getText().toString().isEmpty())status.setText("امسح QR من برنامج الكمبيوتر مرة واحدة أولاً.");
-            else connect();
+        }));
+        LinearLayout actions=row();
+        actions.addView(button("اتصال",()->{
+            if(serverField.getText().toString().isEmpty())showPairingHelp();else connect();
         }),weighted());
-        connectionActions.addView(showSettings, weighted());
-        connectionActions.addView(disconnectButton, weighted());
-        root.addView(connectionActions);
-        status = label("من برنامج الكمبيوتر افتح الإقران التلقائي واعرض QR، ثم امسحه هنا. إعادة الاتصال تلقائية بعد الاقتران.", 13);
-        root.addView(status);
-        scroll = new ScrollView(this);
-        transcript = new LinearLayout(this);
-        transcript.setOrientation(LinearLayout.VERTICAL);
-        scroll.addView(transcript);
-        root.addView(scroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
-        LinearLayout taskActions = row();
-        newChatButton = button("محادثة جديدة", this::newChat);
-        attachButton = button("إرفاق ZIP", this::chooseZip);
-        taskActions.addView(newChatButton, weighted());
-        taskActions.addView(attachButton, weighted());
-        root.addView(taskActions);
-        LinearLayout computerActions = row();
-        computerActions.addView(button("سطح المكتب", () -> {
-            if (connected) startActivity(new Intent(this, DesktopActivity.class));
-        }), weighted());
-        computerActions.addView(button("ملفات الكمبيوتر", () -> {
-            if (connected) startActivity(new Intent(this, FilesActivity.class));
-        }), weighted());
-        computerActions.addView(button("أمر كمبيوتر", () -> { composer.setText("/computer "); composer.setSelection(composer.length()); composer.requestFocus(); }), weighted());
-        root.addView(computerActions);
-        composer = new EditText(this);
-        composer.setHint("اكتب طلبك للمساعد…");
-        composer.setMinLines(1);
-        composer.setMaxLines(3);
-        composer.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
-        root.addView(composer);
-        sendButton = button("إرسال", this::sendText);
-        root.addView(sendButton);
+        actions.addView(AppUi.button(this,"إعدادات الربط",()->connectionFields.setVisibility(connectionFields.getVisibility()==View.VISIBLE?View.GONE:View.VISIBLE),false),weighted());
+        disconnectButton=AppUi.button(this,"قطع الاتصال",this::disconnect,false);actions.addView(disconnectButton,weighted());
+        pairing.addView(actions,AppUi.space(this));
+        connectionFields=new LinearLayout(this);connectionFields.setOrientation(LinearLayout.VERTICAL);
+        serverField=field("عنوان HTTPS — إعداد متقدم",false);serverField.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_URI);
+        tokenField=field("مفتاح الاقتران — إعداد متقدم",true);tokenField.setSaveEnabled(false);tokenField.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
+        connectionFields.addView(serverField,AppUi.space(this));connectionFields.addView(tokenField,AppUi.space(this));
+        connectButton=button("حفظ واتصال",this::connect);connectionFields.addView(connectButton,AppUi.space(this));
+        connectionFields.addView(AppUi.button(this,"كيف أربط الجهازين؟",this::showPairingHelp,false));pairing.addView(connectionFields);
+        root.addView(pairing,AppUi.space(this));
+        status=label("غير مقترن • اعرض QR من برنامج Windows ثم امسحه هنا.",12);status.setTextColor(AppUi.GREEN);root.addView(status);
+        LinearLayout tools=row();
+        desktopButton=AppUi.button(this,"سطح المكتب",()->startActivity(new Intent(this,DesktopActivity.class)),false);
+        filesButton=AppUi.button(this,"الملفات",()->startActivity(new Intent(this,FilesActivity.class)),false);
+        computerButton=AppUi.button(this,"المساعد الذكي",()->{composer.setText("/computer ");composer.setSelection(composer.length());composer.requestFocus();},false);
+        tools.addView(desktopButton,weighted());tools.addView(filesButton,weighted());tools.addView(computerButton,weighted());root.addView(tools,AppUi.space(this));
+        scroll=new ScrollView(this);scroll.setFillViewport(true);transcript=new LinearLayout(this);transcript.setOrientation(LinearLayout.VERTICAL);scroll.addView(transcript);
+        root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
+        LinearLayout tasks=row();newChatButton=AppUi.button(this,"محادثة جديدة",this::newChat,false);attachButton=AppUi.button(this,"إرفاق ZIP",this::chooseZip,false);
+        tasks.addView(newChatButton,weighted());tasks.addView(attachButton,weighted());root.addView(tasks,AppUi.space(this));
+        composer=AppUi.field(this,"اطلب من مساعدك…");composer.setMinLines(1);composer.setMaxLines(3);composer.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        root.addView(composer,AppUi.space(this));sendButton=button("إرسال الطلب",this::sendText);root.addView(sendButton,AppUi.space(this));
     }
 
-    private TextView label(String text, int size) {
-        TextView view = new TextView(this);
-        view.setText(text);
-        view.setTextSize(size);
-        view.setPadding(dp(5), dp(5), dp(5), dp(5));
-        view.setTextIsSelectable(true);
-        return view;
+    private void showPairingHelp(){
+        new android.app.AlertDialog.Builder(this).setTitle("ربط Windows وAndroid")
+            .setMessage("١. حدّث برنامج Windows وافتح ربط الهاتف.\n٢. استورد ملف إعداد الخادم مرة واحدة. إذا لم يُجهّز الخادم، لن يكون هناك رمز صالح بعد.\n٣. فعّل صلاحيات الشاشة والملفات التي تريدها، ثم اعرض QR وامسحه هنا.\n\nاتصال خارج البيت يحتاج خادماً منشوراً. الكمبيوتر يجب أن يبقى مستيقظاً وبرنامجه مفتوحاً. قطع الاتصال يوقف هذا الهاتف؛ تغيير المفتاح من الكمبيوتر يلغي الاقتران.")
+            .setPositiveButton("فهمت",null).show();
     }
 
-    private EditText field(String hint, boolean secret) {
-        EditText view = new EditText(this);
-        view.setHint(hint);
-        view.setSingleLine(true);
-        view.setTextDirection(View.TEXT_DIRECTION_LTR);
-        if (secret) view.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        return view;
-    }
-
-    private Button button(String text, Runnable action) {
-        Button view = new Button(this);
-        view.setText(text);
-        view.setOnClickListener(v -> action.run());
-        return view;
-    }
+    private TextView label(String text,int size){TextView v=AppUi.label(this,text,size,false);v.setTextIsSelectable(true);return v;}
+    private EditText field(String hint,boolean secret){EditText v=AppUi.field(this,hint);v.setSingleLine(true);v.setTextDirection(View.TEXT_DIRECTION_LTR);if(secret)v.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);return v;}
+    private Button button(String text,Runnable action){return AppUi.button(this,text,action,true);}
 
     private LinearLayout row() {
         LinearLayout view = new LinearLayout(this);
@@ -189,7 +139,7 @@ public final class MainActivity extends Activity {
     }
 
     private LinearLayout.LayoutParams weighted() {
-        return new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
+        LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);p.setMargins(dp(3),dp(2),dp(3),dp(2));return p;
     }
 
     private boolean current(int requestGeneration) { return !destroyed && generation == requestGeneration; }
@@ -200,7 +150,8 @@ public final class MainActivity extends Activity {
         newChatButton.setEnabled(connected && !busy);
         composer.setEnabled(connected && !busy);
         connectButton.setEnabled(!busy);
-        disconnectButton.setEnabled(api != null);
+        disconnectButton.setEnabled(api != null || allowReconnect);
+        desktopButton.setEnabled(connected && desktopAllowed);filesButton.setEnabled(connected && filesAllowed);computerButton.setEnabled(connected && aiAllowed);
     }
 
     private void connect() {
@@ -220,18 +171,20 @@ public final class MainActivity extends Activity {
         network.execute(() -> {
             try {
                 JSONObject response = client.events(0);
+                JSONObject permissions=client.capabilities();
                 main.post(() -> {
                     if (!current(requestGeneration)) return;
                     try { credentials.save(client.origin(),token); }
                     catch(Exception e){busy=false;connected=false;client.close();api=null;status.setText("تعذر حفظ الاقتران بأمان. أعد المحاولة.");updateButtons();return;}
                     connected = true;
+                    desktopAllowed=permissions.optBoolean("desktop");filesAllowed=permissions.optBoolean("files");aiAllowed=permissions.optBoolean("computer_ai");
                     busy = false;
                     cursor = 0;
                     usedApprovalTokens.clear();
                     transcript.removeAllViews();
                     connectionFields.setVisibility(View.GONE);
                     applyEvents(response);
-                    status.setText("متصل • تستمر المهام على الكمبيوتر، وتظهر النتائج هنا أثناء فتح التطبيق.");
+                    status.setText(desktopAllowed?"● متصل • الشاشة والملفات حسب صلاحيات الكمبيوتر":"● متصل • فعّل التحكم من ربط الهاتف في Windows لإتاحة الشاشة والملفات");
                     updateButtons();
                     schedulePoll();
                 });
@@ -342,7 +295,8 @@ public final class MainActivity extends Activity {
     private void appendText(String text, String sender) {
         if (text.isEmpty()) return;
         TextView view = label(sender + "\n" + text, 16);
-        view.setBackgroundColor("أنت".equals(sender) ? Color.rgb(228, 239, 255) : Color.rgb(242, 244, 247));
+        view.setBackground(AppUi.shape("أنت".equals(sender)?Color.rgb(47,40,83):AppUi.PANEL,dp(16)));
+        view.setPadding(dp(14),dp(12),dp(14),dp(12));
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT);
         params.setMargins(0, dp(5), 0, dp(5));
@@ -399,7 +353,7 @@ public final class MainActivity extends Activity {
     private void sendText() {
         String text = composer.getText().toString().trim();
         if (!connected || busy || text.isEmpty()) return;
-        if (text.length() > 12000) { status.setText("اختصر الرسالة إلى 12000 حرف أو أقل."); return; }
+        if (text.length() > 5000) { status.setText("اختصر الرسالة إلى 5000 حرف أو أقل."); return; }
         try {
             JSONObject body = new JSONObject().put("text", text);
             submit("/v1/messages", body, "وصل الطلب لقائمة المهام؛ النتيجة تظهر في المحادثة.", () -> {
@@ -518,6 +472,7 @@ public final class MainActivity extends Activity {
                         output.write(buffer, 0, count);
                     }
                 }
+                client.progress((done,total)->main.post(()->{if(current(requestGeneration))status.setText("إرسال ZIP • "+AppUi.size(done)+" / "+AppUi.size(total));}));
                 client.upload(temporary);
                 main.post(() -> {
                     if (!current(requestGeneration)) return;

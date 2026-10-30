@@ -24,6 +24,9 @@ final class ApiClient {
     private RelayTransport relay;
     private final AtomicReference<HttpsURLConnection> active = new AtomicReference<>();
     private volatile boolean closed;
+    interface Progress { void update(long transferred,long total); }
+    private Progress progress=(done,total)->{};
+    void progress(Progress listener){progress=listener;if(relay!=null)relay.progress(listener);}
 
     static final class ApiException extends Exception {
         final int status;
@@ -38,6 +41,7 @@ final class ApiClient {
         try {
             URI parsed = new URI(url.trim());
             if (!"https".equalsIgnoreCase(parsed.getScheme()) || parsed.getHost() == null ||
+                    parsed.getPort() == 0 || parsed.getPort() > 65535 ||
                     parsed.getRawUserInfo() != null || parsed.getRawQuery() != null || parsed.getRawFragment() != null ||
                     (parsed.getRawPath() != null && !parsed.getRawPath().isEmpty() && !"/".equals(parsed.getRawPath()))) {
                 throw new IllegalArgumentException();
@@ -110,7 +114,7 @@ final class ApiClient {
                 while ((count = input.read(buffer)) != -1) {
                     received += count;
                     if (closed || received > expected) throw new ApiException("أُلغي التنزيل أو تغير حجم الملف.");
-                    output.write(buffer, 0, count);
+                    output.write(buffer, 0, count);progress.update(received,expected);
                 }
             }
             if (received != expected) throw new ApiException("التنزيل غير مكتمل. أعد المحاولة.");
@@ -167,7 +171,7 @@ final class ApiClient {
                             while ((count = input.read(buffer)) != -1) {
                                 written += count;
                                 if (written > ("application/zip".equals(uploadMime) ? MAX_UPLOAD_BYTES : 256L * 1024 * 1024) || closed) throw new ApiException("أُلغي إرسال الملف.");
-                                output.write(buffer, 0, count);
+                                output.write(buffer, 0, count);progress.update(written,file.length());
                             }
                         }
                     }

@@ -1,0 +1,13 @@
+Source commit: 588d9dd7704fbfa89bbff2dedbf354be29392662
+Windows source version: 4.7.0. Android release version: 1.3.0 (code 4).
+Python: full suite 271 passed; six pairing/scope/power tests repeated after final UI sizing changes passed.
+Android: 10 tests passed, including three real activity startup tests under Robolectric (API 28).
+Android builds: assembleDebug, assembleRelease, lintDebug and lintRelease passed; lint reports 0 errors and 12 warnings.
+APK release signature: verified (v2, RSA 3072), certificate SHA256 7e0f4bc614a8a6ac0fd365e5520a26531963a747c2bb9ffcbb5b34e194f30617.
+Windows and Android source brand images are byte-identical; release launcher icon resolved and verified in APK.
+Source startup self-test, JavaScript syntax, YAML parsing and git diff checks passed.
+Tk pairing screens and shell rendered locally at full and compact sizes; this is Linux Tk rendering, not Windows device validation.
+No live public relay was deployed. Hosting account connection and one-time server setup remain required.
+Not performed here: physical Android camera, real Windows input/permissions, Windows installer build, Docker/Caddy runtime.
+Windows installer must be built through GitHub Actions after upload. No GitHub push was performed.
+Signing files are separate and private. Do not put them in a source repository.

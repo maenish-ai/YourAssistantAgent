@@ -101,6 +101,8 @@ class Settings:
     remote_desktop_enabled: bool = False
     remote_ai_enabled: bool = False
     remote_files_root: str = ""
+    remote_files_all_drives: bool = False
+    remote_keep_awake: bool = False
     github_repository: str = "maenish-ai/YourAssistantAgent"
     github_checkout: str = ""
 
@@ -175,6 +177,8 @@ class Settings:
         if not isinstance(obj.remote_connection_mode,str) or obj.remote_connection_mode not in {"direct","relay"}:obj.remote_connection_mode="direct"
         obj.remote_enabled = obj.remote_enabled is True
         obj.remote_desktop_enabled = obj.remote_desktop_enabled is True
+        obj.remote_files_all_drives = obj.remote_files_all_drives is True
+        obj.remote_keep_awake = obj.remote_keep_awake is True
         obj.remote_ai_enabled = obj.remote_ai_enabled is True and obj.remote_desktop_enabled
         try:
             obj.remote_port = int(obj.remote_port)

@@ -15,7 +15,7 @@ import java.util.concurrent.Executors;
 
 public final class DesktopActivity extends Activity {
     private final Handler main=new Handler(Looper.getMainLooper());
-    private final ExecutorService network=Executors.newSingleThreadExecutor();
+    private final java.util.concurrent.ThreadPoolExecutor network=new java.util.concurrent.ThreadPoolExecutor(1,1,0L,java.util.concurrent.TimeUnit.MILLISECONDS,new java.util.concurrent.LinkedBlockingQueue<>());
     private ApiClient api;
     private RemoteScreenView screen;
     private TextView status;
@@ -23,9 +23,9 @@ public final class DesktopActivity extends Activity {
     private final Runnable poll=this::frame;
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
-        LinearLayout root=new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(8,8,8,8); root.setFitsSystemWindows(true); setContentView(root);
-        status=new TextView(this); status.setText("تكبير بإصبعين، نقرة للنقر، ضغط مطوّل للزر الأيمن. الشاشة الرئيسية فقط."); root.addView(status);
+        LinearLayout root=AppUi.root(this);
+        AppUi.header(this,root,"سطح المكتب","تحكم مباشر • جلسة Windows المفتوحة",true);
+        status=AppUi.label(this,"",12,true); status.setText("تكبير بإصبعين، نقرة للنقر، ضغط مطوّل للزر الأيمن. الشاشة الرئيسية فقط."); root.addView(status);
         screen=new RemoteScreenView(this,(action,x,y,endX,endY,id)->{
             try {
                 JSONObject data=new JSONObject().put("action",action).put("x",x).put("y",y).put("frame_id",id);
@@ -34,25 +34,30 @@ public final class DesktopActivity extends Activity {
             } catch(Exception e){status.setText("تعذر تجهيز النقرة.");}
         });
         root.addView(screen,new LinearLayout.LayoutParams(-1,0,1));
+        LinearLayout keyboard=new LinearLayout(this);keyboard.setOrientation(LinearLayout.VERTICAL);keyboard.setVisibility(android.view.View.GONE);
+        LinearLayout toolbar=new LinearLayout(this);
+        add(toolbar,"لوحة المفاتيح",()->keyboard.setVisibility(keyboard.getVisibility()==android.view.View.VISIBLE?android.view.View.GONE:android.view.View.VISIBLE));
+        add(toolbar,"ملاءمة",()->screen.reset());
+        add(toolbar,"سحب / نقر",()->{screen.dragMode=!screen.dragMode;status.setText(screen.dragMode?"وضع سحب العناصر مفعّل":"وضع النقر مفعّل");});
+        add(toolbar,"إيقاف المهمة",()->{network.getQueue().clear();polling=false;post("/v1/desktop/stop",new JSONObject());});
+        root.addView(toolbar);root.addView(keyboard);
         LinearLayout modes=new LinearLayout(this);
         add(modes,"تحديث",()->frame()); add(modes,"مفاتيح",()->{
             String[] labels={"←","→","↑","↓","Delete","Home","End","Page Up","Page Down","F5","Ctrl+S","Ctrl+F","Start"};
             String[][] values={{"LEFT"},{"RIGHT"},{"UP"},{"DOWN"},{"DELETE"},{"HOME"},{"END"},{"PAGEUP"},{"PAGEDOWN"},{"F5"},{"CTRL","S"},{"CTRL","F"},{"WIN"}};
             new android.app.AlertDialog.Builder(this).setTitle("لوحة المفاتيح").setItems(labels,(dialog,index)->keys(values[index])).show();
-        }); add(modes,"ملاءمة",()->screen.reset());
-        add(modes,"وضع السحب",()->{screen.dragMode=!screen.dragMode; status.setText(screen.dragMode?"وضع السحب: اسحب العنصر من مكانه للوجهة.":"وضع النقر؛ السحب عند التكبير يحرّك الصورة محلياً.");});
-        add(modes,"إيقاف المهمة",()->post("/v1/desktop/stop",new JSONObject())); root.addView(modes);
-        EditText text=new EditText(this);text.setHint("اكتب النص الذي تريد إدخاله على الكمبيوتر");text.setMaxLines(2);root.addView(text);
+        }); keyboard.addView(modes);
+        EditText text=AppUi.field(this,"اكتب على الكمبيوتر…");text.setHint("اكتب النص الذي تريد إدخاله على الكمبيوتر");text.setMaxLines(2);keyboard.addView(text);
         LinearLayout keys=new LinearLayout(this);
         add(keys,"كتابة",()->{String value=text.getText().toString();if(value.isEmpty())return;try{input(new JSONObject().put("action","text").put("text",value));text.setText("");}catch(Exception ignored){}});
-        add(keys,"Enter",()->keys("ENTER"));add(keys,"Tab",()->keys("TAB"));add(keys,"⌫",()->keys("BACKSPACE"));add(keys,"Esc",()->keys("ESC"));root.addView(keys);
+        add(keys,"Enter",()->keys("ENTER"));add(keys,"Tab",()->keys("TAB"));add(keys,"⌫",()->keys("BACKSPACE"));add(keys,"Esc",()->keys("ESC"));keyboard.addView(keys);
         LinearLayout shortcuts=new LinearLayout(this);
-        add(shortcuts,"العنوان",()->keys("CTRL","L"));add(shortcuts,"تحديد",()->keys("CTRL","A"));add(shortcuts,"نسخ",()->keys("CTRL","C"));add(shortcuts,"لصق",()->keys("CTRL","V"));add(shortcuts,"النوافذ",()->keys("ALT","TAB"));root.addView(shortcuts);
-        LinearLayout scroll=new LinearLayout(this);add(scroll,"أعلى",()->wheel(3));add(scroll,"أسفل",()->wheel(-3));add(scroll,"سطح المكتب",()->keys("WIN","D"));root.addView(scroll);
+        add(shortcuts,"العنوان",()->keys("CTRL","L"));add(shortcuts,"تحديد",()->keys("CTRL","A"));add(shortcuts,"نسخ",()->keys("CTRL","C"));add(shortcuts,"لصق",()->keys("CTRL","V"));add(shortcuts,"النوافذ",()->keys("ALT","TAB"));keyboard.addView(shortcuts);
+        LinearLayout scroll=new LinearLayout(this);add(scroll,"أعلى",()->wheel(3));add(scroll,"أسفل",()->wheel(-3));add(scroll,"سطح المكتب",()->keys("WIN","D"));keyboard.addView(scroll);
         try{SecureStore store=new SecureStore(this);api=new ApiClient(store.url(),store.token());}
         catch(Exception e){status.setText("ارجع للمحادثة واضبط الاتصال أولاً.");}
     }
-    private void add(LinearLayout row,String label,Runnable action){Button b=new Button(this);b.setText(label);b.setTextSize(11);b.setPadding(2,2,2,2);b.setOnClickListener(v->action.run());row.addView(b,new LinearLayout.LayoutParams(0,-2,1));}
+    private void add(LinearLayout row,String label,Runnable action){Button b=AppUi.button(this,label,action,false);b.setTextSize(12);b.setPadding(2,2,2,2);LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(0,-2,1);p.setMargins(2,3,2,3);row.addView(b,p);}
     private void keys(String... values){try{input(new JSONObject().put("action","keys").put("keys",new JSONArray(values)));}catch(Exception ignored){}}
     private void wheel(int amount){try{input(new JSONObject().put("action","scroll").put("amount",amount));}catch(Exception ignored){}}
     private void input(JSONObject data){
@@ -68,7 +73,7 @@ public final class DesktopActivity extends Activity {
         network.execute(()->{try{
             JSONObject result=api.desktop();byte[] bytes=Base64.decode(result.getString("image_b64"),Base64.DEFAULT);
             Bitmap image=BitmapFactory.decodeByteArray(bytes,0,bytes.length);if(image==null)throw new Exception();
-            main.post(()->{polling=false;if(destroyed){image.recycle();return;}screen.image(image,result.optString("frame_id"));schedule();});
+            main.post(()->{polling=false;if(destroyed){image.recycle();return;}screen.image(image,result.optString("frame_id"));status.setText("● مباشر • "+result.optInt("screen_width")+" × "+result.optInt("screen_height")+" • تكبير بإصبعين");schedule();});
         }catch(Exception e){main.post(()->{polling=false;schedule();});showError(e);}});
     }
     private void schedule(){main.removeCallbacks(poll);if(resumed&&!destroyed)main.postDelayed(poll,1000);}

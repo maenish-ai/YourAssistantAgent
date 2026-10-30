@@ -5,11 +5,14 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <application
         android:label="Your Assistant"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
         android:allowBackup="false"
         android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:usesCleartextTraffic="false"
         android:supportsRtl="true"
-        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        android:theme="@style/AppTheme">
         <activity android:name=".DesktopActivity" android:configChanges="orientation|screenSize" android:exported="false" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".FilesActivity" android:configChanges="orientation|screenSize" android:exported="false" />
         <activity android:name=".MainActivity" android:configChanges="orientation|screenSize" android:exported="true"

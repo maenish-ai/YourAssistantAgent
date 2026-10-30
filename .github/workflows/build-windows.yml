@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build Windows v4.6.0
+    name: Build Windows v4.7.0
     permissions:
       contents: read
     runs-on: windows-latest
@@ -154,7 +154,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: YourAssistantAgent-Windows-Setup-v4.6.0
+          name: YourAssistantAgent-Windows-Setup-v4.7.0
           path: |
             output/*.exe
             output/*.sha256.txt
@@ -180,11 +180,46 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Test and build native Android app
-        run: gradle -p android --no-daemon :app:testDebugUnitTest :app:assembleDebug
+      - name: Restore private Android release key when configured
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          python - <<'PYKEY'
+          import base64, os
+          from pathlib import Path
+          encoded=os.environ.get('ANDROID_KEYSTORE_BASE64','')
+          if encoded:
+              path=Path(os.environ['RUNNER_TEMP'])/'yourassistant-release.jks'
+              path.write_bytes(base64.b64decode(encoded,validate=True))
+              path.chmod(0o600)
+              with open(os.environ['GITHUB_ENV'],'a') as output:
+                  output.write('YAA_ANDROID_KEYSTORE='+str(path)+'\n')
+          PYKEY
+      - name: Test, lint and build Android companion
+        env:
+          YAA_ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          YAA_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          YAA_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$YAA_ANDROID_KEYSTORE" ]; then
+            gradle -p android --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleRelease
+          else
+            gradle -p android --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+          fi
+      - name: Upload signed Android release
+        if: env.YAA_ANDROID_KEYSTORE != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: YourAssistantAgent-Android-Release-v1.3.0
+          path: android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+          retention-days: 30
+      - name: Remove private Android key from runner
+        if: always()
+        run: rm -f "$RUNNER_TEMP/yourassistant-release.jks"
       - uses: actions/upload-artifact@v4
         with:
-          name: YourAssistantAgent-Android-Debug
+          name: YourAssistantAgent-Android-Debug-v1.3.0
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 30

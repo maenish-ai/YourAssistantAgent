@@ -1,8 +1,27 @@
-# Your Assistant Agent 4.6
+# Your Assistant Agent 4.7
 
 A Python/Tkinter Windows assistant with a standalone native Android companion.
 GroqCloud (`openai/gpt-oss-120b`) handles conversation and tool selection; local
 application tools perform reviewed GitHub and Facebook tasks.
+
+## Windows + Android release (4.7 / 1.3)
+
+The Windows shell, home and scrollable pairing settings share a refreshed palette
+with native Android chat, desktop and file screens. Android uses the original
+Windows brand icon, an adaptive launcher icon, foreground auto-reconnect and
+capability-gated controls. File transfers show progress and can be cancelled by
+returning from the transfer screen. Windows can explicitly expose all local drives
+and prevent idle sleep while plugged into AC and the companion is enabled.
+
+Pairing renders the QR in the page after successful setup and displays a clear
+unconfigured-host state. The top-level **Pair phone QR** action goes there directly.
+`render.yaml` prepares one hosted relay; it does not create hosting by itself.
+[Start with the 4.7 Arabic installation and release guide](README_V470_AR.md).
+The Windows installer is produced by GitHub Actions; source ZIPs are not installers.
+
+Android release signing uses private GitHub Actions secrets. Without them CI
+produces a clearly labeled Debug APK only. Never commit signing files or
+`desktop-setup.json`. See `scripts/prepare_android_signing.py`.
 
 ## Automatic QR pairing (4.6)
 

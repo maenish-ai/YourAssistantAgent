@@ -43,7 +43,8 @@ class RemoteAssistant:
         from .desktop import WindowsDesktop
         from .files import RemoteFiles
         self.desktop = WindowsDesktop(lambda: bool(getattr(settings,'remote_desktop_enabled',False)))
-        self.files = RemoteFiles(getattr(settings,'remote_files_root','') or Path.home())
+        self.files = RemoteFiles(Path.home() if getattr(settings,'remote_files_all_drives',False) else (getattr(settings,'remote_files_root','') or Path.home()),
+                                 all_drives=getattr(settings,'remote_files_all_drives',False))
         self.publish = publish
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
@@ -294,7 +295,9 @@ class RemoteAssistant:
         enabled = bool(getattr(self.settings,'remote_desktop_enabled',False)) and not self._closed
         return {'desktop': enabled and os.name=='nt', 'files': enabled,
                 'computer_ai': enabled and bool(getattr(self.settings,'remote_ai_enabled',False)),
-                'transfer_limit': 256*1024*1024, 'primary_monitor_only': True}
+                'transfer_limit': 256*1024*1024, 'primary_monitor_only': True,
+                'all_drives': bool(getattr(self.settings,'remote_files_all_drives',False)),
+                'computer_name': __import__('platform').node(), 'version': __import__('yaa_lite').__version__}
 
     def check_desktop(self):
         from .desktop import DesktopError
@@ -354,7 +357,8 @@ def build_remote_worker(settings, security, db, runtime, facebook, activity=None
                                 lambda text, **kwargs: holder['server'].publish(text, **kwargs),
                                 root, activity=activity)
     try:
-        server = MobileServer(token, assistant, inbox, port=int(settings.remote_port), activity=activity)
+        server = MobileServer(token, assistant, inbox, port=int(settings.remote_port), activity=activity,
+                              keep_awake=getattr(settings,'remote_keep_awake',False))
     except Exception:
         assistant.close()
         raise

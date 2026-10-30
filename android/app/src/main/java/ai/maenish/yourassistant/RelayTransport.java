@@ -16,6 +16,8 @@ final class RelayTransport {
     private final String url,token;
     private final RelayCrypto crypto;
     private volatile boolean closed;
+    private ApiClient.Progress progress=(done,total)->{};
+    void progress(ApiClient.Progress listener){progress=listener;}
     private final AtomicReference<HttpsURLConnection> active=new AtomicReference<>();
     RelayTransport(String url,String token)throws ApiClient.ApiException {
         try{
@@ -98,7 +100,7 @@ final class RelayTransport {
             try(InputStream input=new FileInputStream(file)){byte[] buffer=new byte[CHUNK];int count;
                 while((count=input.read(buffer))!=-1){if(closed)throw new IOException();byte[] block=java.util.Arrays.copyOf(buffer,count);hash.update(block);
                     JSONObject result=rpc("upload_chunk",new JSONObject().put("transfer",transfer).put("offset",offset).put("data",RelayCrypto.encode(block)));
-                    offset+=count;if(result.getLong("offset")!=offset)throw new IOException();
+                    offset+=count;if(result.getLong("offset")!=offset)throw new IOException();progress.update(offset,file.length());
                 }
             }
             return payload(rpc("upload_finish",new JSONObject().put("transfer",transfer).put("sha256",RelayCrypto.hex(hash.digest()))));
@@ -111,7 +113,7 @@ final class RelayTransport {
             MessageDigest hash=MessageDigest.getInstance("SHA-256");long offset=0;
             while(!closed){JSONObject result=rpc("download_chunk",new JSONObject().put("transfer",transfer).put("offset",offset));
                 byte[] block=RelayCrypto.decode(result.getString("data"));if(result.getLong("offset")!=offset||block.length>CHUNK||offset+block.length>size)throw new IOException();
-                output.write(block);hash.update(block);offset+=block.length;
+                output.write(block);hash.update(block);offset+=block.length;progress.update(offset,size);
                 if(result.optBoolean("done")){if(offset!=size||!RelayCrypto.hex(hash.digest()).equals(result.getString("sha256")))throw new IOException();return;}
                 if(block.length==0)throw new IOException();
             }

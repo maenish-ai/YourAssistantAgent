@@ -33,7 +33,7 @@ class MobileServerError(RuntimeError):
 
 
 class MobileServer:
-    def __init__(self, token: str, handler, inbox: Path, port: int = 8766, activity=None):
+    def __init__(self, token: str, handler, inbox: Path, port: int = 8766, activity=None, keep_awake=False):
         if not isinstance(token, str) or not _TOKEN.fullmatch(token):
             raise MobileServerError('Invalid Android pairing token')
         if not 0 <= int(port) <= 65535:
@@ -43,6 +43,8 @@ class MobileServer:
         self.inbox = Path(inbox)
         self.port = int(port)
         self.activity = activity or (lambda *_: None)
+        from .power import AwakeGuard
+        self._power = AwakeGuard(keep_awake, activity=self.activity)
         self._lock = threading.RLock()
         self._events = deque(maxlen=512)
         self._event_id = 0
@@ -396,10 +398,12 @@ class MobileServer:
         self._http_thread = threading.Thread(target=self._server.serve_forever, daemon=True, name='yaa-android-api')
         self._worker.start()
         self._http_thread.start()
+        self._power.start()
         self.activity('remote_started', f'Android loopback companion:127.0.0.1:{self.port}')
         return True
 
     def stop(self) -> None:
+        self._power.stop()
         self._accepting.clear()
         self._stopping.set()
         if hasattr(self.handler, 'close'):

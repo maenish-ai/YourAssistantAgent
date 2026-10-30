@@ -32,6 +32,7 @@ hiddenimports = [
     "yaa_lite.remote.files",
     "yaa_lite.remote.relay_bridge",
     "yaa_lite.remote.relay_protocol",
+    "yaa_lite.remote.power",
     "qrcode",
     "PIL.ImageTk",
     "pywinauto",

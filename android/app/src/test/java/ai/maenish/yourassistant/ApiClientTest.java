@@ -20,6 +20,7 @@ public class ApiClientTest {
             "https://home.example.test/api", "https://home.example.test?key=value",
             "https://home.example.test/#fragment", "https://home.example.test//",
             "https:///missing-host", "file:///secret", "home.example.test"
+            ,"https://home.example.test:0", "https://home.example.test:65536"
         };
         for (String origin : invalid) {
             try {
@@ -27,6 +28,14 @@ public class ApiClientTest {
                 fail("Should reject origin: " + origin);
             } catch (ApiClient.ApiException expected) { /* no network was attempted */ }
         }
+    }
+
+    @Test public void relayModeKeepsDistinctTransportAndValidatesCredentials() throws Exception {
+        assertEquals("relay+https://relay.example.test",new ApiClient("relay+https://relay.example.test",TOKEN).origin());
+        for(String origin:new String[]{"relay+http://relay.example.test","relay+https://relay.example.test/api","relay+https://user:password@relay.example.test","relay+https://relay.example.test:65536"}){
+            try{new ApiClient(origin,TOKEN);fail("Invalid relay accepted");}catch(ApiClient.ApiException expected){}
+        }
+        try{new ApiClient("relay+https://relay.example.test","short");fail("Invalid relay credential accepted");}catch(ApiClient.ApiException expected){}
     }
 
     @Test public void requiresExactPairingTokenFormat() {

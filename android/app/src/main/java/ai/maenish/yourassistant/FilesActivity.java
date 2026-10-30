@@ -20,17 +20,20 @@ public final class FilesActivity extends Activity {
     private final ExecutorService network=Executors.newSingleThreadExecutor();
     private ApiClient api;private TextView status;private LinearLayout entries;private String folder="",downloadPath="";
     private boolean destroyed,busy;
+    private Button uploadButton;
+    private long lastProgress;
     @Override public void onCreate(Bundle state){
         super.onCreate(state);
         if(state!=null){folder=state.getString("folder","");downloadPath=state.getString("downloadPath","");}
-        LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);root.setPadding(12,12,12,12);root.setFitsSystemWindows(true);setContentView(root);
-        status=new TextView(this);status.setText("ملفات المجلد الذي أتحته في إعدادات الكمبيوتر. اضغط الملف لتنزيله إلى الهاتف.");root.addView(status);
+        LinearLayout root=AppUi.root(this);AppUi.header(this,root,"ملفات الكمبيوتر","نقل مشفّر • حتى 256 MB للملف",true);
+        status=AppUi.label(this,"",12,true);status.setText("ملفات المجلد الذي أتحته في إعدادات الكمبيوتر. اضغط الملف لتنزيله إلى الهاتف.");root.addView(status);
         LinearLayout bar=new LinearLayout(this);
-        Button up=new Button(this);up.setText("المجلد الأعلى");up.setOnClickListener(v->{int index=folder.lastIndexOf('/');load(index<0?"":folder.substring(0,index));});bar.addView(up,new LinearLayout.LayoutParams(0,-2,1));
-        Button upload=new Button(this);upload.setText("ارفع ملفاً للكمبيوتر");upload.setOnClickListener(v->{if(busy)return;Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT).setType("*/*").addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(intent,1);});bar.addView(upload,new LinearLayout.LayoutParams(0,-2,1));
-        Button refresh=new Button(this);refresh.setText("تحديث");refresh.setOnClickListener(v->load(folder));bar.addView(refresh,new LinearLayout.LayoutParams(0,-2,1));root.addView(bar);
+        Button up=AppUi.button(this,"↑ رجوع",()->{},false);up.setOnClickListener(v->{int index=folder.lastIndexOf('/');load(index<0||folder.matches("@drives/[A-Z]")?"":folder.substring(0,index));});bar.addView(up,new LinearLayout.LayoutParams(0,-2,1));
+        Button upload=AppUi.button(this,"رفع ملف",()->{},true);uploadButton=upload;upload.setOnClickListener(v->{if(busy)return;Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT).setType("*/*").addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(intent,1);});bar.addView(upload,new LinearLayout.LayoutParams(0,-2,1));
+        Button refresh=AppUi.button(this,"تحديث",()->{},false);refresh.setOnClickListener(v->load(folder));bar.addView(refresh,new LinearLayout.LayoutParams(0,-2,1));root.addView(bar);
+        root.addView(AppUi.button(this,"إلغاء النقل والرجوع",this::finish,false),AppUi.space(this));
         ScrollView scroll=new ScrollView(this);entries=new LinearLayout(this);entries.setOrientation(LinearLayout.VERTICAL);scroll.addView(entries);root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
-        try{SecureStore store=new SecureStore(this);api=new ApiClient(store.url(),store.token());
+        try{SecureStore store=new SecureStore(this);api=new ApiClient(store.url(),store.token());api.progress((done,total)->{long now=android.os.SystemClock.elapsedRealtime();if(done==total||now-lastProgress>250){lastProgress=now;main.post(()->{if(!destroyed)status.setText("جاري النقل • "+AppUi.size(done)+" / "+AppUi.size(total));});}});
             if (state==null && getIntent().hasExtra("download_path")) {
                 downloadPath=getIntent().getStringExtra("download_path");
                 Intent save=new Intent(Intent.ACTION_CREATE_DOCUMENT).setType("application/octet-stream").addCategory(Intent.CATEGORY_OPENABLE).putExtra(Intent.EXTRA_TITLE,getIntent().getStringExtra("download_name"));
@@ -38,9 +41,9 @@ public final class FilesActivity extends Activity {
             } else load(folder);}catch(Exception e){status.setText("ارجع للمحادثة واضبط الاتصال أولاً.");}
     }
     private void load(String target){if(api==null||busy||destroyed)return;busy=true;status.setText("جاري قراءة المجلد…");network.execute(()->{
-        try{JSONObject response=api.files(target);JSONArray items=response.getJSONArray("entries");main.post(()->{if(destroyed)return;busy=false;folder=response.optString("path");status.setText(response.optString("root_name")+"/"+folder);entries.removeAllViews();
-            for(int i=0;i<items.length();i++){JSONObject item=items.optJSONObject(i);if(item==null)continue;Button button=new Button(this);button.setText((item.optBoolean("directory")?"📁 ":"↓ ")+item.optString("name")+(item.optBoolean("directory")?"":" ("+item.optLong("size")+" B)"));
-                button.setOnClickListener(v->{if(busy)return;if(item.optBoolean("directory")){load(item.optString("path"));}else{downloadPath=item.optString("path");Intent save=new Intent(Intent.ACTION_CREATE_DOCUMENT).setType("application/octet-stream").addCategory(Intent.CATEGORY_OPENABLE).putExtra(Intent.EXTRA_TITLE,item.optString("name"));startActivityForResult(save,2);}});entries.addView(button);}
+        try{JSONObject response=api.files(target);JSONArray items=response.getJSONArray("entries");main.post(()->{if(destroyed)return;busy=false;folder=response.optString("path");uploadButton.setEnabled(response.optBoolean("can_upload",true));status.setText(response.optString("display_path",response.optString("root_name")+"/"+folder));entries.removeAllViews();
+            for(int i=0;i<items.length();i++){JSONObject item=items.optJSONObject(i);if(item==null)continue;Button button=AppUi.button(this,"",()->{},false);button.setGravity(android.view.Gravity.START|android.view.Gravity.CENTER_VERTICAL);button.setText((item.optBoolean("directory")?"📁 ":"↓ ")+item.optString("name")+(item.optBoolean("directory")?"":"  •  "+AppUi.size(item.optLong("size"))));
+                button.setOnClickListener(v->{if(busy)return;if(item.optBoolean("directory")){load(item.optString("path"));}else{downloadPath=item.optString("path");Intent save=new Intent(Intent.ACTION_CREATE_DOCUMENT).setType("application/octet-stream").addCategory(Intent.CATEGORY_OPENABLE).putExtra(Intent.EXTRA_TITLE,item.optString("name"));startActivityForResult(save,2);}});entries.addView(button,AppUi.space(this));}
         });}catch(Exception e){error(e);}
     });}
     @Override protected void onActivityResult(int code,int result,Intent data){super.onActivityResult(code,result,data);if(result!=RESULT_OK||data==null||data.getData()==null||api==null||busy)return;Uri uri=data.getData();

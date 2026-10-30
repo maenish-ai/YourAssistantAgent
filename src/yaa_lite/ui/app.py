@@ -10,6 +10,7 @@ from ..ai.runtime import LocalAIRuntime
 from ..backup.service import BackupService
 from ..browser_bridge.server import BrowserBridge
 from ..config import Settings
+from .. import __version__
 from ..security.manager import SecurityManager
 from ..storage.db import ChatDB
 from . import theme
@@ -36,7 +37,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.withdraw()
-        self.title("Your Assistant Agent")
+        self.title("Your Assistant Agent · " + __version__)
         self.geometry("1240x820")
         self.minsize(980, 650)
 
@@ -83,17 +84,35 @@ class App(tk.Tk):
             style.theme_use("clam")
         except tk.TclError:
             pass
+        style.configure(".", background=theme.BG, foreground=theme.TEXT, font=("Segoe UI",10))
         style.configure("TFrame", background=theme.BG)
-        style.configure("Card.TFrame", background=theme.PANEL, relief="solid", borderwidth=1)
-        style.configure("TLabel", background=theme.BG, foreground=theme.TEXT, font=("Segoe UI", 10))
-        style.configure("Title.TLabel", font=("Segoe UI", 22, "bold"), foreground=theme.TEXT, background=theme.BG)
-        style.configure("CardTitle.TLabel", font=("Segoe UI", 12, "bold"), foreground=theme.TEXT, background=theme.BG)
-        style.configure("Muted.TLabel", foreground=theme.MUTED, background=theme.BG)
-        style.configure("Accent.TButton", font=("Segoe UI", 10, "bold"), padding=(11, 7))
-        style.configure("TButton", padding=(8, 6))
-        style.configure("TLabelframe", background=theme.BG, bordercolor=theme.BORDER)
-        style.configure("TLabelframe.Label", background=theme.BG, foreground=theme.TEXT, font=("Segoe UI", 10, "bold"))
-        style.configure("Treeview", rowheight=27)
+        style.configure("Card.TFrame", background=theme.PANEL, relief="flat", borderwidth=0)
+        style.configure("TLabel", background=theme.BG, foreground=theme.TEXT)
+        style.configure("Title.TLabel", font=("Segoe UI",24,"bold"))
+        style.configure("CardTitle.TLabel", font=("Segoe UI",13,"bold"))
+        style.configure("Muted.TLabel", foreground=theme.MUTED)
+        style.configure("TButton", background=theme.PANEL, foreground=theme.TEXT, borderwidth=0,
+                        focusthickness=2, focuscolor=theme.ACCENT, padding=(14,10), anchor="center")
+        style.map("TButton", background=[("active",theme.SIDEBAR_HOVER),("pressed",theme.SIDEBAR_ACTIVE)],
+                  foreground=[("disabled",theme.MUTED)])
+        style.configure("Accent.TButton", background=theme.BUTTON, foreground="#ffffff", font=("Segoe UI",10,"bold"))
+        style.map("Accent.TButton", background=[("disabled",theme.BORDER),("active",theme.ACCENT_HOVER)],
+                  foreground=[("disabled",theme.MUTED)])
+        style.configure("Nav.TButton", background=theme.BG, anchor="w", padding=(12,6))
+        style.configure("ActiveNav.TButton", background=theme.SIDEBAR_ACTIVE, foreground=theme.ACCENT, anchor="w", padding=(12,6))
+        style.configure("TEntry", fieldbackground=theme.INPUT, foreground=theme.TEXT, insertcolor=theme.TEXT,
+                        bordercolor=theme.BORDER, lightcolor=theme.BORDER, darkcolor=theme.BORDER, padding=(10,9))
+        style.map("TEntry", bordercolor=[("focus",theme.ACCENT)])
+        style.configure("TCombobox", fieldbackground=theme.INPUT, foreground=theme.TEXT, arrowcolor=theme.MUTED, padding=(8,7))
+        style.map("TCombobox", fieldbackground=[("readonly",theme.INPUT)], foreground=[("readonly",theme.TEXT)])
+        style.configure("TCheckbutton", background=theme.BG, foreground=theme.TEXT, padding=(0,6))
+        style.map("TCheckbutton", background=[("active",theme.BG)], indicatorcolor=[("selected",theme.ACCENT)])
+        style.configure("TLabelframe", background=theme.BG, bordercolor=theme.BORDER, relief="flat", borderwidth=1)
+        style.configure("TLabelframe.Label", background=theme.BG, foreground=theme.ACCENT, font=("Segoe UI",11,"bold"))
+        style.configure("Treeview", rowheight=38, fieldbackground=theme.PANEL, background=theme.PANEL, foreground=theme.TEXT, borderwidth=0)
+        style.map("Treeview", background=[("selected",theme.SIDEBAR_ACTIVE)], foreground=[("selected",theme.TEXT)])
+        style.configure("Treeview.Heading", background=theme.BG, foreground=theme.MUTED, padding=8)
+        style.configure("Vertical.TScrollbar", background=theme.BORDER, troughcolor=theme.BG, borderwidth=0, arrowsize=12)
 
     def _apply_brand_icon(self) -> None:
         try:
@@ -121,7 +140,7 @@ class App(tk.Tk):
         except Exception:
             pass
         tk.Label(splash, text="Your Assistant Agent", bg="#ffffff", fg="#172554", font=("Segoe UI", 22, "bold")).pack(pady=(0, 6))
-        tk.Label(splash, text="Hammer 2.1 • Local Smart Agent", bg="#ffffff", fg="#667085", font=("Segoe UI", 10)).pack()
+        tk.Label(splash, text="Your computer. Connected.", bg="#ffffff", fg="#667085", font=("Segoe UI", 10)).pack()
         self.after(600, lambda: self._finish_splash(splash))
 
     def _finish_splash(self, splash: tk.Toplevel) -> None:
@@ -240,7 +259,7 @@ class App(tk.Tk):
         self.shell = shell
 
         # The user explicitly wants the navigation rail on the left for both languages.
-        self.sidebar = tk.Frame(shell, bg=theme.SIDEBAR, width=270)
+        self.sidebar = tk.Frame(shell, bg=theme.SIDEBAR, width=240)
         self.sidebar.grid(row=0, column=0, sticky="nsw")
         self.sidebar.grid_propagate(False)
         self.main = tk.Frame(shell, bg=theme.BG)
@@ -272,7 +291,7 @@ class App(tk.Tk):
             tk.Label(top, image=logo, bg=theme.SIDEBAR).pack(side="left")
         except Exception:
             pass
-        tk.Label(top, text="Your Assistant\nAgent", bg=theme.SIDEBAR, fg=theme.TEXT,
+        tk.Label(top, text="Your Assistant\nAgent · " + __version__, bg=theme.SIDEBAR, fg=theme.TEXT,
                  font=("Segoe UI", 11, "bold"), justify="left").pack(side="left", padx=7)
 
         self._nav_button(sb, self.t("⌂  الرئيسية", "⌂  Home"), lambda: self.navigate("home"), "home").pack(fill="x", padx=10, pady=2)
@@ -325,6 +344,7 @@ class App(tk.Tk):
             parent, text=text, command=command, anchor="w", relief="flat", bd=0,
             bg=theme.SIDEBAR_ACTIVE if active else theme.SIDEBAR,
             activebackground=theme.SIDEBAR_HOVER, fg=theme.TEXT,
+            highlightthickness=0,
             font=("Segoe UI", 10, "bold" if active else "normal"), padx=10, pady=7, cursor="hand2",
         )
 
@@ -340,10 +360,23 @@ class App(tk.Tk):
         self.header_agent = tk.Label(header, text="Hammer 2.1", bg=theme.SIDEBAR_ACTIVE, fg=theme.ACCENT,
                                      font=("Segoe UI", 9, "bold"), padx=9, pady=5)
         self.header_agent.grid(row=0, column=1, padx=6)
+        ttk.Button(header,text=self.t("ربط الهاتف  QR", "Pair phone  QR"),style="Accent.TButton",command=self.open_phone_pairing).grid(row=0,column=4,padx=(0,12))
         self.global_search = ttk.Entry(header, width=28)
         self.global_search.grid(row=0, column=2, padx=6)
         self.global_search.bind("<Return>", lambda _e: self._global_search())
-        ttk.Button(header, text=self.t("بحث", "Search"), command=self._global_search).grid(row=0, column=3, padx=(0, 16))
+        self.search_button=ttk.Button(header, text=self.t("بحث", "Search"), command=self._global_search)
+        self.search_button.grid(row=0, column=3, padx=(0, 16))
+        def resize_header(event):
+            if event.width<900:
+                self.global_search.grid_remove();self.search_button.grid_remove()
+            else:
+                self.global_search.grid();self.search_button.grid()
+        header.bind('<Configure>',resize_header)
+
+    def open_phone_pairing(self):
+        self.navigate("settings")
+        if isinstance(self._view_widget, SettingsView):
+            self._view_widget.show_category("pairing")
 
     def _view_title(self, view: str) -> str:
         return {
@@ -378,7 +411,7 @@ class App(tk.Tk):
         self.header_title.config(text=self._view_title(view))
         if view == "home":
             widget = HomeView(self.content, self.settings_obj, self.runtime, self.facebook, self.backup,
-                              self.browser_bridge, on_navigate=self.navigate, on_new_chat=self.new_chat)
+                              self.browser_bridge, on_navigate=self.navigate, on_new_chat=self.new_chat, on_pair_phone=self.open_phone_pairing, remote_status=self.remote_status_text)
         elif view == "status":
             widget = ActivityView(self.content, self.facebook, self.settings_obj, self.runtime, self.backup, self.browser_bridge)
         elif view == "facebook":
@@ -445,6 +478,7 @@ class App(tk.Tk):
             btn = tk.Button(
                 self.sessions_frame, text=prefix + title, command=lambda x=sid: self.show_chat_session(x),
                 anchor="w", relief="flat", bd=0,
+                highlightthickness=0,
                 bg=theme.SIDEBAR_ACTIVE if active else theme.SIDEBAR,
                 activebackground=theme.SIDEBAR_HOVER, fg=theme.TEXT, font=("Segoe UI", 9), padx=8, pady=6, cursor="hand2",
             )

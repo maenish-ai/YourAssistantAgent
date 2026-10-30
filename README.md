@@ -3,6 +3,10 @@
 A personal Windows assistant with its own Android 1.5 companion, shared branding,
 remote desktop, file transfers and reviewed GitHub/Facebook tools.
 
+Android **1.5.1** fixes an immediate crash on the Scan QR button: ZXing's
+published dependency metadata omitted AndroidX classes needed at runtime.
+See [the QR scanner fix and update steps](README_ANDROID_V151_AR.md).
+
 ## Facebook, Arabic and dictation fixes
 
 Facebook chat commands now open an interactive controlled browser and keep its
@@ -85,7 +89,7 @@ The optional older external relay remains available in advanced settings; see
 Source ZIPs are not Windows installers. Upload the source to your repository
 root and run `.github/workflows/build-windows.yml`. It builds Windows installer
 artifact **YourAssistantAgent-Windows-Setup-v4.9.0** and Android Debug. Private
-Android signing secrets additionally enable **YourAssistantAgent-Android-Release-v1.5.0**.
+Android signing secrets additionally enable **YourAssistantAgent-Android-Release-v1.5.1**.
 Never commit signing files or `desktop-setup.json`.
 
 For source use, install Python 3.11 and dependencies:

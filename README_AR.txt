@@ -1,4 +1,6 @@
-Your Assistant Agent 4.9 — Android 1.5
+Your Assistant Agent 4.9 — Android 1.5.1
+
+Android 1.5.1 يصلح الخروج الفوري من زر مسح QR؛ اقرأ README_ANDROID_V151_AR.md.
 
 ابدأ بالدليل README_V490_AR.md؛ متطلبات الراوتر في README_V480_AR.md.
 إصلاح فتح Facebook والجلسة المشتركة واكتشاف المجموعات وقراءة روابط المنشورات.

@@ -88,12 +88,7 @@ public final class MainActivity extends Activity {
         AppUi.header(this,root,"Your Assistant","كمبيوترك معك • Android "+BuildConfig.VERSION_NAME,false);
         LinearLayout pairing=AppUi.card(this);
         pairing.addView(label("ربط هاتفك بكمبيوتر البيت",16));
-        pairing.addView(button("مسح QR وإقران الكمبيوتر",()->{
-            IntentIntegrator scanner=new IntentIntegrator(this);
-            scanner.setDesiredBarcodeFormats(IntentIntegrator.QR_CODE);
-            scanner.setPrompt("افتح ربط الهاتف في برنامج Windows وامسح الرمز");
-            scanner.setBeepEnabled(false);scanner.setOrientationLocked(false);scanner.initiateScan();
-        }));
+        pairing.addView(button("مسح QR وإقران الكمبيوتر",this::scanPairing));
         LinearLayout actions=row();
         actions.addView(button("اتصال",()->{
             if(serverField.getText().toString().isEmpty())showPairingHelp();else connect();
@@ -122,6 +117,19 @@ public final class MainActivity extends Activity {
         root.addView(composer,AppUi.space(this));
         root.addView(AppUi.label(this,"المحادثة الذكية تستخدم Groq؛ التحكم اليدوي والملفات لهما أزرار منفصلة.",11,true));
         sendButton=button("إرسال الطلب",this::sendText);root.addView(sendButton,AppUi.space(this));
+    }
+
+    private void scanPairing(){
+        try{
+            IntentIntegrator scanner=new IntentIntegrator(this);
+            scanner.setDesiredBarcodeFormats(IntentIntegrator.QR_CODE);
+            scanner.setPrompt("افتح ربط الهاتف في برنامج Windows وامسح الرمز");
+            scanner.addExtra("SHOW_MISSING_CAMERA_PERMISSION_DIALOG",true);
+            scanner.addExtra("MISSING_CAMERA_PERMISSION_DIALOG_MESSAGE","اسمح بالكاميرا لمسح رمز الكمبيوتر. يمكنك تفعيل الإذن من إعدادات التطبيق ثم المحاولة مجدداً.");
+            scanner.setBeepEnabled(false);scanner.setOrientationLocked(false);scanner.initiateScan();
+        }catch(RuntimeException e){
+            status.setText("تعذر فتح ماسح QR. تأكد من إتاحة الكاميرا للتطبيق ثم أعد المحاولة.");
+        }
     }
 
     private void showPairingHelp(){
@@ -418,6 +426,8 @@ public final class MainActivity extends Activity {
         IntentResult scanned=IntentIntegrator.parseActivityResult(requestCode,resultCode,data);
         if(scanned!=null){
             if(scanned.getContents()!=null)importPairing(scanned.getContents());
+            else if(data!=null&&data.getBooleanExtra("MISSING_CAMERA_PERMISSION",false))status.setText("لم يُسمح بالكاميرا. فعّل إذن الكاميرا لهذا التطبيق ثم اضغط مسح QR مجدداً.");
+            else status.setText(connected?"متصل • أُلغي مسح QR وبقي الاتصال الحالي.":"أُلغي مسح QR. يمكنك المحاولة مجدداً من زر المسح.");
             return;
         }
         if (requestCode != PICK_ZIP || resultCode != RESULT_OK || data == null || data.getData() == null || !connected || busy) return;

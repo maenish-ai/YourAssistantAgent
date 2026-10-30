@@ -1,0 +1,9 @@
+Source commit: ca67cb25068e684c8fd9e90db87d70b1c86d1f09
+Python: 265 tests passed.
+Android: 6 unit tests passed; assembleDebug and lintDebug succeeded.
+APK signature: verified (debug certificate, v2 signing).
+Local relay: encrypted round-trips, replay protection, broker restart and chunked file integrity verified.
+Source startup self-test, JavaScript syntax and git diff checks passed.
+Not performed here: physical Android camera, live public HTTPS relay, Windows desktop interaction, Windows installer build, Docker/Caddy runtime.
+Public relay deployment: pending hosting account connection; no public endpoint configured.
+GitHub: not pushed.

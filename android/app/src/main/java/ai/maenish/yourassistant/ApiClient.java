@@ -21,6 +21,7 @@ final class ApiClient {
     private static final int MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
     private final String baseUrl;
     private final String token;
+    private RelayTransport relay;
     private final AtomicReference<HttpsURLConnection> active = new AtomicReference<>();
     private volatile boolean closed;
 
@@ -31,6 +32,9 @@ final class ApiClient {
     }
 
     ApiClient(String url, String token) throws ApiException {
+        if(url!=null && url.startsWith("relay+https://")){
+            relay=new RelayTransport(url.substring(6),token);this.baseUrl=url;this.token=token;return;
+        }
         try {
             URI parsed = new URI(url.trim());
             if (!"https".equalsIgnoreCase(parsed.getScheme()) || parsed.getHost() == null ||
@@ -87,6 +91,7 @@ final class ApiClient {
                 null, file, UUID.randomUUID().toString(), "application/octet-stream");
     }
     void downloadFile(String path, OutputStream output) throws ApiException {
+        if(relay!=null){relay.download(path,output);return;}
         HttpsURLConnection connection = null;
         try {
             if (closed) throw new ApiException("انقطع الاتصال.");
@@ -116,6 +121,7 @@ final class ApiClient {
 
     void close() {
         closed = true;
+        if(relay!=null)relay.close();
         HttpsURLConnection connection = active.getAndSet(null);
         if (connection != null) connection.disconnect();
     }
@@ -127,6 +133,12 @@ final class ApiClient {
 
     private JSONObject request(String method, String path, byte[] bytes, File file, String requestId, String uploadMime)
             throws ApiException {
+        if(relay!=null){
+            if(closed)throw new ApiException("انقطع الاتصال.");
+            JSONObject response=file==null?relay.http(method,path,bytes):relay.upload(file,path,uploadMime);
+            if("POST".equals(method)&&response.optString("job_id","").isEmpty())throw new ApiException("الرد غير مكتمل؛ افحص المحادثة قبل إعادة الإرسال.");
+            return response;
+        }
         HttpsURLConnection connection = null;
         try {
             if (closed) throw new ApiException("انقطع الاتصال؛ أعد الربط أولاً.");

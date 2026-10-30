@@ -37,6 +37,7 @@ class SettingsView(ttk.Frame):
         cats = [
             ("general",self.t("عام","General")), ("ai",self.t("Hammer والذكاء","AI & Hammer")),
             ("remote",self.t("Android وGitHub","Android & GitHub")),
+            ("pairing",self.t("الإقران التلقائي QR","Automatic QR pairing")),
             ("desktop",self.t("التحكم بالكمبيوتر","Computer control")),
             ("facebook","Facebook"), ("backup",self.t("النسخ الاحتياطي","Backup")),
             ("security",self.t("الأمان والصلاحيات","Security & permissions")),
@@ -106,6 +107,7 @@ class SettingsView(ttk.Frame):
         self.current=key;self._clear();titles={
             "general":self.t("عام","General"),"ai":self.t("Hammer والذكاء","AI & Hammer"),"facebook":"Facebook","backup":self.t("النسخ الاحتياطي","Backup"),
             "remote":self.t("Android وGitHub","Android & GitHub"),
+            "pairing":self.t("الإقران التلقائي QR","Automatic QR pairing"),
             "desktop":self.t("التحكم بالكمبيوتر","Computer control"),
             "security":self.t("الأمان والصلاحيات","Security & permissions"),"notifications":self.t("التنبيهات","Notifications"),
             "appearance":self.t("المظهر واللغة","Appearance & language"),"voice":self.t("الصوت","Voice"),"memory":self.t("الذاكرة والتعلم","Memory & learning"),"advanced":self.t("متقدم","Advanced")}
@@ -152,6 +154,68 @@ class SettingsView(ttk.Frame):
         self._row_entry(g,1,self.t("المستودع: owner/name", "Repository: owner/name"),"github_repository",self.settings.github_repository)
         self._row_entry(g,2,self.t("مجلد المستودع المحلي", "Local checkout folder"),"github_checkout",self.settings.github_checkout)
         ttk.Button(g,text=self.t("اختيار المجلد", "Choose folder"),command=self._choose_github_checkout).grid(row=3,column=1,sticky="w",pady=5)
+
+    def _page_pairing(self):
+        b=self._section(self.t("ربط تلقائي بدون VPN", "Automatic connection without a VPN"),self.t(
+            "بعد تجهيز استضافة الخادم مرة واحدة، احفظ عنوانه ومفتاح تسجيله هنا. بعدها يكفي مسح QR بالهاتف؛ الاتصال يعيد نفسه تلقائياً طالما الكمبيوتر والبرنامج شغّالان. مفتاح تسجيل الخادم لا يصل إلى الهاتف.",
+            "After deploying the relay once, save its URL and enrollment key here. The phone then pairs by scanning QR and reconnects automatically. The server enrollment key is never sent to the phone."))
+        ttk.Button(b,text=self.t("استيراد ملف إعداد الخادم", "Import server setup file"),command=self._import_relay_setup).grid(row=8,column=0,columnspan=2,sticky='e',pady=8)
+        self._row_entry(b,1,self.t("عنوان HTTPS للخادم", "Relay HTTPS address"),"remote_relay_url",self.settings.remote_relay_url)
+        self._row_entry(b,2,self.t("مفتاح تسجيل الخادم — فارغ للإبقاء", "Server enrollment key — blank keeps it"),"relay_enrollment_input","",show='•')
+        ttk.Button(b,text=self.t("تفعيل وحفظ الاتصال التلقائي", "Enable and save automatic connection"),command=self._save_pairing).grid(row=3,column=0,columnspan=2,sticky='w',pady=8)
+        ttk.Button(b,text=self.t("عرض QR لإقران الهاتف", "Show phone pairing QR"),command=self._show_pairing_qr).grid(row=4,column=0,columnspan=2,sticky='w',pady=8)
+        ttk.Label(b,text=self.t("امسح الرمز من تطبيق الهاتف. الرمز يمنح الوصول لجهازك؛ تغيير مفتاح الاقتران من Android وGitHub يلغي وصول الهواتف القديمة.",
+                               "Scan using the phone app. The QR grants device access; rotating the pairing key under Android & GitHub revokes old phones."),wraplength=650).grid(row=5,column=0,columnspan=2,sticky='w')
+        self._remote_status_label=ttk.Label(b,text='',wraplength=650)
+        self._remote_status_label.grid(row=6,column=0,columnspan=2,sticky='w',pady=8)
+        ttk.Button(b,text=self.t("تحديث الحالة", "Refresh status"),command=self._refresh_remote_status).grid(row=7,column=0,sticky='w')
+        self._refresh_remote_status()
+
+    def _import_relay_setup(self):
+        import json
+        try:
+            name=filedialog.askopenfilename(parent=self,filetypes=[('Server setup','*.json')])
+            if not name:return
+            path=Path(name)
+            if path.stat().st_size>4096:raise ValueError('Invalid setup file')
+            data=json.loads(path.read_text(encoding='utf-8'))
+            if set(data)!={'relay_url','enrollment_key'} or any(not isinstance(value,str) for value in data.values()):raise ValueError('Invalid setup file')
+            self.vars['remote_relay_url'].set(data['relay_url'])
+            self.vars['relay_enrollment_input'].set(data['enrollment_key'])
+            self._save_pairing()
+        except Exception:self.status.configure(text=self.t('تعذر استيراد ملف إعداد الخادم.','Could not import server setup file.'))
+
+    def _save_pairing(self):
+        from ..remote.settings import save_relay_enrollment,load_relay_enrollment,load_remote_token,generate_remote_token
+        from ..remote.relay_protocol import origin
+        try:
+            if not self.security or not self.security.unlocked:raise ValueError(self.t('افتح قفل البرنامج أولاً.','Unlock the app first.'))
+            updated=replace(self.settings)
+            updated.remote_relay_url=origin(self._value('remote_relay_url',self.settings.remote_relay_url))
+            enrollment=str(self._value('relay_enrollment_input','')).strip()
+            if enrollment:save_relay_enrollment(self.security,enrollment)
+            if not load_relay_enrollment(self.security):raise ValueError(self.t('أدخل مفتاح تسجيل الخادم أولاً.','Enter the relay enrollment key first.'))
+            if not load_remote_token(self.security):generate_remote_token(self.security)
+            updated.remote_enabled=True;updated.remote_connection_mode='relay'
+            updated.save();self.settings=updated;self.on_save(updated)
+            if 'relay_enrollment_input' in self.vars:self.vars['relay_enrollment_input'].set('')
+            self.status.configure(text=self.t('تم الحفظ؛ اتصال الخادم في الخلفية.','Saved; connecting to relay in background.'));self._refresh_remote_status()
+        except (ValueError,OSError,SecurityError) as exc:self.status.configure(text=str(exc))
+
+    def _show_pairing_qr(self):
+        from ..remote.settings import pairing_payload,load_remote_token
+        try:
+            if not self.security or not self.security.unlocked:raise ValueError(self.t('افتح قفل البرنامج أولاً.','Unlock the app first.'))
+            if self.settings.remote_connection_mode!='relay':raise ValueError(self.t('احفظ إعداد الخادم أولاً.','Save relay configuration first.'))
+            payload=pairing_payload(self.settings.remote_relay_url,load_remote_token(self.security))
+            import qrcode
+            from PIL import ImageTk
+            image=qrcode.make(payload).convert('RGB');image.thumbnail((450,450))
+            dialog=tk.Toplevel(self);dialog.title(self.t('اقتران الهاتف','Pair phone'))
+            photo=ImageTk.PhotoImage(image,master=dialog)
+            label=ttk.Label(dialog,image=photo);label.image=photo;label.pack(padx=20,pady=15)
+            ttk.Label(dialog,text=self.t('افتح تطبيق Android واضغط مسح QR. احتفظ بهذا الرمز لنفسك.','Open Android and tap Scan QR. Keep this code private.'),wraplength=440).pack(padx=15,pady=10)
+        except Exception as exc:self.status.configure(text=str(exc) if isinstance(exc,(ValueError,SecurityError)) else self.t('تعذر عرض رمز الاقتران.','Could not show pairing QR.'))
 
     def _page_desktop(self):
         b=self._section(self.t("التحكم بالكمبيوتر من الهاتف", "Control this computer from the phone"), self.t(
@@ -331,6 +395,7 @@ class SettingsView(ttk.Frame):
         v=self.vars.get(name);return v.get() if v is not None else default
 
     def save(self):
+        if self.current == "pairing":return self._save_pairing()
         if self.current == "desktop":
             try:
                 updated=replace(self.settings)

@@ -62,5 +62,8 @@ final class SecureStore {
         }
     }
 
+    boolean autoConnect() { return preferences.getBoolean("auto_connect",true); }
+    void autoConnect(boolean value) { preferences.edit().putBoolean("auto_connect",value).apply(); }
+
     void clear() { preferences.edit().clear().apply(); }
 }

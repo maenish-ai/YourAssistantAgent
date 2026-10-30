@@ -359,4 +359,12 @@ def build_remote_worker(settings, security, db, runtime, facebook, activity=None
         assistant.close()
         raise
     holder['server'] = server
+    if getattr(settings,'remote_connection_mode','direct')=='relay':
+        from .relay_bridge import RelayWorker
+        from .settings import load_relay_enrollment
+        try:
+            return RelayWorker(server,settings.remote_relay_url,load_relay_enrollment(security),token,root/'relay')
+        except Exception:
+            assistant.close()
+            raise
     return server

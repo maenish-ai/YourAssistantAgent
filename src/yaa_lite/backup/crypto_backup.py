@@ -43,6 +43,10 @@ def _zip_payload(include_attachments: bool = True, include_facebook_credentials:
                 rel = p.relative_to(base)
                 if arc == "data" and rel.parts and rel.parts[0] == "backups":
                     continue
+                if arc == "data" and rel.parts[:2] in {("mobile", "inbox"), ("mobile", "relay")}:
+                    # Partial uploads and replay-cache records are transient,
+                    # not user documents to include in backup/sync payloads.
+                    continue
                 if not include_facebook_credentials and arc == "data" and rel.parts and rel.parts[0] == "facebook_profile":
                     continue
                 if not include_attachments and "attachments" in rel.parts:

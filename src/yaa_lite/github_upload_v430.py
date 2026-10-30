@@ -170,7 +170,7 @@ def _validate_name(name: str) -> str:
         raise GitHubUploadError('ZIP member path is too long.')
     filename = parts[-1].lower()
     if (filename == '.env' or (filename.startswith('.env.') and filename not in ('.env.example', '.env.sample'))
-            or filename in ('credentials.json', 'secrets.json', 'id_rsa', 'id_ed25519')
+            or filename in ('credentials.json', 'secrets.json', 'desktop-setup.json', 'id_rsa', 'id_ed25519')
             or filename.endswith(('.pem', '.p12', '.pfx', '.key', '.kdbx'))):
         raise GitHubUploadError('ZIP includes a file that looks like a credential/secret. Remove it before publishing.')
     return '/'.join(parts)

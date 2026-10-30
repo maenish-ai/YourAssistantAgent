@@ -55,7 +55,10 @@ public final class DesktopActivity extends Activity {
     private void add(LinearLayout row,String label,Runnable action){Button b=new Button(this);b.setText(label);b.setTextSize(11);b.setPadding(2,2,2,2);b.setOnClickListener(v->action.run());row.addView(b,new LinearLayout.LayoutParams(0,-2,1));}
     private void keys(String... values){try{input(new JSONObject().put("action","keys").put("keys",new JSONArray(values)));}catch(Exception ignored){}}
     private void wheel(int amount){try{input(new JSONObject().put("action","scroll").put("amount",amount));}catch(Exception ignored){}}
-    private void input(JSONObject data){post("/v1/desktop/input",data);}
+    private void input(JSONObject data){
+        try{if(!data.has("frame_id"))data.put("frame_id",screen.frameId());post("/v1/desktop/input",data);}
+        catch(Exception e){status.setText("تعذر تجهيز الإدخال. حدّث الشاشة.");}
+    }
     private void post(String path,JSONObject data){
         if(api==null||destroyed)return;
         network.execute(()->{try{api.post(path,data);main.post(()->{if(!destroyed)status.setText("وصل الطلب؛ راقب الشاشة. رسائل فشل التنفيذ تظهر أيضاً في المحادثة.");});}catch(Exception e){showError(e);}});

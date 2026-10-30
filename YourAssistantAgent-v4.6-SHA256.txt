@@ -1,0 +1,4 @@
+72ad9a26b7ca2218faff7bfed6f93ab3a8850b22bbb2377ffaaf73c787fd1fc7  YourAssistantAgent-v4.6.0-source.zip
+e23ed90f4abf20f8d50b39cc4f20ddfac31186e97c10fa7054428d98c82d5f02  YourAssistantAgent-Android-v1.2.0-debug.apk
+6737217af86d3b350fdaf8b41a267a032c84c74c24f9bdc786da6e82c3f15621  YourAssistantAgent-v4.6-setup-AR.md
+b8360b874946e743235a5dfc19a5a17757bc950c20e52e70ed19994ad8638b01  YourAssistantAgent-v4.6-verification.txt

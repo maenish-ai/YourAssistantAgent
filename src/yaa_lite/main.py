@@ -23,6 +23,7 @@ def _self_test() -> int:
     from .security.manager import SecurityManager  # noqa: F401
     from .browser_bridge.server import BrowserBridge  # noqa: F401
     from .ai.runtime import GROQ_MODEL  # noqa: F401
+    from qrcode import QRCode  # noqa: F401
     if os.name == 'nt':
         # Verify the UI Automation dependency in source and frozen Windows
         # builds without capturing the desktop or injecting any input.

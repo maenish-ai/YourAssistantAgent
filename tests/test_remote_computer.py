@@ -233,3 +233,10 @@ def test_desktop_permissions_require_explicit_boolean_opt_in(tmp_path,monkeypatc
     settings=Settings.load()
     assert settings.remote_enabled
     assert not settings.remote_desktop_enabled and not settings.remote_ai_enabled
+
+
+def test_delayed_manual_keyboard_is_rejected_before_input(desktop):
+    control,events=desktop
+    control._frames['frame']=(1920,1080,time.monotonic()-60)
+    with pytest.raises(DesktopError):control.input({'action':'text','text':'private typing','frame_id':'frame'})
+    assert not events

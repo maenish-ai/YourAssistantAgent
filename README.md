@@ -1,8 +1,26 @@
-# Your Assistant Agent 4.5
+# Your Assistant Agent 4.6
 
 A Python/Tkinter Windows assistant with a standalone native Android companion.
 GroqCloud (`openai/gpt-oss-120b`) handles conversation and tool selection; local
 application tools perform reviewed GitHub and Facebook tasks.
+
+## Automatic QR pairing (4.6)
+
+The Android app can scan the QR displayed by the unlocked Windows app, retain
+its credentials in Android Keystore, and reconnect automatically. No VPN,
+Tailscale installation, home router port, or manual phone URL/key entry is
+needed **after a relay is hosted and configured once**.
+
+`relay_server/` contains the Python standard-library broker, Docker Compose/Caddy
+HTTPS deployment and setup-file generator. Windows connects outbound and imports
+that private setup file once. No public relay is already deployed or hard-coded.
+Hosting/account setup is still required; source files alone do not provide it.
+
+End-to-end AES-GCM envelopes, persisted replay prevention and chunked file
+transfers preserve the existing desktop API and approval boundaries. The broker
+cannot decrypt screen, chat or file payloads. The QR is a permanent pairing
+credential until rotated; keep it private. See [the Arabic 4.6 guide](README_V460_AR.md).
+The earlier direct HTTPS/Tailscale mode remains available in advanced settings.
 
 ## Remote desktop, computer commands and files (4.5)
 

@@ -96,6 +96,8 @@ class Settings:
     github_enabled: bool = False
     remote_enabled: bool = False
     remote_port: int = 8766
+    remote_connection_mode: str = "direct"
+    remote_relay_url: str = ""
     remote_desktop_enabled: bool = False
     remote_ai_enabled: bool = False
     remote_files_root: str = ""
@@ -170,6 +172,7 @@ class Settings:
         obj.approval_timeout_minutes = max(5, min(int(obj.approval_timeout_minutes), 1440))
         obj.drive_sync_interval_minutes = max(15, min(int(obj.drive_sync_interval_minutes), 1440))
         # Only an explicit boolean opt-in can start the phone connection.
+        if not isinstance(obj.remote_connection_mode,str) or obj.remote_connection_mode not in {"direct","relay"}:obj.remote_connection_mode="direct"
         obj.remote_enabled = obj.remote_enabled is True
         obj.remote_desktop_enabled = obj.remote_desktop_enabled is True
         obj.remote_ai_enabled = obj.remote_ai_enabled is True and obj.remote_desktop_enabled

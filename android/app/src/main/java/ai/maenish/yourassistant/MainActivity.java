@@ -1,6 +1,8 @@
 package ai.maenish.yourassistant;
 
 import android.app.Activity;
+import com.google.zxing.integration.android.IntentIntegrator;
+import com.google.zxing.integration.android.IntentResult;
 import android.content.Intent;
 import android.database.Cursor;
 import android.graphics.Color;
@@ -52,6 +54,8 @@ public final class MainActivity extends Activity {
     private boolean resumed, destroyed, connected, busy, polling;
     private int generation;
     private long cursor;
+    private boolean allowReconnect;
+    private final Runnable reconnect=()->{if(resumed&&!destroyed&&allowReconnect&&api==null&&!busy)connect();};
     private final Runnable poll = this::pollEvents;
 
     @Override public void onCreate(Bundle savedInstanceState) {
@@ -64,8 +68,10 @@ public final class MainActivity extends Activity {
             credentials.clear();
             status.setText("تعذر فتح رمز الاقتران المحفوظ. أدخله مجدداً من إعدادات الكمبيوتر.");
         }
+        allowReconnect=credentials.autoConnect() && credentials.url().startsWith("relay+https://");
+        connectionFields.setVisibility(View.GONE);
         updateButtons();
-        if (savedInstanceState != null && savedInstanceState.getBoolean("was_connected", false)
+        if (!allowReconnect && savedInstanceState != null && savedInstanceState.getBoolean("was_connected", false)
                 && !tokenField.getText().toString().isEmpty()) main.post(this::connect);
     }
 
@@ -89,6 +95,13 @@ public final class MainActivity extends Activity {
         setContentView(root);
         TextView title = label("مساعدك على كمبيوتر البيت", 21);
         root.addView(title);
+        Button scan=button("مسح QR — ربط الكمبيوتر تلقائياً",()->{
+            IntentIntegrator scanner=new IntentIntegrator(this);
+            scanner.setDesiredBarcodeFormats(IntentIntegrator.QR_CODE);
+            scanner.setPrompt("وجّه الكاميرا إلى QR الظاهر في برنامج الكمبيوتر");
+            scanner.setBeepEnabled(false);scanner.setOrientationLocked(false);scanner.initiateScan();
+        });
+        root.addView(scan);
         connectionFields = new LinearLayout(this);
         connectionFields.setOrientation(LinearLayout.VERTICAL);
         root.addView(connectionFields);
@@ -105,10 +118,14 @@ public final class MainActivity extends Activity {
         Button showSettings = button("إعداد الاتصال", () -> connectionFields.setVisibility(
                 connectionFields.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE));
         disconnectButton = button("قطع الاتصال", this::disconnect);
+        connectionActions.addView(button("اتصال",()->{
+            if(serverField.getText().toString().isEmpty())status.setText("امسح QR من برنامج الكمبيوتر مرة واحدة أولاً.");
+            else connect();
+        }),weighted());
         connectionActions.addView(showSettings, weighted());
         connectionActions.addView(disconnectButton, weighted());
         root.addView(connectionActions);
-        status = label("أدخل رابط الكمبيوتر ورمز الاقتران. التحديث يعمل أثناء فتح التطبيق.", 13);
+        status = label("من برنامج الكمبيوتر افتح الإقران التلقائي واعرض QR، ثم امسحه هنا. إعادة الاتصال تلقائية بعد الاقتران.", 13);
         root.addView(status);
         scroll = new ScrollView(this);
         transcript = new LinearLayout(this);
@@ -192,7 +209,9 @@ public final class MainActivity extends Activity {
         final String token = tokenField.getText().toString().trim();
         try { client = new ApiClient(url, token); }
         catch (ApiClient.ApiException e) { status.setText(e.getMessage()); return; }
-        disconnect();
+        allowReconnect=url.startsWith("relay+https://");
+        credentials.autoConnect(allowReconnect);
+        disconnect(false);
         api = client;
         final int requestGeneration = ++generation;
         busy = true;
@@ -201,9 +220,10 @@ public final class MainActivity extends Activity {
         network.execute(() -> {
             try {
                 JSONObject response = client.events(0);
-                credentials.save(client.origin(), token);
                 main.post(() -> {
                     if (!current(requestGeneration)) return;
+                    try { credentials.save(client.origin(),token); }
+                    catch(Exception e){busy=false;connected=false;client.close();api=null;status.setText("تعذر حفظ الاقتران بأمان. أعد المحاولة.");updateButtons();return;}
                     connected = true;
                     busy = false;
                     cursor = 0;
@@ -225,12 +245,21 @@ public final class MainActivity extends Activity {
                     api = null;
                     status.setText(error);
                     updateButtons();
+                    scheduleReconnect();
                 });
             }
         });
     }
 
-    private void disconnect() {
+    private void scheduleReconnect(){
+        main.removeCallbacks(reconnect);
+        if(allowReconnect&&resumed&&!destroyed&&api==null)main.postDelayed(reconnect,5000);
+    }
+
+    private void disconnect() { disconnect(true); }
+    private void disconnect(boolean userRequested) {
+        if(userRequested){allowReconnect=false;credentials.autoConnect(false);}
+        main.removeCallbacks(reconnect);
         ++generation;
         connected = false;
         busy = false;
@@ -269,8 +298,9 @@ public final class MainActivity extends Activity {
                     if (!current(requestGeneration)) return;
                     polling = false;
                     if (e.status == 401 || e.status == 403) {
-                        disconnect();
-                        connectionFields.setVisibility(View.VISIBLE);
+                        disconnect(!allowReconnect);
+                        if(!allowReconnect)connectionFields.setVisibility(View.VISIBLE);
+                        scheduleReconnect();
                     }
                     status.setText(e.getMessage());
                     schedulePoll();
@@ -429,6 +459,11 @@ public final class MainActivity extends Activity {
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        IntentResult scanned=IntentIntegrator.parseActivityResult(requestCode,resultCode,data);
+        if(scanned!=null){
+            if(scanned.getContents()!=null)importPairing(scanned.getContents());
+            return;
+        }
         if (requestCode != PICK_ZIP || resultCode != RESULT_OK || data == null || data.getData() == null || !connected || busy) return;
         Uri uri = data.getData();
         String name = "";
@@ -444,6 +479,19 @@ public final class MainActivity extends Activity {
             return;
         }
         upload(uri);
+    }
+
+    private void importPairing(String raw){
+        try{
+            if(raw.length()>2048)throw new Exception();
+            JSONObject code=new JSONObject(raw);
+            if(!"yaa-relay".equals(code.optString("type"))||code.optInt("v")!=1)throw new Exception();
+            String address="relay+"+code.getString("url"),secret=code.getString("token");
+            ApiClient validation=new ApiClient(address,secret);validation.close();
+            credentials.save(address,secret);credentials.autoConnect(true);
+            serverField.setText(address);tokenField.setText(secret);allowReconnect=true;
+            connect();
+        }catch(Exception e){status.setText("هذا ليس رمز إقران صالحاً. امسح الرمز من برنامج الكمبيوتر الجديد.");}
     }
 
     private void upload(Uri uri) {
@@ -494,11 +542,13 @@ public final class MainActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         resumed = true;
-        schedulePoll();
+        if(allowReconnect&&api==null&&!busy)connect();
+        else schedulePoll();
     }
 
     @Override protected void onPause() {
         resumed = false;
+        main.removeCallbacks(reconnect);
         main.removeCallbacks(poll);
         super.onPause();
     }

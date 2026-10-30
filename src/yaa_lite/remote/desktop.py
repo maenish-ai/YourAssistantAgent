@@ -129,6 +129,10 @@ class WindowsDesktop:
             raise DesktopError('طلب تحكم غير صالح.')
         action = data.get('action')
         with self._lock, self._session() as user:
+            if action in {'keys','text','scroll'} and 'frame_id' in data:
+                frame=self._frames.get(str(data['frame_id']))
+                if not frame or time.monotonic()-frame[2]>15:
+                    raise DesktopError('الصورة قديمة. حدّث الشاشة قبل إرسال الإدخال.')
             if action in {'click', 'double_click', 'right_click', 'drag'}:
                 frame = self._frames.get(str(data.get('frame_id', '')))
                 if not frame or time.monotonic() - frame[2] > 15:

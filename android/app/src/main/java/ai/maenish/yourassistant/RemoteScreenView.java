@@ -64,6 +64,7 @@ final class RemoteScreenView extends View {
         }
         invalidate();
     }
+    String frameId() { return frame; }
     @Override protected void onSizeChanged(int w,int h,int oldW,int oldH) { reset(); }
     @Override protected void onDraw(Canvas canvas) { super.onDraw(canvas); if (bitmap != null) canvas.drawBitmap(bitmap,matrix,paint); }
     private float[] position(float x,float y) {

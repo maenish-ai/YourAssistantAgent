@@ -16,6 +16,7 @@ compatibility with existing databases and imports.
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime
 from typing import Any
 
@@ -601,10 +602,16 @@ def _install_personal_controller() -> None:
         used_tools = False
         last_detail = ""
 
-        for _step in range(5):
+        # A page lookup, login check, post read, group refresh, filtering and
+        # preview can legitimately require more than five tool turns.
+        deadline = time.monotonic() + 180
+        for _step in range(12):
+            remaining = int(deadline - time.monotonic())
+            if remaining <= 0:
+                break
             self._activity("qwen_analyzing", text[:500], status, self.t("Qwen يفهم الطلب", "Qwen is handling the request"))
             turn = self.chat_engine.runtime.native_turn(
-                QWEN, messages, tools=tools, max_tokens=max_tokens, timeout=timeout, status=status
+                QWEN, messages, tools=tools, max_tokens=max_tokens, timeout=min(timeout, max(1, remaining)), status=status
             )
             calls = turn.get("tool_calls") if isinstance(turn.get("tool_calls"), list) else []
             if not calls:
@@ -685,7 +692,7 @@ def _install_personal_controller() -> None:
                 "content": tool_text if ok else f"ERROR: {tool_text}",
             })
 
-        # A five-step cap prevents accidental local-agent loops. We still return
+        # The step/time cap prevents accidental local-agent loops. We still return
         # a useful direct answer rather than leaving the user with silence.
         fallback_prompt = self.t(
             "وصلت لحد خطوات الأدوات لهذه الرسالة. لخّص ما تم فعله وما الذي يحتاجه المستخدم بعد ذلك اعتمادًا فقط على النتائج أعلاه.",

@@ -5,7 +5,7 @@ import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit, quote
+from urllib.parse import urlsplit, urlunsplit, quote, parse_qsl
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
@@ -217,11 +217,36 @@ class FacebookAutomation:
     def open_login(self):
         return self.open_manual_login()
 
+    def _navigate(self, url: str, *, timeout: int = 30000) -> None:
+        """A slow resource must not make a visibly loaded page a launch error."""
+        try:
+            self.page.goto(url, wait_until='domcontentloaded', timeout=timeout)
+        except PlaywrightTimeoutError:
+            # Facebook can finish rendering while its navigation lifecycle is
+            # still pending. Accept only a rendered Facebook document after a
+            # Facebook request; blank pages and external redirects still fail.
+            current = urlsplit(str(self.page.url or ''))
+            requested = urlsplit(url)
+            allowed = lambda host: host == 'facebook.com' or host.endswith('.facebook.com')
+            same_target = (current.path.rstrip('/') == requested.path.rstrip('/') and
+                           set(parse_qsl(requested.query)).issubset(set(parse_qsl(current.query))))
+            auth_redirect = bool(re.match(r'^/(?:login|checkpoint|two_step_verification|recover)(?:/|\.|$)', current.path))
+            if not (allowed(current.hostname or '') and allowed(requested.hostname or '') and
+                    (same_target or auth_redirect)):
+                raise
+            try:
+                rendered = self.page.evaluate("document.readyState") in {'interactive', 'complete'}
+                rendered = rendered and self.page.locator('body').is_visible(timeout=1000)
+            except Exception:
+                rendered = False
+            if not rendered:
+                raise
+
     def open_interactive(self):
         """Keep the same visible profile open for login and later automation."""
         self.manual_login_active=False
         self.start()
-        self.page.goto(self.FACEBOOK_HOME,wait_until='domcontentloaded',timeout=30000)
+        self._navigate(self.FACEBOOK_HOME,timeout=30000)
         self.page.bring_to_front()
         return self.connection_status()
 
@@ -229,7 +254,7 @@ class FacebookAutomation:
         self.manual_login_active=False
         self.start()
         if 'facebook.com' not in (self.page.url or ''):
-            self.page.goto(self.FACEBOOK_HOME,wait_until='domcontentloaded',timeout=30000)
+            self._navigate(self.FACEBOOK_HOME,timeout=30000)
         self._check_checkpoint()
         return self.connection_status()
 
@@ -366,7 +391,7 @@ class FacebookAutomation:
 
     def ensure_logged_in(self):
         self.start()
-        self.page.goto(self.FACEBOOK_HOME, wait_until="domcontentloaded", timeout=60000)
+        self._navigate(self.FACEBOOK_HOME, timeout=60000)
         self._check_checkpoint()
         if self.connection_status() != "connected":
             try:
@@ -383,7 +408,7 @@ class FacebookAutomation:
 
     def find_recent_post_urls(self, page_url: str, limit: int = 8) -> list[str]:
         self.start()
-        self.page.goto(page_url, wait_until="domcontentloaded", timeout=60000)
+        self._navigate(page_url, timeout=60000)
         self._check_checkpoint()
         self.page.wait_for_timeout(3500)
         urls: list[str] = []
@@ -424,7 +449,7 @@ class FacebookAutomation:
 
     def search_pages(self,query,limit=10):
         self.ensure_logged_in()
-        self.page.goto('https://www.facebook.com/search/pages/?q='+quote(query),wait_until='domcontentloaded',timeout=30000)
+        self._navigate('https://www.facebook.com/search/pages/?q='+quote(query),timeout=30000)
         self._check_checkpoint();self.page.wait_for_timeout(1500)
         links=self.page.locator('[role="main"] a[href]').evaluate_all("els => els.map(e => ({name:(e.innerText||e.getAttribute('aria-label')||'').trim(),url:e.href}))")
         reserved={'search','groups','watch','reel','videos','marketplace','gaming','login','settings','help','friends','bookmarks','notifications','events','me','stories'}

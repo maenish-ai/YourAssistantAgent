@@ -71,6 +71,23 @@ def test_invalid_rule_id_keeps_valid_tool_transcript(planning_stack):
     assert db.list_rules() == []
 
 
+def test_planning_can_finish_multi_step_reads_without_stopping_after_five(planning_stack):
+    calls = []
+    def native_turn(profile, messages, **kwargs):
+        calls.append(True)
+        if len(calls) <= 6:
+            return {'content': '', 'tool_calls': [{'id': f'check-{len(calls)}',
+                    'name': 'app_status', 'arguments': {}}]}
+        return {'content': 'اكتملت القراءة', 'tool_calls': []}
+    db = planning_stack
+    controller = SmartAgentController(db, Settings(),
+        SimpleNamespace(runtime=SimpleNamespace(native_turn=native_turn)),
+        SimpleNamespace(status_text=lambda: 'connected'))
+    reply = controller.handle(None, [], 'اقرأ حالة المهمة والخطوات', db.create_session('hammer'), 512, 10)
+    assert len(calls) == 7 and reply.text == 'اكتملت القراءة'
+    assert db.list_rules() == []
+
+
 ARABIC_FACEBOOK_FLOW = r'''
 import json
 from pathlib import Path

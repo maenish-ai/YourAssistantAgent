@@ -6,9 +6,16 @@ import os
 import zipfile
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def local_folder_lookup(monkeypatch):
+    # Folder discovery tests must not scan the CI runner's real Windows profile.
+    monkeypatch.setattr('yaa_lite.github_upload_v430._known_windows_folder', lambda identifier: None)
+
 from yaa_lite.github_upload_v430 import (
     GitHubUploadError, PENDING_UPLOAD_KEY, PENDING_UPLOAD_REPO_KEY, _zip_members, _validate_name, describe_plan,
     is_upload_request, prepare_upload, prepare_configured_upload, publish_upload, validate_repository,
+    discover_local_checkout,
 )
 
 
@@ -126,6 +133,8 @@ def test_upload_requests_only():
     assert is_upload_request('ارفع الملف على جيت هب ديسكتوب')
     assert is_upload_request('بدي ترفع هاد على جيتهب')
     assert is_upload_request('ارفعه على جيت هاب')
+    assert is_upload_request('حدّث YourAssistantAgent بهاي النسخة')
+    assert not is_upload_request('افتح YourAssistantAgent')
     assert not is_upload_request('كيف أرفع ملف ZIP إلى GitHub؟')
     assert not is_upload_request('كيف أرفع على جيت هب؟')
     assert not is_upload_request('انشر على الفيسبوك')
@@ -344,6 +353,111 @@ def test_remote_upload_requires_preconfigured_checkout(tmp_path):
     archive = make_zip(tmp_path / 'patch.zip', {'README.md': 'after'})
     with pytest.raises(GitHubUploadError, match='Configure the local GitHub checkout'):
         prepare_configured_upload(archive, settings)
+
+
+def test_remote_discovers_exact_existing_clone_and_remembers_it(checkout, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    home = tmp_path / 'home'
+    parent = home / 'Documents' / 'GitHub'
+    parent.mkdir(parents=True)
+    moved = parent / 'YourAssistantAgent'
+    checkout.rename(moved)
+    monkeypatch.setattr(Path, 'home', classmethod(lambda cls: home))
+    saved = []
+    settings = SimpleNamespace(github_repository='maenish-ai/YourAssistantAgent', github_checkout='',
+                               save=lambda: saved.append(settings.github_checkout))
+    archive = make_zip(tmp_path / 'patch.zip', {'README.md': 'after'})
+    plan = prepare_configured_upload(archive, settings)
+    assert plan.checkout == moved.resolve()
+    assert saved == [str(moved.resolve())]
+    assert plan.extraction_folder.parent == home / 'Desktop' / 'YourAssistantAgent-Uploads'
+    assert not plan.extraction_folder.exists()  # Review does not extract or write source.
+    assert 'Reviewed ZIP extraction folder:' in describe_plan(plan)
+
+
+def test_discovery_refuses_ambiguous_and_wrong_origin(checkout, tmp_path):
+    home = tmp_path / 'home'
+    documents = home / 'Documents' / 'GitHub' / 'YourAssistantAgent'
+    documents.parent.mkdir(parents=True)
+    checkout.rename(documents)
+    desktop = home / 'Desktop' / 'YourAssistantAgent'
+    desktop.parent.mkdir(parents=True)
+    subprocess.check_output(['git', 'clone', str(documents), str(desktop)])
+    # A same-named clone with a different origin must not be chosen.
+    assert discover_local_checkout('maenish-ai/YourAssistantAgent', home=home) == documents.resolve()
+    git(desktop, 'remote', 'set-url', 'origin', 'https://github.com/maenish-ai/YourAssistantAgent.git')
+    with pytest.raises(GitHubUploadError, match='More than one'):
+        discover_local_checkout('maenish-ai/YourAssistantAgent', home=home)
+
+
+def test_approved_upload_keeps_complete_reviewed_desktop_folder(checkout, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import yaa_lite.github_upload_v430 as module
+    home = tmp_path / 'home'
+    monkeypatch.setattr(Path, 'home', classmethod(lambda cls: home))
+    settings = SimpleNamespace(github_repository='maenish-ai/YourAssistantAgent',
+                               github_checkout=str(checkout), save=lambda: None)
+    archive = make_zip(tmp_path / 'patch.zip', {'README.md': 'after', 'src/new.py': 'print(1)'})
+    plan = prepare_configured_upload(archive, settings)
+    original = module._git
+    def local_only(executable, folder, *args, **kwargs):
+        return '' if args[0] == 'push' else original(executable, folder, *args, **kwargs)
+    with patch.object(module, '_git', side_effect=local_only):
+        publish_upload(plan, approved=True)
+    assert (plan.extraction_folder / 'README.md').read_text() == 'after'
+    assert (plan.extraction_folder / 'src' / 'new.py').read_text() == 'print(1)'
+    assert git(checkout, 'show', 'HEAD:src/new.py') == 'print(1)'
+
+
+def test_redirected_desktop_is_used_for_approved_extraction(checkout, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import yaa_lite.github_upload_v430 as module
+    redirected = tmp_path / 'CloudDrive' / 'ActualDesktop'
+    monkeypatch.setattr(module, '_known_windows_folder',
+                        lambda identifier: redirected if identifier.startswith('B4BFCC3A') else None)
+    settings = SimpleNamespace(github_repository='maenish-ai/YourAssistantAgent',
+                               github_checkout=str(checkout), save=lambda: None)
+    archive = make_zip(tmp_path / 'patch.zip', {'README.md': 'after'})
+    plan = prepare_configured_upload(archive, settings)
+    assert plan.extraction_folder.parent == redirected / 'YourAssistantAgent-Uploads'
+    assert not redirected.exists()
+
+
+def test_modified_desktop_extraction_refuses_overwrite_or_commit(checkout, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    home = tmp_path / 'home'
+    monkeypatch.setattr(Path, 'home', classmethod(lambda cls: home))
+    settings = SimpleNamespace(github_repository='maenish-ai/YourAssistantAgent',
+                               github_checkout=str(checkout), save=lambda: None)
+    archive = make_zip(tmp_path / 'patch.zip', {'README.md': 'after'})
+    plan = prepare_configured_upload(archive, settings)
+    head = git(checkout, 'rev-parse', 'HEAD')
+    plan.extraction_folder.mkdir(parents=True)
+    (plan.extraction_folder / 'README.md').write_text('my edits')
+    with pytest.raises(GitHubUploadError, match='extraction folder was modified'):
+        publish_upload(plan, approved=True)
+    assert (checkout / 'README.md').read_text() == 'before'
+    assert git(checkout, 'rev-parse', 'HEAD') == head
+
+
+def test_public_source_test_fixture_is_allowed_only_by_content(tmp_path):
+    source = Path(__file__).resolve().parents[1] / 'android/app/src/test/resources/home-test-only.p12'
+    member = 'android/app/src/test/resources/home-test-only.p12'
+    archive = make_zip(tmp_path / 'source.zip', {'YourAssistantAgent-main/' + member: source.read_bytes()})
+    assert _zip_members(archive)[0][1] == member
+    changed = make_zip(tmp_path / 'private.zip', {member: b'not the public test fixture'})
+    with pytest.raises(GitHubUploadError, match='unrecognized credential'):
+        _zip_members(changed)
+    private = make_zip(tmp_path / 'other.zip', {'private.p12': source.read_bytes()})
+    with pytest.raises(GitHubUploadError, match='credential/secret'):
+        _zip_members(private)
+
+
+@pytest.mark.parametrize('name', ['release.jks', 'private.keystore', 'github-secrets.json'])
+def test_signing_credentials_are_not_published(tmp_path, name):
+    archive = make_zip(tmp_path / 'secrets.zip', {name: 'private'})
+    with pytest.raises(GitHubUploadError, match='credential/secret'):
+        _zip_members(archive)
 
 
 def test_invalid_chosen_checkout_is_not_remembered(checkout, tmp_path):

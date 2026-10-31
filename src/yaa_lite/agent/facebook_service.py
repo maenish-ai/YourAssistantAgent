@@ -132,6 +132,7 @@ class FacebookService:
             self._interactive_browser=True
             fb = self.fb()
             fb.ensure_logged_in()
+            self._remember_status('connected',fb.browser_backend)
             candidates = fb.find_recent_post_urls(source, limit=min(50, max(8, offset + count)))
             posts = list(dict.fromkeys(self._facebook_url(u) for u in candidates))
             chosen = posts[offset:offset + count]
@@ -140,6 +141,9 @@ class FacebookService:
             self.activity('facebook_preview_ready', f'posts={len(chosen)}; groups={len(selected)}; managed publishing profile')
             return {'post_urls': chosen, 'selected_groups': selected, 'post_count': count,
                     'approval_snapshot': True}
+        except Exception as exc:
+            self._remember_failure(exc)
+            raise
         finally:
             self._release_browser_after_action()
             self._exec_lock.release()
@@ -254,6 +258,17 @@ class FacebookService:
     def _t(self, ar_text: str, en_text: str) -> str:
         return ar_text if self.settings.interface_language == "ar" else en_text
 
+    def _remember_status(self, state: str, backend: str = '') -> None:
+        self._last_status = {'not_connected': 'manual_login', 'browser_closed': 'browser_not_connected'}.get(state, state)
+        self._last_backend = backend or self._last_backend
+
+    def _remember_failure(self, exc: Exception) -> None:
+        from ..facebook_backend.facebook import CheckpointDetected, LoginRequired
+        if isinstance(exc, (ValueError, TypeError, OverflowError)):return
+        if isinstance(exc, CheckpointDetected):self._last_status='verification_required'
+        elif isinstance(exc, LoginRequired):self._last_status='manual_login'
+        else:self._last_status='error'
+
     def status_code(self) -> str:
         """Stable machine-readable connection state for UI logic."""
         return self._last_status
@@ -266,6 +281,8 @@ class FacebookService:
             "not_connected": ("غير متصل","Not connected"),
             "browser_not_connected": ("المتصفح غير مربوط","Browser not connected"),
             "manual_login": ("بانتظار تسجيل الدخول","Waiting for login"),
+            "verification_required": ("بانتظار تحقق فيسبوك","Waiting for Facebook verification"),
+            "browser_closed": ("متصفح التحكم مغلق","Controlled browser closed"),
             "error": ("خطأ","Error"),
         }
         pair = labels.get(self._last_status, (self._last_status, self._last_status))
@@ -277,13 +294,9 @@ class FacebookService:
         return self._open_manual_login_impl()
 
     def _open_manual_login_impl(self) -> FacebookActionResult:
-        if self.settings.facebook_browser_mode == 'extension_first' and self.browser_bridge and self.browser_bridge.connected:
-            try:
-                result=self.browser_bridge.execute('open_url',url='https://www.facebook.com/',active=True,timeout=8)
-                if result.get('ok'):
-                    self._last_backend='normal-browser-extension'
-                    return FacebookActionResult(True,self._t('فتحت Facebook في متصفحك المتصل. سأستخدم جلسة الحساب الموجودة؛ إذا ظهر طلب دخول أكمله داخل المتصفح.','Opened Facebook in your connected browser. Its existing account session will be used; complete sign-in there if prompted.'))
-            except Exception as exc:self.activity('browser_extension_fallback',type(exc).__name__)
+        # All assistant page/post/publishing operations use this same controlled
+        # profile. Opening the extension's ordinary profile here silently sent
+        # later reads to a different, usually signed-out browser.
         try:
             self._interactive_browser=True
             browser=self.fb()
@@ -291,14 +304,16 @@ class FacebookService:
                 state=browser.open_interactive();backend=browser.browser_backend
             else:
                 backend=browser.open_manual_login();state='not_connected'
-            self._last_status='connected' if state=='connected' else 'manual_login';self._last_backend=backend
+            self._remember_status(state, backend)
+            if state not in {'connected','not_connected','manual_login','verification_required'}:
+                return FacebookActionResult(False,self._t('متصفح التحكم لم يبق مفتوحاً. اطلب فتح Facebook مجدداً.','The controlled browser did not remain open. Request Facebook again.'))
             self.activity('facebook_opened',str(backend))
             text=self._t('فتحت Facebook والحساب مسجل الدخول؛ المتصفح جاهز للأوامر.','Opened Facebook; its signed-in account is ready for commands.') if state=='connected' else self._t(
                 'فتحت Facebook في متصفح البرنامج. أكمل تسجيل الدخول إذا طُلب؛ اترك النافذة مفتوحة، وسأستخدم نفس الجلسة للجروبات والمنشورات.',
                 'Opened Facebook in the app browser. Complete sign-in if requested; leave this window open. The same session is used for groups and posts.')
             return FacebookActionResult(True,text)
         except Exception as exc:
-            self.activity('facebook_login_error',type(exc).__name__);self._last_status='error'
+            self.activity('facebook_login_error',type(exc).__name__);self._remember_failure(exc)
             return FacebookActionResult(False,self._t('تعذر تشغيل متصفح التحكم: '+str(exc),'Could not start the controlled browser: '+str(exc)))
 
     def open_publishing_login(self) -> FacebookActionResult:
@@ -311,13 +326,15 @@ class FacebookService:
             if browser.supports('open_interactive'):
                 state=browser.open_interactive();backend=browser.browser_backend
             else:backend=browser.open_manual_login();state='not_connected'
-            self._last_status = 'connected' if state=='connected' else 'manual_login'
-            self._last_backend = backend
+            self._remember_status(state, backend)
+            if state not in {'connected','not_connected','manual_login','verification_required'}:
+                return FacebookActionResult(False,self._t('متصفح النشر لم يبق مفتوحاً. اطلب فتحه مجدداً.','The publishing browser did not remain open. Request it again.'))
             self.activity('facebook_publishing_login', backend)
             return FacebookActionResult(True, self._t(
                 f'فتحت متصفح النشر المُدار ({backend}) على الكمبيوتر. سجّل الدخول يدوياً فيه واترك نافذته مفتوحة، ثم اطلب معاينة النشر.',
                 f'Opened the managed publishing browser ({backend}) on the computer. Complete sign-in if requested, leave that window open, then request the publishing preview.'))
         except Exception as exc:
+            self._remember_failure(exc)
             return FacebookActionResult(False, self._t(f'تعذر فتح متصفح النشر: {exc}', f'Could not open the publishing browser: {exc}'))
         finally:
             self._release_browser_after_action()
@@ -345,6 +362,21 @@ class FacebookService:
             return None
 
     def verify_session_background(self) -> FacebookActionResult:
+        # A deferred extension probe must not overwrite the active managed
+        # profile's real status with an unrelated browser-not-connected error.
+        if self._interactive_browser and self._fb is not None:
+            if not self._exec_lock.acquire(blocking=False):
+                return FacebookActionResult(False,self._t('مهمة Facebook قيد التنفيذ؛ لم يتغير فحص الاتصال.','A Facebook task is running; connection status was not changed.'))
+            try:
+                browser=self._fb
+                if not browser.supports('connection_status'):
+                    # Legacy backend compatibility: do not start a new browser
+                    # in a background status check.
+                    return FacebookActionResult(self._last_status=='connected',self.status_text())
+                state=browser.connection_status()
+                self._remember_status(state,browser.browser_backend)
+                return FacebookActionResult(state=='connected',self.status_text())
+            finally:self._exec_lock.release()
         result = self._verify_via_open_browser()
         if result is not None:
             return result
@@ -356,19 +388,18 @@ class FacebookService:
 
     @_browser_action
     def verify_session(self) -> FacebookActionResult:
-        ext = self._verify_via_open_browser() if self.settings.facebook_browser_mode == "extension_first" else None
+        ext = self._verify_via_open_browser() if (getattr(self.settings, "facebook_browser_mode", "extension_first") == "extension_first" and not (self._interactive_browser and self._fb is not None)) else None
         if ext is not None:
             return ext
         try:
             self._interactive_browser=True
             browser=self.fb()
             status=browser.interactive_status() if browser.supports('interactive_status') else browser.verify_saved_session()
-            self._last_status = status
-            self._last_backend = getattr(self.fb(), "browser_backend", "") or self._last_backend
+            self._remember_status(status, getattr(browser, "browser_backend", ""))
             self.activity("facebook_connection", f"{status}; {self._last_backend}")
             return FacebookActionResult(status == "connected", f"Facebook: {status}" + (f" — {self._last_backend}" if self._last_backend else ""))
         except Exception as exc:
-            self._last_status = "error"
+            self._remember_failure(exc)
             self.activity("facebook_connection_error", f"{type(exc).__name__}: {exc}")
             return FacebookActionResult(False, self._t(f"فشل فحص جلسة Facebook: {exc}", f"Facebook session check failed: {exc}"))
         finally:
@@ -377,7 +408,7 @@ class FacebookService:
     @_browser_action
     def discover_groups(self, limit: int = 500, deep: bool = True) -> FacebookActionResult:
         limit=max(1,min(int(limit),1000))
-        if self.settings.facebook_browser_mode=='extension_first' and self.browser_bridge and self.browser_bridge.connected:
+        if self.settings.facebook_browser_mode=='extension_first' and self.browser_bridge and self.browser_bridge.connected and not (self._interactive_browser and self._fb is not None):
             try:
                 response=self.browser_bridge.execute('discover_facebook_groups',limit=limit,deep=deep,timeout=50 if deep else 15)
                 if response.get('ok'):
@@ -401,10 +432,10 @@ class FacebookService:
             self._last_status='connected';self._last_backend=fb.browser_backend
             return FacebookActionResult(True,self._t(f'تم التعرف على {count} مجموعة وحفظها.',f'Discovered and saved {count} groups.'),count=count)
         except Exception as exc:
+            self._remember_failure(exc)
             self.activity('facebook_group_discovery_error',type(exc).__name__)
             from ..facebook_backend.facebook import LoginRequired,CheckpointDetected
             if isinstance(exc,(LoginRequired,CheckpointDetected)):
-                self._last_status='manual_login'
                 return FacebookActionResult(False,self._t('فتحت متصفح Facebook. الحساب يحتاج تسجيل دخول أو تحقق؛ أكمله في النافذة المفتوحة، ثم اطلب تحديث الجروبات.','Facebook is open in the controlled browser. Complete its required sign-in or verification, then request a group refresh.'))
             return FacebookActionResult(False,self._t('تعذر اكتشاف المجموعات: '+str(exc),'Could not discover groups: '+str(exc)))
 
@@ -415,9 +446,11 @@ class FacebookService:
         if not 1<=len(query)<=180:return FacebookActionResult(False,self._t('حدد اسم الصفحة التي تريد البحث عنها.','Give the page name to search for.'))
         try:
             self._interactive_browser=True
-            pages=self.fb().search_pages(query,limit=10)
+            browser=self.fb();pages=browser.search_pages(query,limit=10)
+            self._remember_status('connected',browser.browser_backend)
             return FacebookActionResult(True,json.dumps({'query':query,'pages':pages},ensure_ascii=False),len(pages))
         except Exception as exc:
+            self._remember_failure(exc)
             self.activity('facebook_page_search_error',type(exc).__name__)
             return FacebookActionResult(False,self._t('تعذر تأكيد نتيجة البحث في Facebook. إذا ظهرت نافذة دخول أكملها هناك. ','Could not confirm Facebook search results. Complete sign-in in the opened browser if prompted. ')+str(exc))
 
@@ -429,9 +462,12 @@ class FacebookService:
             self._interactive_browser=True
             browser=self.fb();browser.ensure_logged_in()
             urls=browser.find_recent_post_urls(source,limit=count)
+            self._remember_status('connected',browser.browser_backend)
             return FacebookActionResult(True,json.dumps({'source':source,'visible_recent_post_urls':urls,
                 'published':False,'note':'Observed page order, excluding recognized pinned posts. No post text or publication is confirmed.'},ensure_ascii=False),len(urls))
-        except Exception as exc:return FacebookActionResult(False,self._t('تعذر قراءة روابط المنشورات: ','Could not read post links: ')+str(exc))
+        except Exception as exc:
+            self._remember_failure(exc)
+            return FacebookActionResult(False,self._t('تعذر قراءة روابط المنشورات: ','Could not read post links: ')+str(exc))
 
     def save_rule(self, plan) -> FacebookActionResult:
         try:

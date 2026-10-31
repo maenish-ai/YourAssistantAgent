@@ -18,7 +18,7 @@ from .agent.intent import normalized_command,explicit_example_only
 _INSTALLED = False
 _STREAM_PREFIX = "__YAA_STREAM_V250__:"
 
-_FB_OPEN = re.compile(r"^\s*(?:افتح(?:لي)?|فتح|شغل|فوت(?:ني)?|ادخل(?:ني)?|وديني|روح|open|launch)\s+(?:لي\s+)?(?:على\s+|ع\s*)?(?:ال)?(?:فيس\s*بوك|فيسبوك|facebook)(?:\s+عندي|\s+الان|\s+now)?\s*[.!؟]?$", re.I)
+_FB_OPEN = re.compile(r"^\s*(?:افتح(?:لي)?|فتح|شغل|فوت(?:ني)?|ادخل(?:ني)?|وديني|روح|open|launch)\s+(?:لي\s+)?(?:(?:متصفح|المتصفح|براوزر|البراوزر|browser)\s+(?:على\s+|ع\s*)?)?(?:على\s+|ع\s*)?(?:ال)?(?:فيس\s*بوك|فيسبوك|facebook)(?:\s+عندي|\s+الان|\s+now)?\s*[.!؟]?$", re.I)
 _FB_REFRESH = re.compile(r"^\s*(?:حدث|حدّث|تحديث|جدد|جدّد|تعرف على|تعرّف على|اكتشف|جيب لي|شوف لي|refresh|update|discover|زامن)\s+(?:قائمة\s+)?(?:ال)?(?:مجموعات|جروبات|groups)(?:\s+(?:الفيس\s*بوك|فيسبوك|facebook|عندي))?(?:\s+(?:الآن|now))?\s*[.!؟]?$", re.I)
 _FB_CHECK = re.compile(r"(?:افحص|فحص|تحقق|شيك|تأكد|check|verify).{0,28}(?:فيس\s*بوك|فيسبوك|facebook)|(?:حالة|اتصال|status|connection).{0,20}(?:فيس\s*بوك|فيسبوك|facebook)", re.I)
 
@@ -32,6 +32,15 @@ def fast_facebook_intent(text: str) -> str | None:
         return None
     if _FB_OPEN.fullmatch(text):
         return "open"
+    # The remote and Windows paths share the same plain-navigation recognizer.
+    # Browser/desktop wording must still open the managed Facebook session.
+    from .remote.desktop_intent import direct_task
+    direct = direct_task(text)
+    if direct and direct[0] == 'open_url':
+        from urllib.parse import urlsplit
+        target = urlsplit(direct[1].get('url') or '')
+        if target.hostname in {'facebook.com', 'www.facebook.com'} and target.path in {'','/'} and not target.query and not target.fragment:
+            return "open"
     if _FB_REFRESH.fullmatch(text):
         return "refresh"
     if _FB_CHECK.search(text) and not re.search(r'منشور|بوست|اعلان|إعلان|جروب|مجموعات|صفحة|\bposts?\b|\bgroups?\b',text):
@@ -55,24 +64,6 @@ def fast_refresh_groups(fb, limit=120, deep=False):
 
 
 def fast_check_facebook(fb):
-    bridge = getattr(fb, "browser_bridge", None)
-    if bridge and bridge.connected:
-        try:
-            result = bridge.execute("facebook_session", timeout=12)
-            state = str(result.get("status") or "unknown")
-            fb._last_backend = "normal-browser-extension"
-            if result.get("ok") and state == "connected":
-                fb._last_status = "connected"
-                return "Facebook متصل ✅ (فحص مباشر من المتصفح)."
-            if state == "not_connected":
-                fb._last_status = "not_connected"
-                return "Facebook يحتاج تسجيل الدخول. "+fb.open_manual_login().message
-            fb._last_status = "error"
-            if state == "checkpoint":
-                return "Facebook يطلب تحققًا أمنيًا. افتحه وأكمل التحقق يدويًا ثم أعد الفحص."
-            return "إضافة المتصفح متصلة، لكن لم أتمكن من التحقق من جلسة Facebook. افتحه ثم أعد الفحص."
-        except Exception:
-            pass
     result=fb.verify_session()
     if result.ok:return result.message
     opened=fb.open_manual_login()

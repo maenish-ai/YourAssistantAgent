@@ -1,7 +1,19 @@
-# Your Assistant Agent 5.0.1
+# Your Assistant Agent 5.2.0
 
-A personal Windows assistant with its own Android 1.6.1 companion, shared branding,
+A personal Windows assistant with its own Android 1.7.0 companion, shared branding,
 remote desktop, file transfers and reviewed GitHub/Facebook tools.
+
+[Arabic 5.2 general-control guide](README_V520_AR.md). Generic computer tools now
+discover and launch observed Start-menu applications, open folders, create
+directories, copy/move files and extract ZIPs. Arbitrary valid domains and web
+searches work without adding a website-specific alias. All tools use the
+existing owner-approved task and shared-file permissions. Android remains1.7.0.
+
+[Arabic 5.1 update guide](README_V510_AR.md). Phone Facebook requests now use the
+same managed account profile as page reads and publishing previews. Plain site
+opens execute directly, desktop follow-ups retain bounded task context, QR scans
+use portrait orientation, and reviewed ZIP uploads discover matching local
+checkouts and retain extracted source on the actual Windows Desktop.
 
 ## Facebook planning patch
 
@@ -114,8 +126,8 @@ The optional older external relay remains available in advanced settings; see
 
 Source ZIPs are not Windows installers. Upload the source to your repository
 root and run `.github/workflows/build-windows.yml`. It builds Windows installer
-artifact **YourAssistantAgent-Windows-Setup-v5.0.1** and Android Debug. Private
-Android signing secrets additionally enable **YourAssistantAgent-Android-Release-v1.6.1**.
+artifact **YourAssistantAgent-Windows-Setup-v5.2.0** and Android Debug. Private
+Android signing secrets additionally enable **YourAssistantAgent-Android-Release-v1.7.0**.
 Never commit signing files or `desktop-setup.json`.
 
 For source use, install Python 3.11 and dependencies:
@@ -134,7 +146,7 @@ node --check browser_extension/background.js
 gradle -p android testDebugUnitTest assembleDebug lintDebug
 ```
 
-Android needs Java 17, SDK 35 and Gradle 8.9. Release 1.6.1 uses the existing
+Android needs Java 17, SDK 35 and Gradle 8.9. Release 1.7.0 uses the existing
 release signing key. Use the matching debug-upgrade APK if your installed app
 was signed with the earlier debug certificate.
 

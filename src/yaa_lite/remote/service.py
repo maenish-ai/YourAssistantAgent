@@ -56,6 +56,7 @@ class RemoteAssistant:
         self._watching: dict[int, int] = {}
         self._notified: set[int] = set()
         self._last_failure: dict | None = None
+        self._desktop_history: list[dict] = []
         self.session_id = self._load_session()
         # A restart cannot retain a remotely clickable operation.
         self.db.clear_pending_action(self.session_id)
@@ -125,6 +126,7 @@ class RemoteAssistant:
         configured = bool(get_groq_api_key(required=False))
         states = {'not_checked': 'لم يتم الفحص', 'connected': 'متصل',
                   'manual_login': 'يلزم تسجيل الدخول', 'not_connected': 'غير متصل',
+                  'verification_required': 'يلزم تحقق فيسبوك',
                   'browser_not_connected': 'المتصفح غير مربوط', 'error': 'خطأ في آخر فحص'}
         # Cached status is not a new login check. Do not forward arbitrary
         # service error text as part of a shareable report.
@@ -134,6 +136,8 @@ class RemoteAssistant:
                  'مفتاح Groq: ' + ('موجود؛ لم يتم اختبار صلاحيته بهذا الأمر' if configured else 'غير مضبوط'),
                  'فيسبوك (آخر حالة محفوظة، وليس فحصاً مباشراً): ' + state,
                  f'المجموعات المحفوظة: {self.db.count_groups()}']
+        from .home import connection_scope
+        lines.append('الوصول من خارج البيت: ' + connection_scope(self.settings))
         report = self._last_failure
         if report:
             lines.extend([f"آخر خطأ خلال هذا التشغيل: {report['code']} / {report['reference']}",
@@ -166,6 +170,7 @@ class RemoteAssistant:
             self._invalidate()
             self.db.clear_pending_action(self.session_id)
             self.session_id = self._new_session()
+            self._desktop_history.clear()
             self._reply('بدأت محادثة جديدة. أرسل طلبك أو أرفق ZIP لعرض خطة رفعه.')
             return
         if text.lower() in {'/cancel', 'إلغاء', 'الغاء', 'cancel'}:
@@ -184,10 +189,10 @@ class RemoteAssistant:
             return
         from .desktop_intent import is_desktop_request
         desktop_intent = not is_upload_request(text) and is_desktop_request(text)
-        if re.search(r'متصفح النشر|publishing.*(?:profile|browser)',text,re.I):desktop_intent=False
+        from .request_router import uses_facebook_tools
         from ..agent.intent import normalized_command
         closing=bool(re.search(r'اغلق|اغلاق|سكر|اقفل|اخرج|اطلع|\bclose\b',normalized_command(text)))
-        if desktop_intent and (closing or not re.search(r'جروب|قروب|مجموعات|groups',text,re.I)):
+        if desktop_intent and (closing or not uses_facebook_tools(text)):
             if not (getattr(self.settings,'remote_desktop_enabled',False) and getattr(self.settings,'remote_ai_enabled',False)):
                 self._reply('فعّل التحكم بالكمبيوتر ومساعد الكمبيوتر من إعدادات نسخة Windows أولاً. للتحكم اليدوي استخدم زر سطح المكتب على الهاتف.')
                 return
@@ -208,7 +213,7 @@ class RemoteAssistant:
             self._reply('ملف ZIP جاهز في المعاينة السابقة. راجعها واضغط زر موافق؛ الرسالة وحدها لا تنفّذ الرفع.')
             return
         if is_upload_request(text):
-            self._reply('اضغط إرفاق ZIP في تطبيق Android. سأعرض الملفات والمستودع والفرع قبل الموافقة على الرفع.')
+            self._reply('اضغط إرفاق ZIP في تطبيق Android. سأبحث عن مجلد المستودع المطابق على الكمبيوتر وأعرض الملفات والمستودع والفرع ومجلد فك الضغط قبل الموافقة على الرفع. المستودع المضبوط: ' + str(self.settings.github_repository))
             return
         # Any new instruction invalidates the old mobile button. A Facebook
         # draft may remain in the DB for natural edits, without authorization.
@@ -300,8 +305,12 @@ class RemoteAssistant:
                 from .desktop_agent import run_desktop_task
                 self.check_desktop()
                 if not getattr(self.settings,'remote_ai_enabled',False):raise ValueError('Computer AI is disabled')
-                self._reply(run_desktop_task(self.runtime,self.desktop,str(approval.payload),self._reply,
-                    files=self.files,offer_download=lambda path,name:self.publish('ملف جاهز للتنزيل: '+name,download_path=path,download_name=name)))
+                result = run_desktop_task(self.runtime,self.desktop,str(approval.payload),self._reply,
+                    files=self.files,history=list(self._desktop_history),
+                    offer_download=lambda path,name:self.publish('ملف جاهز للتنزيل: '+name,download_path=path,download_name=name))
+                self._desktop_history.append({'instruction':str(approval.payload)[:1500], 'result':str(result)[:1500]})
+                self._desktop_history = self._desktop_history[-4:]
+                self._reply(result)
             except Exception as exc:
                 self._reply('توقفت مهمة الكمبيوتر: ' + str(exc))
         else:

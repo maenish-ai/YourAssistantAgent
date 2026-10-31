@@ -79,7 +79,16 @@ class WindowControl:
         from .desktop import DesktopError
         if not identifier:
             listing=self.list_windows()
-            identifier=next((row['id'] for row in listing['windows'] if row['active']),None)
+            browsers=[row for row in listing['windows'] if row.get('process') in
+                      {'msedge.exe','chrome.exe','firefox.exe','brave.exe','vivaldi.exe','opera.exe'}]
+            identifier=next((row['id'] for row in browsers if row['active']),None)
+            if identifier is None:
+                # A phone task commonly runs while our own window is foreground.
+                # There is no ambiguity with a single visible browser; multiple
+                # windows need an observed ID instead of guessing a target.
+                if len(browsers)==1:identifier=browsers[0]['id']
+                elif len(browsers)>1:raise DesktopError('هناك عدة نوافذ متصفح. اعرض النوافذ واختر النافذة المطلوبة أولاً.')
+                else:raise DesktopError('لا توجد نافذة متصفح ظاهرة. افتح المتصفح أولاً أو اعرض النوافذ.')
         window,pid,_,image=self._window_entry(identifier)
         if image not in {'msedge.exe','chrome.exe','firefox.exe','brave.exe','vivaldi.exe','opera.exe'}:
             raise DesktopError('النافذة المحددة ليست متصفحاً مدعوماً. اعرض النوافذ واختر المتصفح أولاً.')

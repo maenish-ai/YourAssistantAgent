@@ -1,0 +1,34 @@
+Your Assistant Agent v2.7 — تعليمات الرفع والبناء (Windows)
+========================================================
+
+⚠️ هذا الملف ZIP لتحديث SOURCE CODE، وليس Setup ولا تطبيق Android.
+
+1) خذ نسخة احتياطية من مجلد المستودع الكامل على جهازك قبل أي تعديل.
+2) فك ضغط YourAssistantAgent-v2.7.0-PRIVATE-VOICE-APPROVAL-PATCH.zip.
+3) انسخ محتويات المجلد المستخرج (بما فيها المجلد المخفي .github) داخل:
+   C:\Users\Maen\Desktop\YourAssistantAgent
+   واختر Merge/Replace. مهم: لا تنشئ مجلدًا داخليًا مكررًا باسم المشروع.
+4) لا تنسخ/ترفع ملفات .env أو مفاتيح Groq أو Cookies أو ملفات المستخدم إلى GitHub.
+   يظل GROQ_API_KEY مضبوطًا محليًا على Windows كما كان.
+5) افتح GitHub Desktop > Repository > View changes ثم راجع الملفات.
+   افتح قائمة changed files وتأكد من وجود:
+   launcher.py / requirements-dev.txt / build_app.spec / .github/workflows/build-windows.yml
+   src/yaa_lite/review_voice_v270.py / src/yaa_lite/voice/provider_v270.py
+6) اعمل Commit (مثلاً: v2.7 private approval and Arabic voice preview)، ثم Push إلى main.
+7) من GitHub افتح Actions > Build Windows Setup > أحدث تشغيل.
+   لا تثبّت شيء إلا لما يكون build أخضر (Success).
+8) افتح Artifacts وحمّل:
+   YourAssistantAgent-Windows-Setup-v2.7-PrivateVoice
+   وافك ZIP تبع الـArtifact حتى تجد Windows Setup EXE وملف SHA256.
+9) ثبّت Setup فوق النسخة الحالية؛ البيانات المحلية تبقى في مسار تخزينها المعتاد.
+10) اختبر: ابدأ بالمحادثة النصية، ثم «🔊 جرّب الصوت» مع Noura وبعدها Sana.
+    عند اختيار Sana ستظهر نافذة تحذير عن الخدمة الخارجية قبل اعتمادها.
+    افحص الفيسبوك ولا تنشر شيئًا في الاختبار الأول.
+11) جرّب إنشاء خطة Facebook بدون نشر: يجب ظهور تفاصيل العملية وزر «موافق» و«إلغاء».
+    لا تضغط موافق إلا إذا كنت تعرف بالضبط أي منشور/مجموعات ستتأثر.
+
+القيود المهمة:
+- حماية الموافقة للعمليات الحساسة الموجودة حاليًا في المساعد؛ لا يضيف نشرًا إلى GitHub أو واتساب.
+- تطبيق Android والاتصال عن بعد ليسا في هذا الإصدار؛ يحتاجان مكوّنات واختبارات منفصلة.
+- Groq Free Plan محدود؛ الصوت Sana تجريبي وغير رسمي، وليس مضمون المجانية/التوافر الدائم.
+- هذا الـPatch لا يرفع نفسه إلى GitHub. مطلوب منك Commit + Push.

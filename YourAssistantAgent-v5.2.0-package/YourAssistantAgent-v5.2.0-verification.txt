@@ -1,0 +1,25 @@
+Your Assistant Agent Windows5.2.0 / compatible unchanged Android1.7.0
+Source commit:73fb85d1b26bba7d5a049ecd096c78e107c3db94
+
+Linux verification,2026-10-31:
+Full Python suite:485 passed,1 skipped(native Windows RichEdit),1 audioop warning.
+Final routing/general-tool/bootstrap tests after Facebook bare-domain alias fix:35 passed.
+Source startup self-test,JavaScript extension syntax,git diff --check:passed.
+Actual source ZIP accepted by repository upload validation:284 files.No live push.
+Real temporary file operations tested:create/copy/move/ZIP extraction without overwrites,
+traversal/symlink/case collisions,archive bounds,and existing-data preservation.
+Installed-app discovery/launch uses fake Windows boundaries:observed shortcut IDs,
+expiry,hash/metadata changes,ambiguity/pagination,permission checks,folder opening.
+Model-directed integration uses observed application IDs and actual filesystem paths.
+
+Android files are byte-for-byte unchanged from validated1.7.0 release in5.1 package.
+Previous Android1.7.0 verification:33 Robolectric tests;assembleDebug/Release and lintDebug/Release passed.
+Compiled manifest:PairingCaptureActivity portrait and non-exported.
+Release signer SHA256:7e0f4bc614a8a6ac0fd365e5520a26531963a747c2bb9ffcbb5b34e194f30617
+Debug signer SHA256:adcf3c7b2724efaf6b60b7d244067a1afd0313def13418143973b2526da8ac3a
+
+No physical Windows/Android device,live Facebook/Groq account or router/mobile-data test.
+StartMenu discovery does not cover every UWP/app without shortcut.
+Generic copy/move tools support files,not whole directory trees;ZIP or Explorer handles folders.
+Protected Windows prompts/UAC and ISP CGNAT are not bypassed.
+Windows EXE must be built by GitHub Actions;not included in this source bundle.

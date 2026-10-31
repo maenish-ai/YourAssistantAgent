@@ -151,7 +151,8 @@ class Controller:
 
 
 @pytest.fixture
-def conversation(tmp_path):
+def conversation(tmp_path, monkeypatch):
+    monkeypatch.setattr('yaa_lite.github_upload_v430.desktop_folder', lambda: tmp_path / 'Desktop')
     db = ChatDB(tmp_path / 'mobile.sqlite3')
     settings = Settings()
     controller = Controller(db)

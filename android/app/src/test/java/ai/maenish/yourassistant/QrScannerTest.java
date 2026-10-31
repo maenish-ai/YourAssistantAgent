@@ -3,11 +3,12 @@ package ai.maenish.yourassistant;
 import android.Manifest;
 import android.app.Activity;
 import android.content.Intent;
+import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.TextView;
-import com.journeyapps.barcodescanner.CaptureActivity;
+import com.google.zxing.client.android.Intents;
 import com.google.zxing.integration.android.IntentIntegrator;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -37,8 +38,14 @@ public class QrScannerTest {
             assertTrue(text(activity.findViewById(android.R.id.content),"مسح QR وإقران الكمبيوتر").performClick());
             ShadowActivity.IntentForResult launch=Shadows.shadowOf(activity).getNextStartedActivityForResult();
             assertNotNull(launch);
-            assertEquals(CaptureActivity.class.getName(),launch.intent.getComponent().getClassName());
-            try(ActivityController<CaptureActivity> camera=Robolectric.buildActivity(CaptureActivity.class,launch.intent)){
+            assertEquals(PairingCaptureActivity.class.getName(),launch.intent.getComponent().getClassName());
+            assertFalse(launch.intent.getBooleanExtra(Intents.Scan.ORIENTATION_LOCKED,true));
+            try {
+                ActivityInfo info=activity.getPackageManager().getActivityInfo(launch.intent.getComponent(),0);
+                assertEquals(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT,info.screenOrientation);
+                assertFalse(info.exported);
+            } catch(PackageManager.NameNotFoundException e) {throw new AssertionError(e);}
+            try(ActivityController<PairingCaptureActivity> camera=Robolectric.buildActivity(PairingCaptureActivity.class,launch.intent)){
                 camera.setup();
                 assertFalse(camera.get().isFinishing());
                 assertArrayEquals(new String[]{Manifest.permission.CAMERA},Shadows.shadowOf(camera.get()).getLastRequestedPermission().requestedPermissions);
@@ -53,7 +60,7 @@ public class QrScannerTest {
             Shadows.shadowOf(activity.getApplication()).grantPermissions(Manifest.permission.CAMERA);
             text(activity.findViewById(android.R.id.content),"مسح QR وإقران الكمبيوتر").performClick();
             Intent launch=Shadows.shadowOf(activity).getNextStartedActivityForResult().intent;
-            try(ActivityController<CaptureActivity> camera=Robolectric.buildActivity(CaptureActivity.class,launch)){
+            try(ActivityController<PairingCaptureActivity> camera=Robolectric.buildActivity(PairingCaptureActivity.class,launch)){
                 camera.setup();camera.pause().resume();
                 assertFalse(camera.get().isFinishing());
                 assertNull(Shadows.shadowOf(camera.get()).getLastRequestedPermission());
@@ -68,7 +75,7 @@ public class QrScannerTest {
             Shadows.shadowOf(activity.getApplication()).denyPermissions(Manifest.permission.CAMERA);
             text(activity.findViewById(android.R.id.content),"مسح QR وإقران الكمبيوتر").performClick();
             ShadowActivity.IntentForResult launch=Shadows.shadowOf(activity).getNextStartedActivityForResult();
-            try(ActivityController<CaptureActivity> camera=Robolectric.buildActivity(CaptureActivity.class,launch.intent)){
+            try(ActivityController<PairingCaptureActivity> camera=Robolectric.buildActivity(PairingCaptureActivity.class,launch.intent)){
                 camera.setup();
                 int requestCode=Shadows.shadowOf(camera.get()).getLastRequestedPermission().requestCode;
                 camera.get().onRequestPermissionsResult(requestCode,new String[]{Manifest.permission.CAMERA},new int[]{PackageManager.PERMISSION_DENIED});

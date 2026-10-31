@@ -40,7 +40,7 @@ def test_launcher_applies_personal_assistant_layer_before_main():
 
 def test_personal_controller_has_multistep_cap_and_approval_gate():
     src = (ROOT / "src" / "yaa_lite" / "personal_assistant_v220.py").read_text(encoding="utf-8")
-    assert "for _step in range(5)" in src
+    assert "for _step in range(12)" in src
     assert '"approve_facebook_campaign"' in src
     assert "Preview" in src or "preview" in src
     assert "Passwords" not in src

@@ -1,0 +1,15 @@
+{
+    servers {
+        timeouts {
+            read_header 10s
+            read_body 30s
+            idle 60s
+        }
+    }
+}
+{$PUBLIC_HOST} {
+    request_body {
+        max_size 4MB
+    }
+    reverse_proxy relay:8080
+}

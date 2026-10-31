@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 import threading
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 
 TARGET_REPO = 'maenish-ai/YourAssistantAgent'
@@ -28,6 +28,12 @@ PENDING_UPLOAD_KEY = 'yaa.pending-upload-commit'
 PENDING_UPLOAD_REPO_KEY = 'yaa.pending-upload-repository'
 _PUBLISH_LOCKS: dict[str, threading.RLock] = {}
 _PUBLISH_LOCKS_GUARD = threading.Lock()
+# This public test credential is shipped in source, has password "test-only",
+# and is excluded from application APKs. Content, not just its name, is checked.
+PUBLIC_TEST_FIXTURES = {
+    'android/app/src/test/resources/home-test-only.p12':
+        '0817ddef205c6c992a280239660608adf3699c306130c358edc712b5df2e1fbb',
+}
 
 
 class GitHubUploadError(Exception):
@@ -54,6 +60,7 @@ class UploadPlan:
     files: tuple[UploadFile, ...]
     pending_commit: str = ''
     expected_repo: str = TARGET_REPO
+    extraction_folder: Path | None = None
 
     @property
     def changes(self) -> tuple[UploadFile, ...]:
@@ -66,6 +73,47 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: source.read(1024 * 1024), b''):
             h.update(block)
     return h.hexdigest()
+
+
+def _known_windows_folder(identifier: str) -> Path | None:
+    """Respect redirected/localized Desktop and Documents on Windows."""
+    if os.name != 'nt':
+        return None
+    try:
+        import ctypes
+        import uuid
+        from ctypes import wintypes
+        class GUID(ctypes.Structure):
+            _fields_ = [('data1', ctypes.c_uint32), ('data2', ctypes.c_uint16),
+                        ('data3', ctypes.c_uint16), ('data4', ctypes.c_ubyte * 8)]
+        folder_id = GUID.from_buffer_copy(uuid.UUID(identifier).bytes_le)
+        result = ctypes.c_wchar_p()
+        locate = ctypes.windll.shell32.SHGetKnownFolderPath
+        locate.argtypes = [ctypes.POINTER(GUID), wintypes.DWORD, wintypes.HANDLE,
+                           ctypes.POINTER(ctypes.c_wchar_p)]
+        locate.restype = ctypes.c_long
+        release = ctypes.windll.ole32.CoTaskMemFree
+        release.argtypes = [ctypes.c_void_p]
+        release.restype = None
+        code = locate(ctypes.byref(folder_id), 0, None, ctypes.byref(result))
+        if code != 0:
+            return None
+        try:
+            return Path(result.value) if result.value else None
+        finally:
+            release(ctypes.cast(result, ctypes.c_void_p))
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def desktop_folder() -> Path:
+    folder = _known_windows_folder('B4BFCC3A-DB2C-424C-B029-7FE99A87C641')
+    if folder is not None:
+        return folder
+    home = Path.home()
+    if not (home / 'Desktop').is_dir() and (home / 'OneDrive' / 'Desktop').is_dir():
+        return home / 'OneDrive' / 'Desktop'
+    return home / 'Desktop'
 
 
 def find_git() -> str:
@@ -154,7 +202,7 @@ def _pending_upload(git: str, checkout: Path, branch: str, head: str,
     return head if same_repo and pending == f'{branch}:{head}' else ''
 
 
-def _validate_name(name: str) -> str:
+def _validate_name(name: str, *, allow_public_fixture: bool = False) -> str:
     if not name or '\x00' in name or '\\' in name or name.startswith('/'):
         raise GitHubUploadError('ZIP contains an unsafe path.')
     parts = name.rstrip('/').split('/')
@@ -171,9 +219,17 @@ def _validate_name(name: str) -> str:
     filename = parts[-1].lower()
     if (filename == '.env' or (filename.startswith('.env.') and filename not in ('.env.example', '.env.sample'))
             or filename in ('credentials.json', 'secrets.json', 'desktop-setup.json', 'id_rsa', 'id_ed25519')
-            or filename.endswith(('.pem', '.p12', '.pfx', '.key', '.kdbx'))):
+            or (filename.endswith(('.pem', '.p12', '.pfx', '.key', '.kdbx')) and not allow_public_fixture)
+            or filename.endswith(('.jks', '.keystore')) or filename == 'github-secrets.json'):
         raise GitHubUploadError('ZIP includes a file that looks like a credential/secret. Remove it before publishing.')
     return '/'.join(parts)
+
+
+def _public_fixture_key(name: str) -> str | None:
+    for path in PUBLIC_TEST_FIXTURES:
+        if name == path or ('/' in name and name.split('/', 1)[1] == path):
+            return path
+    return None
 
 
 def _zip_members(archive: Path, *, repository_name: str = "YourAssistantAgent") -> list[tuple[zipfile.ZipInfo, str]]:
@@ -189,7 +245,8 @@ def _zip_members(archive: Path, *, repository_name: str = "YourAssistantAgent") 
         raw: list[tuple[zipfile.ZipInfo, str]] = []
         seen = set()
         for info in infos:
-            name = _validate_name(info.filename)
+            fixture = _public_fixture_key(info.filename)
+            name = _validate_name(info.filename, allow_public_fixture=bool(fixture))
             mode = (info.external_attr >> 16) & 0xFFFF
             if stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR):
                 raise GitHubUploadError('ZIP contains symbolic links or special files.')
@@ -197,6 +254,8 @@ def _zip_members(archive: Path, *, repository_name: str = "YourAssistantAgent") 
                 raise GitHubUploadError('Encrypted ZIP entries are not supported.')
             if info.file_size > MAX_MEMBER:
                 raise GitHubUploadError('ZIP contains a file larger than 100 MB.')
+            if fixture and (info.file_size > 65536 or hashlib.sha256(z.read(info)).hexdigest() != PUBLIC_TEST_FIXTURES[fixture]):
+                raise GitHubUploadError('ZIP contains an unrecognized credential in place of the public test fixture.')
             if info.is_dir():
                 continue
             key = name.casefold()
@@ -217,7 +276,7 @@ def _zip_members(archive: Path, *, repository_name: str = "YourAssistantAgent") 
         seen.clear()
         for info, name in raw:
             relative = '/'.join(name.split('/')[1:]) if strip else name
-            _validate_name(relative)
+            _validate_name(relative, allow_public_fixture=bool(_public_fixture_key(relative)))
             key = relative.casefold()
             if key in seen:
                 raise GitHubUploadError('ZIP contains conflicting file paths.')
@@ -268,18 +327,64 @@ def prepare_upload(archive: Path | str, checkout: Path | str, git_executable: st
     return UploadPlan(archive, _sha256(archive), checkout, git, head, branch, tuple(output), pending, expected_repo)
 
 
+def discover_local_checkout(repository: str, *, home: Path | None = None) -> Path | None:
+    """Find an existing clone in common Desktop/GitHub folders, without network.
+
+    Folder names are hints only; both fetch and push origins must match. Never
+    scan every drive or infer an arbitrary target from archive filenames.
+    """
+    repository = validate_repository(repository)
+    explicit_home = home is not None
+    home = Path(home) if explicit_home else Path.home()
+    name = repository.split('/')[1]
+    candidates = []
+    for base in (home, home / 'OneDrive'):
+        for root in (base / 'Desktop', base / 'Documents' / 'GitHub', base / 'GitHub'):
+            candidates.append(root / name)
+    if not explicit_home:
+        candidates.append(desktop_folder() / name)
+        documents = _known_windows_folder('FDD39AD0-238F-46AF-ADB4-6C85480369C7')
+        if documents is not None:
+            candidates.append(documents / 'GitHub' / name)
+    git = None
+    matches = []
+    for candidate in candidates:
+        if not candidate.is_dir() or candidate.is_symlink():
+            continue
+        git = git or find_git()
+        try:
+            resolved = candidate.resolve()
+            top = Path(_git(git, resolved, 'rev-parse', '--show-toplevel')).resolve()
+            fetch = _git(git, resolved, 'remote', 'get-url', 'origin')
+            pushes = _git(git, resolved, 'remote', 'get-url', '--push', '--all', 'origin').splitlines()
+        except GitHubUploadError:
+            continue
+        if (top == resolved and _matches_repository(fetch, repository) and len(pushes) == 1
+                and _matches_repository(pushes[0], repository) and resolved not in matches):
+            matches.append(resolved)
+    if len(matches) > 1:
+        raise GitHubUploadError('More than one local checkout matches ' + repository
+                                + '. Choose the intended local folder in Settings once.')
+    return matches[0] if matches else None
+
+
 def prepare_configured_upload(archive: Path | str, settings, choose_checkout=None) -> UploadPlan:
     """Use the saved target across chats; a picker is needed only for first setup.
 
-    Remote callers omit the picker and fail clearly when no checkout is set.
+    A matching existing clone in a conventional folder can be found remotely.
     A newly chosen checkout is remembered only after repository validation.
     """
     repository = validate_repository(getattr(settings, 'github_repository', TARGET_REPO))
     folder = str(getattr(settings, 'github_checkout', '') or '').strip()
     if not folder:
-        if choose_checkout is None:
-            raise GitHubUploadError('Configure the local GitHub checkout in Settings before uploading remotely.')
-        folder = str(choose_checkout() or '').strip()
+        discovered = discover_local_checkout(repository)
+        if discovered is not None:
+            folder = str(discovered)
+        elif choose_checkout is not None:
+            folder = str(choose_checkout() or '').strip()
+        else:
+            raise GitHubUploadError('Configure the local GitHub checkout in Settings once, or place an existing clone '
+                                    'in Documents/GitHub/' + repository.split('/')[1] + '. No matching local repository was found.')
         if not folder:
             raise GitHubUploadError('No local GitHub checkout was selected.')
     plan = prepare_upload(archive, folder, expected_repo=repository)
@@ -287,7 +392,10 @@ def prepare_configured_upload(archive: Path | str, settings, choose_checkout=Non
         settings.github_repository = repository
         settings.github_checkout = str(plan.checkout)
         settings.save()
-    return plan
+    desktop = desktop_folder()
+    safe_name = re.sub(r'[^A-Za-z0-9_.-]', '_', repository.split('/')[1])
+    extraction = desktop / 'YourAssistantAgent-Uploads' / (safe_name + '-' + plan.archive_sha256[:12])
+    return replace(plan, extraction_folder=extraction)
 
 
 def describe_plan(plan: UploadPlan) -> str:
@@ -302,6 +410,8 @@ def describe_plan(plan: UploadPlan) -> str:
         f.relative_path.lower().startswith('.github/workflows/') for f in plan.changes) else ''
     pending_note = (f'\nPending upload commit: {plan.pending_commit[:12]} (will retry PUSH).'
                     if plan.pending_commit else '')
+    extraction_note = (f'\nReviewed ZIP extraction folder: {plan.extraction_folder}'
+                       if plan.extraction_folder else '')
     if plan.changes:
         action = 'Approving will WRITE these files, COMMIT, and PUSH to origin.'
     elif plan.pending_commit:
@@ -311,7 +421,7 @@ def describe_plan(plan: UploadPlan) -> str:
     return (f'Repository: {plan.expected_repo}\nLocal folder: {plan.checkout}\n'
             f'Target branch: {plan.branch}\nArchive: {plan.archive.name}\n'
             f'Added: {added} | Modified: {modified} | Unchanged: {unchanged}\n'
-            f'Files to commit:\n{sample}{workflow_note}{pending_note}\n\n'
+            f'Files to commit:\n{sample}{workflow_note}{pending_note}{extraction_note}\n\n'
             f'No files will be deleted. {action}')
 
 
@@ -368,7 +478,7 @@ def _publish_upload(plan: UploadPlan, *, approved: bool = False) -> str:
     with tempfile.TemporaryDirectory(prefix='yaa-github-upload-') as temp:
         stage = Path(temp)
         with zipfile.ZipFile(plan.archive) as z:
-            for f in plan.changes:
+            for f in plan.files:
                 target = stage.joinpath(*PurePosixPath(f.relative_path).parts)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 digest = hashlib.sha256()
@@ -378,6 +488,8 @@ def _publish_upload(plan: UploadPlan, *, approved: bool = False) -> str:
                         dest.write(block)
                 if digest.hexdigest() != f.sha256:
                     raise GitHubUploadError('ZIP contents changed during validation. No changes were written.')
+        if plan.extraction_folder is not None:
+            _keep_reviewed_extraction(plan, stage)
         for f in plan.changes:
             destination = _safe_destination(checkout, f.relative_path)
             if destination.is_file():
@@ -417,10 +529,42 @@ def _publish_upload(plan: UploadPlan, *, approved: bool = False) -> str:
     return f'Published {len(actual)} files to {plan.expected_repo} ({branch}). Commit: https://github.com/{plan.expected_repo}/commit/{commit}{note}'
 
 
+def _keep_reviewed_extraction(plan: UploadPlan, stage: Path) -> None:
+    """Keep the approved payload on Desktop without replacing an existing file."""
+    folder = plan.extraction_folder
+    assert folder is not None
+    # Refuse redirects through any existing symlink in the destination chain.
+    if any(part.is_symlink() for part in (folder, *folder.parents)):
+        raise GitHubUploadError('The reviewed extraction folder contains a symbolic link.')
+    expected = {f.relative_path: f.sha256 for f in plan.files}
+    if folder.exists():
+        if not folder.is_dir():
+            raise GitHubUploadError('The reviewed extraction folder is occupied by a file.')
+        actual = {}
+        for path in folder.rglob('*'):
+            if path.is_symlink():
+                raise GitHubUploadError('The extraction folder contains a symbolic link.')
+            if path.is_file():
+                actual[path.relative_to(folder).as_posix()] = _sha256(path)
+        if actual != expected:
+            raise GitHubUploadError('The existing extraction folder was modified. Move it aside before retrying.')
+        return
+    folder.parent.mkdir(parents=True, exist_ok=True)
+    temporary = Path(tempfile.mkdtemp(prefix='.yaa-extract-', dir=folder.parent))
+    try:
+        shutil.copytree(stage, temporary, dirs_exist_ok=True)
+        temporary.rename(folder)
+    except OSError as exc:
+        raise GitHubUploadError('Could not save the reviewed ZIP folder on Desktop. Check disk space and folder permissions.') from exc
+    finally:
+        if temporary.exists():
+            shutil.rmtree(temporary)
+
+
 def is_upload_request(text: str) -> bool:
     s = ' '.join(str(text or '').lower().split())
     action = re.search(r'ارفع|ارفعه|رفع|انشر|ادفع|حدّث|حدث|upload|push|publish|commit', s)
-    target = re.search(r'github|جيت\s*[ -]?ها?ب|جتهب|المستودع|\brepo\b|git\s*hub', s)
+    target = re.search(r'github|جيت\s*[ -]?ها?ب|جتهب|المستودع|\brepo\b|git\s*hub|your\s*assistant\s*agent', s)
     question = re.search(r'^(?:كيف|ليش|لماذا|هل|what|how|why)\b', s)
     return bool(action and target and not question)
 

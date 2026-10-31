@@ -15,13 +15,14 @@ import threading
 import time
 from urllib.parse import urlsplit
 from .window_control import WindowControl
+from .app_control import AppControl
 
 
 class DesktopError(RuntimeError):
     pass
 
 
-class WindowsDesktop(WindowControl):
+class WindowsDesktop(WindowControl, AppControl):
     def __init__(self, enabled):
         self.enabled = enabled
         self._lock = threading.RLock()
@@ -29,6 +30,7 @@ class WindowsDesktop(WindowControl):
         self._elements = {}
         self._windows = {}
         self._tabs = {}
+        self._applications = {}
         self._window = None
         self._revoked = False
         self._uia_thread = threading.local()

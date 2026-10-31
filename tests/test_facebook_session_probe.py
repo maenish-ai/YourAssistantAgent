@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from yaa_lite.agent.facebook_service import FacebookService
+from yaa_lite.agent.facebook_service import FacebookService, FacebookActionResult
 from yaa_lite.fast_live_v250 import fast_check_facebook
 
 
@@ -39,6 +39,8 @@ def test_http_success_alone_never_means_signed_in():
     assert not service._verify_via_open_browser().ok
     assert service.status_code() != "connected"
     service._last_status = "connected"
+    service.open_manual_login = lambda: FacebookActionResult(True, 'Opened controlled sign-in window')
     text = fast_check_facebook(service)
     assert service.status_code() != "connected"
-    assert "لم أتمكن" in text
+    assert "Could not verify" in text or "could not" in text.lower()
+    assert 'Opened controlled sign-in window' in text

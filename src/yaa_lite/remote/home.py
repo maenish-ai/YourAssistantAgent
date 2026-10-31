@@ -30,6 +30,31 @@ def endpoint(value):
     return parsed.geturl()
 
 
+def connection_scope(settings):
+    """Describe configured reachability without claiming a remote probe passed."""
+    mode = getattr(settings, 'remote_connection_mode', 'direct')
+    if mode == 'relay':
+        return 'وضع الوسيط مضبوط؛ هذه الحالة لا تختبر وصول الهاتف من شبكة أخرى.'
+    if mode != 'home':
+        return 'الاستضافة المنزلية HTTPS غير مفعلة؛ الاقتران المحلي لا يثبت الوصول من شبكة أخرى.'
+    public = getattr(settings, 'remote_home_public_url', '')
+    if not public:
+        return 'لم يُضبط عنوان خارجي. الاتصال الحالي محلي؛ يلزم عنوان عام وتوجيه منفذ أو IPv6 قابل للوصول.'
+    try:
+        host = urlsplit(endpoint(public)).hostname
+        try:
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            if host.lower() == 'localhost' or host.lower().endswith(('.local', '.localhost')):
+                return 'العنوان الخارجي المضبوط محلي فقط؛ لن يعمل من شبكة أخرى.'
+        else:
+            if not address.is_global:
+                return 'العنوان الخارجي المضبوط ليس عنواناً عاماً؛ لن يتيح الوصول عبر الإنترنت مباشرة.'
+    except (TypeError, ValueError):
+        return 'العنوان الخارجي غير صالح. راجع إعداد الاستضافة المنزلية.'
+    return 'عنوان HTTPS خارجي مضبوط، لكن الوصول غير مُختبر. جرّب الاتصال ببيانات الهاتف؛ يلزم مسار من الراوتر إلى الكمبيوتر، وCGNAT قد يمنعه.'
+
+
 def bind_address():
     if socket.has_ipv6:
         try:

@@ -139,6 +139,7 @@ public final class MainActivity extends Activity {
     private void scanPairing(){
         try{
             IntentIntegrator scanner=new IntentIntegrator(this);
+            scanner.setCaptureActivity(PairingCaptureActivity.class);
             scanner.setDesiredBarcodeFormats(IntentIntegrator.QR_CODE);
             scanner.setPrompt("افتح ربط الهاتف في برنامج Windows وامسح الرمز");
             scanner.addExtra("SHOW_MISSING_CAMERA_PERMISSION_DIALOG",true);

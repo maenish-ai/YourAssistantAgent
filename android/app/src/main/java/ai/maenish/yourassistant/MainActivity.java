@@ -49,7 +49,7 @@ public final class MainActivity extends Activity {
     private ApiClient api;
     private EditText serverField, tokenField, composer;
     private TextView status;
-    private Button connectButton, disconnectButton, sendButton, attachButton, newChatButton, desktopButton, filesButton, computerButton;
+    private Button connectButton, disconnectButton, diagnosticsButton, sendButton, attachButton, newChatButton, desktopButton, filesButton, computerButton;
     private boolean desktopAllowed, filesAllowed, aiAllowed;
     private boolean dictationAllowed;
     private boolean recordAfterPermission;
@@ -116,6 +116,7 @@ public final class MainActivity extends Activity {
         tokenField=field("مفتاح الاقتران — إعداد متقدم",true);tokenField.setSaveEnabled(false);tokenField.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
         connectionFields.addView(serverField,AppUi.space(this));connectionFields.addView(tokenField,AppUi.space(this));
         connectButton=button("حفظ واتصال",this::connect);connectionFields.addView(connectButton,AppUi.space(this));
+        diagnosticsButton=AppUi.button(this,"تشخيص الاتصال",this::diagnostics,false);connectionFields.addView(diagnosticsButton,AppUi.space(this));
         connectionFields.addView(AppUi.button(this,"كيف أربط الجهازين؟",this::showPairingHelp,false));pairing.addView(connectionFields);
         root.addView(pairing,AppUi.space(this));
         status=label("غير مقترن • اعرض QR من برنامج Windows ثم امسحه هنا.",12);status.setTextColor(AppUi.GREEN);root.addView(status);
@@ -176,6 +177,7 @@ public final class MainActivity extends Activity {
         sendButton.setEnabled(connected && !busy&&!voiceActive&&!voiceWaiting);
         attachButton.setEnabled(connected && !busy&&!voiceActive&&!voiceWaiting);
         newChatButton.setEnabled(connected && !busy&&!voiceActive&&!voiceWaiting);
+        diagnosticsButton.setEnabled(connected && !busy&&!voiceActive&&!voiceWaiting);
         micButton.setEnabled(voiceActive||(connected&&dictationAllowed&&!busy&&!voiceWaiting));
         composer.setEnabled(connected && !busy);
         connectButton.setEnabled(!busy);
@@ -407,11 +409,26 @@ public final class MainActivity extends Activity {
         });
     }
 
+    private void diagnostics() {
+        if (!connected || busy || (dictation!=null&&dictation.active()) || pendingDictationId!=null) return;
+        try {
+            JSONObject body=new JSONObject().put("text","/diagnostics");
+            submit("/v1/messages",body,"طلبت تقرير التشخيص من الكمبيوتر؛ يظهر هنا بدون استخدام Groq.",()->{
+                appendText("تشخيص الاتصال","أنت");
+                connectionFields.setVisibility(View.GONE);
+            },false);
+        } catch(Exception e) { status.setText("تعذر تجهيز طلب التشخيص."); }
+    }
+
     private void submit(String path, JSONObject body, String success, Runnable accepted) {
+        submit(path,body,success,accepted,true);
+    }
+
+    private void submit(String path, JSONObject body, String success, Runnable accepted, boolean invalidateApproval) {
         ApiClient client = api;
         if (client == null || busy) return;
         int requestGeneration = generation;
-        disableApprovals();
+        if(invalidateApproval)disableApprovals();
         busy = true;
         status.setText("جاري إرسال الطلب…");
         updateButtons();

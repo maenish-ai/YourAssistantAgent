@@ -28,6 +28,8 @@ public class AppScreensTest {
             assertNotNull(scan);assertEquals(View.VISIBLE,scan.getVisibility());assertTrue(scan.isEnabled());
             assertFalse(text(activity,"سطح المكتب").isEnabled());assertFalse(text(activity,"الملفات").isEnabled());
             assertFalse(text(activity,"إرسال الطلب").isEnabled());
+            assertTrue(text(activity,"إعدادات الربط").performClick());
+            assertNotNull(text(activity,"تشخيص الاتصال"));assertFalse(text(activity,"تشخيص الاتصال").isEnabled());
             assertNotEquals(0,activity.getApplicationInfo().icon);
             assertNotNull(text(activity,"المحادثة الذكية تستخدم Groq؛ التحكم اليدوي والملفات لهما أزرار منفصلة."));
         }

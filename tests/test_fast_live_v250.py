@@ -25,6 +25,7 @@ def test_streamed_text_and_tool_calls_stitch_across_chunks():
     data=[_event({'content':'مرحبا '}),_event({'content':'بك'}),
           _event({'tool_calls':[{'index':0,'id':'call_','function':{'name':'facebook_','arguments':'{"foo":'}}]}),
           _event({'tool_calls':[{'index':0,'id':'22','function':{'name':'status','arguments':'"bar"}'}}]}),
+          'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
           'data: [DONE]']
     outcome=assemble_stream(data, parts.append)
     assert outcome['content']=='مرحبا بك'

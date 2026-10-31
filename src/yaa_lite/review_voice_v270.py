@@ -26,6 +26,7 @@ _ALLOWED_MUTATIONS = frozenset({
 _READ_ONLY_TOOLS = frozenset({
     'app_status', 'facebook_status', 'verify_facebook_connection', 'open_facebook_login', 'open_facebook_publishing_login',
     'discover_facebook_groups', 'search_facebook_groups',
+    'search_facebook_pages', 'read_facebook_posts',
     'list_tasks', 'backup_status', 'count_facebook_groups',
 })
 _APPROVAL_TTL_SECONDS = 15 * 60

@@ -55,6 +55,7 @@ class RemoteAssistant:
         self._approval: Approval | None = None
         self._watching: dict[int, int] = {}
         self._notified: set[int] = set()
+        self._last_failure: dict | None = None
         self.session_id = self._load_session()
         # A restart cannot retain a remotely clickable operation.
         self.db.clear_pending_action(self.session_id)
@@ -117,6 +118,33 @@ class RemoteAssistant:
             if not self._closed:
                 self._approval = approval
 
+    def diagnostics(self) -> str:
+        """Local snapshot, intentionally independent of model/browser calls."""
+        from .. import __version__
+        from ..ai.runtime import get_groq_api_key
+        configured = bool(get_groq_api_key(required=False))
+        states = {'not_checked': 'لم يتم الفحص', 'connected': 'متصل',
+                  'manual_login': 'يلزم تسجيل الدخول', 'not_connected': 'غير متصل',
+                  'browser_not_connected': 'المتصفح غير مربوط', 'error': 'خطأ في آخر فحص'}
+        # Cached status is not a new login check. Do not forward arbitrary
+        # service error text as part of a shareable report.
+        state = states.get(getattr(self.facebook, '_last_status', 'not_checked'), 'غير مؤكد')
+        lines = ['تشخيص الاتصال', f'Windows: {__version__}',
+                 'الهاتف ← الكمبيوتر: وصل طلب التشخيص بنجاح',
+                 'مفتاح Groq: ' + ('موجود؛ لم يتم اختبار صلاحيته بهذا الأمر' if configured else 'غير مضبوط'),
+                 'فيسبوك (آخر حالة محفوظة، وليس فحصاً مباشراً): ' + state,
+                 f'المجموعات المحفوظة: {self.db.count_groups()}']
+        report = self._last_failure
+        if report:
+            lines.extend([f"آخر خطأ خلال هذا التشغيل: {report['code']} / {report['reference']}",
+                          'وقت الخطأ: ' + report['time_utc'],
+                          'المرحلة: ' + report['stage']])
+            if report['locations']:
+                lines.append('موضع الكود: ' + ' → '.join(report['locations']))
+        else:
+            lines.append('لم يُسجل خطأ تجهيز مهمة خلال هذا التشغيل.')
+        return '\n'.join(lines)
+
     def text(self, text: str) -> None:
         if self._closed:
             return
@@ -125,6 +153,9 @@ class RemoteAssistant:
             return
         if len(text) > 5000:
             self._reply('الرسالة طويلة. أرسل طلباً لا يتجاوز 5000 حرف.')
+            return
+        if text.lower() in {'/diagnostics', '/diagnose', 'تشخيص الاتصال'}:
+            self._reply(self.diagnostics())
             return
         from ..agent.intent import explicit_example_only
         if explicit_example_only(text):
@@ -197,8 +228,12 @@ class RemoteAssistant:
             else:
                 self._reply(outcome.text)
         except Exception as exc:
-            self.activity('remote_request_error', type(exc).__name__)
-            self._reply('تعذر إكمال الطلب. افحص اتصال Groq أو تسجيل الدخول إلى المتصفح ثم أعد المحاولة.')
+            from .diagnostics import failure_report, failure_message
+            self._invalidate()
+            self.db.clear_pending_action(self.session_id)
+            self._last_failure = failure_report(exc)
+            self.activity('remote_request_error', json.dumps(self._last_failure, ensure_ascii=False))
+            self._reply(failure_message(self._last_failure), clear_approval=True)
 
     def document(self, path: Path, caption: str = '') -> None:
         path = Path(path)

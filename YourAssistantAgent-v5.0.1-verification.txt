@@ -1,0 +1,26 @@
+Your Assistant Agent Windows 5.0.1 / Android 1.6.1 (versionCode 9)
+Source commit: 0464df246e2a8b9c313eb81e051664aa6f7f6d8c
+
+Executed in Linux, 2026-10-31:
+- Full Python suite: 351 passed, 1 skipped (native Windows RichEdit), 1 audioop deprecation warning.
+- Final Groq/stream suite after terminal-frame fix: 30 passed (includes 3 new stream completion regressions).
+- Android Robolectric: 33 tests, 0 failures, 0 errors, 0 skipped.
+- Gradle testDebugUnitTest, assembleDebug, assembleRelease, lintDebug, lintRelease: BUILD SUCCESSFUL.
+- launcher.py --self-test: passed.
+- node --check browser_extension/background.js: passed.
+- git diff --check: passed.
+- Both APKs verified with Android apksigner and archive CRC checks.
+- Release signer SHA256: 7e0f4bc614a8a6ac0fd365e5520a26531963a747c2bb9ffcbb5b34e194f30617
+- Debug signer SHA256: adcf3c7b2724efaf6b60b7d244067a1afd0313def13418143973b2526da8ac3a
+- APK metadata: ai.maenish.yourassistant, 1.6.1, code9, minSDK26, targetSDK35.
+
+Regression coverage includes the full application bootstrap: Arabic page lookup,
+group discovery, malformed argument recovery, keyword filtering and reviewed preview.
+Provider payloads/responses are mocked. Android includes actual local pinned HTTPS
+request capture for diagnostics. No live Facebook publication or account access.
+
+Not executed: physical Android camera/microphone, Windows input/browser/account,
+router/mobile-data accessibility, live Groq inference. The screenshot alone cannot
+establish the exact device exception. Fixed code defects are independently reproduced.
+Windows installer is built by GitHub Actions after uploading source; no Windows EXE
+is included here. Update the Windows source/installer as well as Android.

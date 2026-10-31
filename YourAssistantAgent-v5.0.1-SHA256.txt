@@ -1,0 +1,5 @@
+7253b0f880e036e8d04a1de7632de1e17dba4c041e26baab0ccc1ee2cd08365f  YourAssistantAgent-v5.0.1-source.zip
+fe2127814ae7c4162e1a694d3c79dd00df79653e900a098356b6e65354bac667  YourAssistantAgent-Android-v1.6.1-release.apk
+47d69c444fff48c5ecc6cf149f8cd734c05fd10e7afae1d49c582df63d8a2998  YourAssistantAgent-Android-v1.6.1-debug-upgrade.apk
+6b604ad0395a312f9f7b4f820c81baf146adf750d74887c58141165e2fd0bec7  YourAssistantAgent-v5.0.1-setup-AR.md
+fe014376af1ad640984dc91cdc22482f1a3c3e45d043f5441927d687281a6655  YourAssistantAgent-v5.0.1-verification.txt

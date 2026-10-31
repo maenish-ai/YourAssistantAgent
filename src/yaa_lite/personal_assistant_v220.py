@@ -38,6 +38,22 @@ def _clean_list(value: Any, limit: int = 20) -> list[str]:
     return out
 
 
+def _tool_call_message(call_id: str, name: str, args: dict, content: str = "") -> dict:
+    """Convert our normalized runtime call back to the provider's wire format."""
+    return {
+        "role": "assistant",
+        "content": str(content or ""),
+        "tool_calls": [{
+            "id": call_id,
+            "type": "function",
+            "function": {
+                "name": name,
+                "arguments": json.dumps(args, ensure_ascii=False, separators=(",", ":")),
+            },
+        }],
+    }
+
+
 def encode_group_filter(
     include_keywords: Any = None,
     exclude_keywords: Any = None,
@@ -283,7 +299,10 @@ def _install_tool_registry_extensions() -> None:
             spec = encode_group_filter(
                 args.get("include_keywords"), args.get("exclude_keywords"), args.get("exclude_names"), args.get("match_mode", "any")
             )
-            limit = max(1, min(int(args.get("limit") or 100), 500))
+            try:
+                limit = max(1, min(int(args.get("limit") or 100), 500))
+            except (TypeError, ValueError, OverflowError):
+                return ToolExecution(False, "Invalid group limit. Use an integer from 1 to 500, or omit limit.")
             rows = self._yaa_db.list_groups(keyword=spec, limit=limit, enabled_only=True)
             payload = {
                 "count": len(rows),
@@ -621,7 +640,7 @@ def _install_personal_controller() -> None:
                     rule_id = 0
                 if not rule_id:
                     messages.extend([
-                        {"role": "assistant", "content": turn.get("content") or "", "tool_calls": [call]},
+                        _tool_call_message(call_id, name, args, turn.get("content") or ""),
                         {"role": "tool", "tool_call_id": call_id, "name": name, "content": "Invalid task ID."},
                     ])
                     continue
@@ -658,18 +677,7 @@ def _install_personal_controller() -> None:
 
             # Feed the concrete result back to Qwen so it can either call another
             # safe tool or answer the user naturally.
-            messages.append({
-                "role": "assistant",
-                "content": str(turn.get("content") or ""),
-                "tool_calls": [{
-                    "id": call_id,
-                    "type": "function",
-                    "function": {
-                        "name": name,
-                        "arguments": json.dumps(args, ensure_ascii=False, separators=(",", ":")),
-                    },
-                }],
-            })
+            messages.append(_tool_call_message(call_id, name, args, turn.get("content") or ""))
             messages.append({
                 "role": "tool",
                 "tool_call_id": call_id,

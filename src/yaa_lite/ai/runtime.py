@@ -26,6 +26,57 @@ class LocalAIError(RuntimeError):
     migration.
     """
 
+    def __init__(self, message: str, *, code: str = "invalid_response"):
+        super().__init__(message)
+        self.code = code
+
+
+def _groq_http_error(response) -> LocalAIError:
+    """Classify a failed response without exposing its body or generated text."""
+    status = int(response.status_code)
+    if status in {401, 403}:
+        return LocalAIError("GroqCloud rejected the API credentials.", code="auth")
+    if status == 429:
+        return LocalAIError("GroqCloud rate limit reached. Please retry shortly.", code="rate_limit")
+    if status >= 500:
+        return LocalAIError("GroqCloud is temporarily unavailable.", code="service_unavailable")
+    try:
+        data = response.json()
+        error = data.get("error") if isinstance(data, dict) else None
+        error_code = error.get("code") if isinstance(error, dict) else None
+    except Exception:
+        error_code = None
+    if isinstance(error_code, str) and error_code in {"tool_use_failed", "tool_call_validation_failed"}:
+        return LocalAIError("GroqCloud could not produce a valid tool call.", code="tool_call")
+    return LocalAIError("GroqCloud rejected the request parameters.", code="request_rejected")
+
+
+def _normalize_tool_calls(calls) -> list[dict]:
+    """Never turn a partial or malformed tool invocation into empty arguments."""
+    if not isinstance(calls, list):
+        raise LocalAIError("GroqCloud returned invalid tool calls.", code="tool_call")
+    normalized = []
+    for index, call in enumerate(calls):
+        if not isinstance(call, dict):
+            raise LocalAIError("GroqCloud returned an invalid tool call.", code="tool_call")
+        fn = call.get("function") if isinstance(call.get("function"), dict) else {}
+        name = str(fn.get("name") or call.get("name") or "").strip()
+        raw_args = fn.get("arguments", call.get("arguments", {}))
+        try:
+            args = json.loads(raw_args) if isinstance(raw_args, str) and raw_args.strip() else raw_args
+        except (ValueError, TypeError):
+            raise LocalAIError("GroqCloud returned incomplete tool arguments.", code="tool_call") from None
+        if raw_args == "":
+            args = {}
+        if not name or not isinstance(args, dict):
+            raise LocalAIError("GroqCloud returned invalid tool arguments.", code="tool_call")
+        normalized.append({
+            "id": str(call.get("id") or f"call_{index}"), "type": "function",
+            "function": {"name": name, "arguments": json.dumps(args, ensure_ascii=False, separators=(",", ":"))},
+            "name": name, "arguments": args,
+        })
+    return normalized
+
 
 def bundle_root() -> Path:
     if getattr(sys, "frozen", False):
@@ -92,7 +143,7 @@ def get_groq_api_key(required: bool = True) -> str:
     if required and not key:
         raise LocalAIError(
             "GroqCloud API key is missing. Put GROQ_API_KEY in the project's .env file "
-            "or in the Windows user environment."
+            "or in the Windows user environment.", code="missing_key",
         )
     return key
 
@@ -180,42 +231,100 @@ def _compact_messages(messages: list[dict], *, total_chars: int, per_message: in
 
 
 def _compact_native_messages(messages: list[dict], *, total_chars: int = 22000, max_messages: int = 24) -> list[dict]:
+    """Keep complete tool exchanges and the current instruction within a budget.
+
+    A tool result without its preceding assistant call is an invalid API request.
+    Calls and their results therefore compete for space as one indivisible unit;
+    only content can be shortened, never the JSON tool arguments.
+    """
+    total_chars, max_messages = max(0, total_chars), max(0, max_messages)
+    if not total_chars or not max_messages:
+        return []
     systems: list[dict] = []
     normal: list[dict] = []
     for raw in messages or []:
+        if not isinstance(raw, dict):
+            continue
         role = str(raw.get("role") or "user")
         (systems if role == "system" else normal).append(raw)
 
+    units: list[tuple[int, list[dict]]] = []
+    index = 0
+    while index < len(normal):
+        raw = normal[index]
+        role = str(raw.get("role") or "user")
+        start = index
+        index += 1
+        if role == "tool":
+            continue  # An orphaned result cannot be sent to the API.
+        item = {"role": role, "content": str(raw.get("content") or "")[-5000:]}
+        if role != "assistant" or not raw.get("tool_calls"):
+            units.append((start, [item]))
+            continue
+        try:
+            calls = _normalize_tool_calls(raw["tool_calls"])
+        except LocalAIError:
+            continue
+        ids = {call["id"] for call in calls}
+        item["tool_calls"] = [{key: call[key] for key in ("id", "type", "function")} for call in calls]
+        exchange = [item]
+        received: set[str] = set()
+        while index < len(normal) and normal[index].get("role") == "tool":
+            result = normal[index]
+            index += 1
+            call_id = str(result.get("tool_call_id") or "")
+            if call_id in ids and call_id not in received:
+                received.add(call_id)
+                exchange.append({"role": "tool", "tool_call_id": call_id,
+                                 "content": str(result.get("content") or "")[-5000:]})
+        if ids == received and len(ids) == len(calls):
+            units.append((start, exchange))
+
+    def fit(unit: list[dict], budget: int) -> tuple[list[dict], int] | None:
+        # Count tool metadata too: arguments can be much larger than content.
+        metadata = sum(len(json.dumps(row["tool_calls"], ensure_ascii=False)) if row.get("tool_calls") else
+                       len(row.get("tool_call_id", "")) for row in unit)
+        if metadata > budget:
+            return None
+        remaining = budget - metadata
+        rows = [dict(row) for row in unit]
+        for row in reversed(rows):
+            content = row["content"]
+            row["content"] = content[-remaining:] if remaining else ""
+            remaining -= len(row["content"])
+        return rows, budget - remaining
+
+    selected: dict[int, list[dict]] = {}
+    used = count = 0
+    latest_user = next(((i, rows) for i, rows in reversed(units) if rows[0]["role"] == "user"), None)
+    if latest_user:
+        i, rows = latest_user
+        fitted, used = fit(rows, total_chars)
+        selected[i] = fitted
+        count = len(fitted)
+
     out: list[dict] = []
-    used = 0
     for raw in systems[-4:]:
-        content = str(raw.get("content") or "")[-5000:]
-        if used + len(content) > total_chars and out:
+        if count >= max_messages or used >= total_chars:
             break
+        budget = min(5000, total_chars - used)
+        content = str(raw.get("content") or "")[-budget:]
         out.append({"role": "system", "content": content})
         used += len(content)
+        count += 1
 
-    tail: list[dict] = []
-    slots = max(1, max_messages - len(out))
-    for raw in reversed(normal):
-        if len(tail) >= slots:
+    for i, rows in reversed(units):
+        if i in selected:
+            continue
+        if count + len(rows) > max_messages or used >= total_chars:
             break
-        role = str(raw.get("role") or "user")
-        content = str(raw.get("content") or "")
-        remaining = max(0, total_chars - used)
-        if remaining <= 0 and tail:
+        fitted = fit(rows, total_chars - used)
+        if fitted is None:
             break
-        clipped = content[-min(5000, remaining):] if content else ""
-        item: dict = {"role": role, "content": clipped}
-        if isinstance(raw.get("tool_calls"), list):
-            item["tool_calls"] = raw["tool_calls"]
-        if raw.get("tool_call_id"):
-            item["tool_call_id"] = str(raw["tool_call_id"])
-        if raw.get("name"):
-            item["name"] = str(raw["name"])
-        tail.append(item)
-        used += len(clipped)
-    out.extend(reversed(tail))
+        selected[i], size = fitted
+        used += size
+        count += len(rows)
+    out.extend(row for i in sorted(selected) for row in selected[i])
     return out
 
 
@@ -328,20 +437,15 @@ class LocalAIRuntime:
         except requests.RequestException:
             raise
 
-        if r.status_code == 401:
-            self._write_log("GroqCloud rejected the API key (HTTP 401).")
-            raise LocalAIError("GroqCloud rejected the API key. Check GROQ_API_KEY in .env.")
-        if r.status_code == 429:
-            self._write_log("GroqCloud rate limit reached (HTTP 429).")
-            raise RuntimeError("GroqCloud rate limit reached. Please retry shortly.")
         if not r.ok:
-            self._write_log(f"GroqCloud HTTP {r.status_code}: {(r.text or '')[:1800]}")
-            r.raise_for_status()
+            error = _groq_http_error(r)
+            self._write_log(f"GroqCloud HTTP {r.status_code}; code={error.code}")
+            raise error
         try:
             data = r.json()
         except Exception as exc:
             self._write_log(f"GroqCloud returned invalid JSON: {type(exc).__name__}")
-            raise RuntimeError("GroqCloud returned an invalid response.") from exc
+            raise LocalAIError("GroqCloud returned an invalid response.", code="invalid_response") from exc
 
         self.last_used_monotonic = time.monotonic()
         with self._lock:
@@ -360,7 +464,7 @@ class LocalAIRuntime:
             except (requests.RequestException, OSError, RuntimeError, TimeoutError, KeyError, ValueError) as exc:
                 last_error = exc
                 self._write_log(
-                    f"GroqCloud attempt {attempt + 1}/{attempts} failed: {type(exc).__name__}: {exc}"
+                    f"GroqCloud attempt {attempt + 1}/{attempts} failed: {type(exc).__name__}"
                 )
                 self.stop(wait=True)
                 if attempt + 1 < attempts:
@@ -369,7 +473,8 @@ class LocalAIRuntime:
                     time.sleep(0.65 * (attempt + 1))
         raise LocalAIError(
             "GroqCloud could not complete the request after automatic retry attempts. "
-            "Check Status for technical details."
+            "Check Status for technical details.",
+            code="network" if isinstance(last_error, (requests.RequestException, OSError, TimeoutError)) else "invalid_response",
         ) from last_error
 
     def _chat_completion(
@@ -444,7 +549,10 @@ class LocalAIRuntime:
                 "messages": [{"role": "system", "content": profile.system_prompt}]
                 + [self._api_message(m) for m in compact],
                 "temperature": 0.15,
-                "max_completion_tokens": max(64, min(int(max_tokens), 4096)),
+                # GPT-OSS shares this allowance between reasoning and the tool
+                # JSON. The old mobile 128..384 cap could end before either.
+                "max_completion_tokens": max(1024, min(int(max_tokens), 4096)),
+                "reasoning_effort": "low",
                 "stream": False,
             }
             if tools:
@@ -454,45 +562,27 @@ class LocalAIRuntime:
             if status:
                 status("GroqCloud is handling the request…")
 
-            data = self._post(payload, timeout=timeout, status=None)
-            choice = (data.get("choices") or [{}])[0] if isinstance(data, dict) else {}
+            for output_attempt in range(2):
+                data = self._post(payload, timeout=timeout, status=None)
+                choices = data.get("choices") if isinstance(data, dict) else None
+                choice = choices[0] if isinstance(choices, list) and choices else {}
+                if not isinstance(choice, dict) or choice.get("finish_reason") != "length":
+                    break
+                if output_attempt or payload["max_completion_tokens"] >= 4096:
+                    raise LocalAIError("GroqCloud reached the response length limit.", code="output_limit")
+                payload["max_completion_tokens"] = 4096
+                self._write_log("GroqCloud output limit reached; retrying before tool execution.")
+                if status:
+                    status("GroqCloud is completing the tool request…")
             message = choice.get("message") if isinstance(choice, dict) else None
             if not isinstance(message, dict):
-                raise RuntimeError("GroqCloud returned an invalid chat message.")
+                raise LocalAIError("GroqCloud returned an invalid chat message.", code="invalid_response")
 
             content = _strip_reasoning(str(message.get("content") or "")).strip()
-            normalized_calls: list[dict] = []
-            for index, call in enumerate(message.get("tool_calls") or []):
-                if not isinstance(call, dict):
-                    continue
-                fn = call.get("function") if isinstance(call.get("function"), dict) else {}
-                name = str(fn.get("name") or call.get("name") or "").strip()
-                if not name:
-                    continue
-                raw_args = fn.get("arguments", call.get("arguments", {}))
-                if isinstance(raw_args, str):
-                    try:
-                        args = json.loads(raw_args) if raw_args.strip() else {}
-                    except Exception:
-                        args = {"value": raw_args}
-                elif isinstance(raw_args, dict):
-                    args = raw_args
-                else:
-                    args = {}
-                call_id = str(call.get("id") or f"call_{index}_{int(time.time()*1000)}")
-                normalized_calls.append({
-                    "id": call_id,
-                    "type": "function",
-                    "function": {
-                        "name": name,
-                        "arguments": json.dumps(args, ensure_ascii=False, separators=(",", ":")),
-                    },
-                    "name": name,
-                    "arguments": args,
-                })
+            normalized_calls = _normalize_tool_calls(message.get("tool_calls") or [])
 
             if not content and not normalized_calls:
-                raise RuntimeError("GroqCloud returned neither text nor a tool call.")
+                raise LocalAIError("GroqCloud returned neither text nor a tool call.", code="invalid_response")
             self._write_log(
                 f"GroqCloud turn: content_chars={len(content)}; tools={[c['name'] for c in normalized_calls]}"
             )

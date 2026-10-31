@@ -1,7 +1,11 @@
-# Your Assistant Agent 5.0
+# Your Assistant Agent 5.0.1
 
-A personal Windows assistant with its own Android 1.6 companion, shared branding,
+A personal Windows assistant with its own Android 1.6.1 companion, shared branding,
 remote desktop, file transfers and reviewed GitHub/Facebook tools.
+
+## Facebook planning patch
+
+[Arabic update instructions](README_V501_AR.md). Page search and post reads now pass the read-only execution boundary. Malformed group limits can be corrected by the planner, complete tool exchanges survive context compaction, and tool output receives a sufficient reasoning budget with a bounded retry. Invalid or incomplete tool JSON is rejected before execution. Phone connection settings include a model-independent diagnostics report with safe error codes.
 
 ## Windows control and phone dictation
 
@@ -110,8 +114,8 @@ The optional older external relay remains available in advanced settings; see
 
 Source ZIPs are not Windows installers. Upload the source to your repository
 root and run `.github/workflows/build-windows.yml`. It builds Windows installer
-artifact **YourAssistantAgent-Windows-Setup-v5.0.0** and Android Debug. Private
-Android signing secrets additionally enable **YourAssistantAgent-Android-Release-v1.6.0**.
+artifact **YourAssistantAgent-Windows-Setup-v5.0.1** and Android Debug. Private
+Android signing secrets additionally enable **YourAssistantAgent-Android-Release-v1.6.1**.
 Never commit signing files or `desktop-setup.json`.
 
 For source use, install Python 3.11 and dependencies:
@@ -130,9 +134,9 @@ node --check browser_extension/background.js
 gradle -p android testDebugUnitTest assembleDebug lintDebug
 ```
 
-Android needs Java 17, SDK 35 and Gradle 8.9. Its release version 1.4 updates
-1.3 Release with the same signing key. A previous Debug installation has a
-different certificate and must be removed once to install Release.
+Android needs Java 17, SDK 35 and Gradle 8.9. Release 1.6.1 uses the existing
+release signing key. Use the matching debug-upgrade APK if your installed app
+was signed with the earlier debug certificate.
 
 Automated tests include live local HTTPS, authorization, certificate pinning,
 address fallback, duplicate prevention, file safety and UI startup/pairing flows.

@@ -3,6 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import subprocess
 import zipfile
+import json
 
 import pytest
 
@@ -13,6 +14,85 @@ from yaa_lite.github_upload_v430 import GitHubUploadError
 from yaa_lite.remote import service as remote
 from yaa_lite.review_voice_v270 import permitted_mutation
 from yaa_lite.storage.db import ChatDB
+
+
+@pytest.mark.parametrize('ai_code', [
+    'missing_key', 'auth', 'rate_limit', 'network', 'tool_call',
+    'invalid_response', 'request_rejected', 'output_limit', 'service_unavailable',
+])
+def test_tool_failure_has_precise_code_and_discards_partial_plan(conversation, monkeypatch, ai_code):
+    from yaa_lite.ai.runtime import LocalAIError
+    assistant = conversation.assistant
+    assistant.text('draft')
+    old_token = conversation.events[-1]['approval_token']
+
+    def fail(*args, **kwargs):
+        conversation.db.set_pending_action(assistant.session_id, 'approve_facebook_campaign',
+                                           {'plan': {}}, 'Incomplete plan')
+        raise LocalAIError('private-token-and-page-content', code=ai_code)
+
+    monkeypatch.setattr(conversation.controller, 'handle', fail)
+    assistant.text('جهز آخر إعلان للمجموعات')
+    event = conversation.events[-1]
+    assert 'groq_' + ai_code in event['text']
+    assert event['clear_approval'] and not event['approval_token']
+    assert conversation.db.get_pending_action(assistant.session_id) is None
+    assistant.callback('approve:' + old_token)
+    assert not conversation.controller.executed
+    record = next(row for row in conversation.db.recent_activity() if row['kind'] == 'remote_request_error')
+    report = json.loads(record['detail'])
+    assert report['code'] == 'groq_' + ai_code
+    assert any('remote/service.py:' in line for line in report['locations'])
+    assert 'private-token-and-page-content' not in str(conversation.events) + record['detail']
+
+
+def test_diagnostics_does_not_call_ai_or_invalidate_review(conversation, monkeypatch):
+    import yaa_lite.ai.runtime as runtime
+    assistant = conversation.assistant
+    monkeypatch.setattr(runtime, 'get_groq_api_key', lambda required=True: 'private-groq-key')
+    assistant.text('draft')
+    approval = assistant._approval
+    pending = conversation.db.get_pending_action(assistant.session_id)
+    calls = len(conversation.controller.calls)
+    assistant.text('/diagnostics')
+    text = conversation.events[-1]['text']
+    assert len(conversation.controller.calls) == calls
+    assert assistant._approval is approval
+    assert conversation.db.get_pending_action(assistant.session_id) == pending
+    assert 'موجود؛ لم يتم اختبار صلاحيته' in text
+    assert 'ليس فحصاً مباشراً' in text and 'لم يتم الفحص' in text
+    assert 'private-groq-key' not in text
+
+
+def test_programming_error_does_not_blame_groq_or_login(conversation, monkeypatch):
+    import yaa_lite.ai.runtime as runtime
+    def fail(*args, **kwargs):
+        raise TypeError('sensitive request data')
+    monkeypatch.setattr(conversation.controller, 'handle', fail)
+    monkeypatch.setattr(runtime, 'get_groq_api_key', lambda required=True: '')
+    assistant = conversation.assistant
+    assistant.text('جهز آخر إعلان للمجموعات')
+    text = conversation.events[-1]['text']
+    assert 'خطأ برمجي' in text and 'internal_error' in text
+    assert 'Groq' not in text and 'تسجيل دخول' not in text
+    assistant.text('/diagnostics')
+    assert 'internal_error' in conversation.events[-1]['text']
+    assert 'غير مضبوط' in conversation.events[-1]['text']
+    assert 'sensitive request data' not in str(conversation.events)
+
+
+@pytest.mark.parametrize('error_class, code', [
+    ('LoginRequired', 'facebook_login'), ('CheckpointDetected', 'facebook_checkpoint'),
+    ('FacebookError', 'facebook_browser'),
+])
+def test_facebook_exception_has_own_recovery_message(conversation, monkeypatch, error_class, code):
+    from yaa_lite.facebook_backend import facebook
+    def fail(*args, **kwargs):
+        raise getattr(facebook, error_class)('private browser URL')
+    monkeypatch.setattr(conversation.controller, 'handle', fail)
+    conversation.assistant.text('جهز آخر إعلان للمجموعات')
+    text = conversation.events[-1]['text']
+    assert code in text and 'Groq' not in text and 'private browser URL' not in text
 
 
 def git(directory, *arguments):

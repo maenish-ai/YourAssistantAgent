@@ -5,7 +5,16 @@ import org.json.JSONObject;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.RobolectricTestRunner;
+import org.robolectric.Robolectric;
+import org.robolectric.Shadows;
+import org.robolectric.android.controller.ActivityController;
+import org.robolectric.util.ReflectionHelpers;
 import org.robolectric.annotation.Config;
+import android.os.Looper;
+import android.view.View;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.LinearLayout;
 import javax.net.ssl.*;
 import java.io.*;
 import java.net.InetAddress;
@@ -15,6 +24,7 @@ import java.security.MessageDigest;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.List;
 import static org.junit.Assert.*;
 
 @RunWith(RobolectricTestRunner.class)
@@ -76,10 +86,38 @@ public class HomeProfileTest {
             assertEquals(1,server.posts.get());
         }
     }
+    @Test public void connectedDiagnosticsButtonSendsReadOnlyCommandAndPreservesDraftAndApproval()throws Exception{
+        try(LocalServer server=new LocalServer(false);
+            ActivityController<MainActivity> controller=Robolectric.buildActivity(MainActivity.class).setup()){
+            MainActivity activity=controller.get();
+            ApiClient client=new ApiClient(new HomeProfile(code(server.url())).encode(),TOKEN);
+            client.events(0);
+            ReflectionHelpers.setField(activity,"api",client);
+            ReflectionHelpers.setField(activity,"connected",true);
+            EditText composer=ReflectionHelpers.getField(activity,"composer");composer.setText("مسودة طلبي");
+            List<Button> approvals=ReflectionHelpers.getField(activity,"approvalButtons");
+            Button approval=new Button(activity);approval.setEnabled(true);approvals.add(approval);
+            ReflectionHelpers.callInstanceMethod(activity,"updateButtons");
+            Button diagnostic=ReflectionHelpers.getField(activity,"diagnosticsButton");
+            assertTrue(diagnostic.isEnabled());assertTrue(diagnostic.performClick());
+            long deadline=System.nanoTime()+5_000_000_000L;
+            while((Boolean)ReflectionHelpers.getField(activity,"busy")&&System.nanoTime()<deadline){
+                Thread.sleep(10);Shadows.shadowOf(Looper.getMainLooper()).idle();
+            }
+            assertFalse((Boolean)ReflectionHelpers.getField(activity,"busy"));
+            assertEquals(1,server.posts.get());assertEquals("POST /v1/messages HTTP/1.1",server.lastPostRequest);
+            assertEquals("/diagnostics",new JSONObject(server.lastPostBody).getString("text"));
+            assertEquals("مسودة طلبي",composer.getText().toString());assertTrue(approval.isEnabled());
+            assertEquals(1,approvals.size());
+            LinearLayout transcript=ReflectionHelpers.getField(activity,"transcript");assertTrue(transcript.getChildCount()>0);
+            LinearLayout fields=ReflectionHelpers.getField(activity,"connectionFields");assertEquals(View.GONE,fields.getVisibility());
+        }
+    }
     /** Public test-only PKCS12 fixture. Never used by a distributed application. */
     private final class LocalServer implements AutoCloseable{
         final SSLServerSocket socket;final Thread thread;volatile boolean stopped;
         final AtomicInteger posts=new AtomicInteger(),handled=new AtomicInteger();
+        volatile String lastPostBody,lastPostRequest;
         LocalServer(boolean dropPost)throws Exception{
             KeyManagerFactory managers=KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());managers.init(keys(),"test-only".toCharArray());
             SSLContext context=SSLContext.getInstance("TLS");context.init(managers.getKeyManagers(),null,null);
@@ -94,9 +132,10 @@ public class HomeProfileTest {
                         if(header.toLowerCase(java.util.Locale.ROOT).startsWith("content-length:"))length=Integer.parseInt(header.substring(15).trim());
                     }
                     if(!authorized)throw new IOException("Test client omitted authentication");
-                    for(int i=0;i<length;i++)if(input.read()<0)throw new EOFException();
+                    StringBuilder body=new StringBuilder();
+                    for(int i=0;i<length;i++){int character=input.read();if(character<0)throw new EOFException();body.append((char)character);}
                     handled.incrementAndGet();boolean post=request.startsWith("POST");
-                    if(post){posts.incrementAndGet();if(dropPost)continue;}
+                    if(post){lastPostRequest=request;lastPostBody=body.toString();posts.incrementAndGet();if(dropPost)continue;}
                     String json=post?"{\"job_id\":\"accepted\"}":request.contains("/events?")?"{\"events\":[],\"cursor\":0}":"{\"desktop\":false}";
                     byte[] bytes=json.getBytes(StandardCharsets.UTF_8);OutputStream output=peer.getOutputStream();
                     output.write(("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "+bytes.length+"\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));output.write(bytes);output.flush();

@@ -34,6 +34,13 @@ public final class DesktopActivity extends Activity {
             } catch(Exception e){status.setText("تعذر تجهيز النقرة.");}
         });
         root.addView(screen,new LinearLayout.LayoutParams(-1,0,1));
+        LinearLayout windows=new LinearLayout(this);
+        add(windows,"اختيار نافذة",this::chooseWindow);
+        add(windows,"تبويب جديد",()->keys("CTRL","T"));
+        add(windows,"إغلاق تبويب",()->keys("CTRL","W"));
+        add(windows,"إغلاق نافذة",()->new android.app.AlertDialog.Builder(this).setTitle("إغلاق النافذة الظاهرة؟")
+            .setMessage("قد تظهر مطالبة بحفظ العمل. يمكنك التعامل معها من شاشة الهاتف.")
+            .setPositiveButton("إغلاق",(d,w)->keys("ALT","F4")).setNegativeButton("إلغاء",null).show());root.addView(windows);
         LinearLayout keyboard=new LinearLayout(this);keyboard.setOrientation(LinearLayout.VERTICAL);keyboard.setVisibility(android.view.View.GONE);
         LinearLayout toolbar=new LinearLayout(this);
         add(toolbar,"لوحة المفاتيح",()->keyboard.setVisibility(keyboard.getVisibility()==android.view.View.VISIBLE?android.view.View.GONE:android.view.View.VISIBLE));
@@ -57,6 +64,20 @@ public final class DesktopActivity extends Activity {
         try{SecureStore store=new SecureStore(this);api=new ApiClient(store.url(),store.token());}
         catch(Exception e){status.setText("ارجع للمحادثة واضبط الاتصال أولاً.");}
     }
+    private void chooseWindow(){
+        if(api==null||destroyed)return;
+        network.execute(()->{try{
+            JSONArray rows=api.windows().getJSONArray("windows");String[] titles=new String[rows.length()];
+            for(int i=0;i<rows.length();i++)titles[i]=rows.getJSONObject(i).optString("title");
+            main.post(()->{if(destroyed)return;if(titles.length==0){status.setText("لا توجد نوافذ ظاهرة قابلة للاختيار.");return;}
+                new android.app.AlertDialog.Builder(this).setTitle("انتقل إلى نافذة الكمبيوتر").setItems(titles,(dialog,index)->{
+                    try{post("/v1/windows/action",new JSONObject().put("id",rows.getJSONObject(index).getString("id")).put("action","focus"));}
+                    catch(Exception e){status.setText("حدّث قائمة النوافذ ثم أعد الاختيار.");}
+                }).setNegativeButton("إلغاء",null).show();
+            });
+        }catch(Exception e){showError(e);}});
+    }
+
     private void add(LinearLayout row,String label,Runnable action){Button b=AppUi.button(this,label,action,false);b.setTextSize(12);b.setPadding(2,2,2,2);LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(0,-2,1);p.setMargins(2,3,2,3);row.addView(b,p);}
     private void keys(String... values){try{input(new JSONObject().put("action","keys").put("keys",new JSONArray(values)));}catch(Exception ignored){}}
     private void wheel(int amount){try{input(new JSONObject().put("action","scroll").put("amount",amount));}catch(Exception ignored){}}

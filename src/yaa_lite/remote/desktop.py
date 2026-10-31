@@ -14,18 +14,21 @@ import secrets
 import threading
 import time
 from urllib.parse import urlsplit
+from .window_control import WindowControl
 
 
 class DesktopError(RuntimeError):
     pass
 
 
-class WindowsDesktop:
+class WindowsDesktop(WindowControl):
     def __init__(self, enabled):
         self.enabled = enabled
         self._lock = threading.RLock()
         self._frames = {}
         self._elements = {}
+        self._windows = {}
+        self._tabs = {}
         self._window = None
         self._revoked = False
         self._uia_thread = threading.local()
@@ -214,10 +217,7 @@ class WindowsDesktop:
         with self._lock, self._session():
             try:
                 from pywinauto import Desktop
-                if not getattr(self._uia_thread, 'initialized', False):
-                    import comtypes
-                    comtypes.CoInitializeEx(0)
-                    self._uia_thread.initialized = True
+                self._uia_ready()
                 window = Desktop(backend='uia').window(active_only=True).wrapper_object()
                 title = window.window_text()
                 self._window = window.handle

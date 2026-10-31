@@ -1,0 +1,55 @@
+Windows 5.0.0 / Android 1.6.0 (versionCode 8)
+Source commit: 54580dd7d40507ef9fe53271da84d31943893992
+Branch: feature/desktop-control-dictation-v500
+
+Implemented:
+- Explicit full desktop pairing button persists screen/input, computer AI,
+  all local drives and AC idle-sleep guard, then hosts and renders QR.
+- Arabic close/open/switch intents reach remote computer review rather than chat.
+- Deterministic URL/current-tab/window actions independent of UIA/model routing.
+- Observed window IDs: enumerate, focus, close gracefully, minimize/maximize/restore.
+- Observed browser tabs: enumerate, select, close; supported browser process check.
+- Tool planning continues with window/browser tools if UIA observation fails.
+- Phone window chooser plus new-tab, close-tab and close-window controls.
+- Foreground AAC dictation: 60 seconds / 2 MiB; paired HTTPS -> PC -> Groq Whisper.
+- Separate bounded speech queue prevents a running desktop task blocking dictation.
+- Dictation event fills editable composer, never executes or sends a task itself.
+- Runtime microphone permission and cancellation/deletion on leaving the screen.
+- Transient audio deleted after processing; startup cleans old interrupted captures.
+
+Verification in Linux workspace, 2026-10-30:
+- Python: 312 passed, 1 skipped, 1 audioop deprecation warning; 43.94 seconds.
+- Windows-only native RichEdit integration test skipped here; Windows CI runs it.
+- Android: 32 Robolectric/unit tests, 0 failures/errors/skips.
+- New Android dictation permission/review/cancel/reconnect tests on API 28 and 35.
+- Existing actual QR-activity lifecycle and production QR raster decode tests pass.
+- Android tasks testDebugUnitTest assembleDebug assembleRelease lintDebug lintRelease:
+  BUILD SUCCESSFUL (55 seconds).
+- Source startup self-test, browser extension JavaScript syntax and diff checks pass.
+- APK signatures verified with apksigner; same release/debug keys as prior delivery.
+- Release certificate SHA256:
+  7e0f4bc614a8a6ac0fd365e5520a26531963a747c2bb9ffcbb5b34e194f30617
+- Debug certificate SHA256:
+  adcf3c7b2724efaf6b60b7d244067a1afd0313def13418143973b2526da8ac3a
+- Version 1.6.0/code 8 and RECORD_AUDIO permission confirmed in APK.
+- ZIP/APK CRC checks, source flat root and sensitive-path checks pass.
+- Test-only QR/TLS fixtures excluded from APKs.
+
+Scope and limits:
+- Source ZIP is not an EXE. Upload extracted contents to repository root and run
+  Build Windows Setup. Expected artifact YourAssistantAgent-Windows-Setup-v5.0.0.
+- Update both Windows 5.0 and Android 1.6 for new window API and dictation.
+- No physical Windows desktop, phone microphone/camera, owner account or router
+  was exercised. Windows control tests use controlled wrappers, Android uses
+  Robolectric; these do not guarantee every application/browser behaves identically.
+- Human approval for computer tasks stays on the paired phone. Ordinary manual
+  screen/keyboard controls require no visit to the computer.
+- Close is graceful, not a forced process kill; save dialogs can need phone input.
+- No invented tab history: ambiguous earlier tabs must be identified before closing.
+- Model planning remains bounded to 24 steps / 3 minutes.
+- No UAC, secure desktop or lock-screen bypass. PC/session/app must remain available.
+- Outside-home access still requires reachable public IPv4/port mapping or IPv6;
+  QR cannot bypass CGNAT. Groq still receives conversation, relevant UI labels and
+  audio for transcription; manual screen/files use direct HTTPS in home mode.
+- No GitHub push performed. No production signing key or personal pairing token
+  included. Source includes only explicitly public test fixtures in test resources.

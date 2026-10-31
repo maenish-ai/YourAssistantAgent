@@ -207,6 +207,8 @@ class SettingsView(ttk.Frame):
         self._qr_panel=ttk.Frame(b);self._qr_panel.grid(row=2,column=0,columnspan=2,sticky='ew')
         ttk.Label(self._qr_panel,text=self.t("اضغط تشغيل وعرض QR لإنشاء اتصال هذا الكمبيوتر.","Tap Start hosting and show QR to set up this computer."),wraplength=500).pack(anchor='w')
         ttk.Button(b,text=self.t("تشغيل وعرض QR","Start hosting and show QR"),style="Accent.TButton",command=self._save_home_pairing).grid(row=3,column=0,sticky='w',pady=8)
+        ttk.Button(b,text=self.t("تفعيل التحكم الكامل وعرض QR","Enable full desktop access and show QR"),style="Accent.TButton",command=self._full_access_pairing).grid(row=4,column=0,columnspan=2,sticky='w',pady=6)
+        ttk.Label(b,text=self.t("يشمل الشاشة والنقر والكتابة وكل الأقراص ومساعد الكمبيوتر. لا يشمل تجاوز قفل Windows أو UAC.","Includes screen, input, all local drives and computer AI. Does not bypass Windows lock or UAC."),wraplength=500,style='Muted.TLabel').grid(row=5,column=0,columnspan=2,sticky='w')
         permissions=self._section(self.t("١  •  شغّل الاستضافة واختر الصلاحيات","1  •  Start hosting and choose permissions"))
         self._row_check(permissions,1,self.t("الشاشة والنقر والكتابة ونقل الملفات","Screen, mouse, keyboard and file transfers"),'remote_desktop_enabled',self.settings.remote_desktop_enabled)
         self._row_check(permissions,2,self.t("مساعد الكمبيوتر — المحادثة والعناصر عبر Groq","Computer AI — uses Groq"),'remote_ai_enabled',self.settings.remote_ai_enabled)
@@ -233,6 +235,11 @@ class SettingsView(ttk.Frame):
 
     def _show_relay_settings(self):
         self._clear();self._page_relay_pairing();self._fit_settings_width(self._canvas.winfo_width());self._canvas.yview_moveto(0)
+
+    def _full_access_pairing(self):
+        for name in ('remote_desktop_enabled','remote_ai_enabled','remote_files_all_drives','remote_keep_awake'):
+            self.vars[name].set(True)
+        self._save_home_pairing()
 
     def _save_home_pairing(self):
         from ..remote.home import endpoint,tls_context

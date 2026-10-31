@@ -91,6 +91,11 @@ final class ApiClient {
 
     JSONObject desktop() throws ApiException { return request("GET", "/v1/desktop", null, null, null); }
     JSONObject capabilities() throws ApiException { return request("GET", "/v1/capabilities", null, null, null); }
+    JSONObject windows() throws ApiException {return request("GET","/v1/windows",null,null,null);}
+    JSONObject dictation(File audio,String id)throws ApiException{
+        if(audio.length()<12||audio.length()>2L*1024*1024)throw new ApiException("حجم التسجيل غير صالح أو يتجاوز 2 MiB.");
+        return request("POST","/v1/dictation?id="+encode(id),null,audio,UUID.randomUUID().toString(),"audio/mp4");
+    }
     JSONObject files(String path) throws ApiException {
         return request("GET", "/v1/files?path=" + encode(path), null, null, null);
     }
@@ -202,7 +207,7 @@ final class ApiClient {
                             long written = 0;
                             while ((count = input.read(buffer)) != -1) {
                                 written += count;
-                                if (written > ("application/zip".equals(uploadMime) ? MAX_UPLOAD_BYTES : 256L * 1024 * 1024) || closed) throw new ApiException("أُلغي إرسال الملف.");
+                                if (written > ("audio/mp4".equals(uploadMime)?2L*1024*1024:"application/zip".equals(uploadMime) ? MAX_UPLOAD_BYTES : 256L * 1024 * 1024) || closed) throw new ApiException("أُلغي إرسال الملف.");
                                 output.write(buffer, 0, count);progress.update(written,file.length());
                             }
                         }
@@ -222,8 +227,8 @@ final class ApiClient {
             }
             if (status < 200 || status >= 300) {
                 String error = response.optString("error", "");
-                if (status == 404 && (path.startsWith("/v1/desktop") || path.startsWith("/v1/files")))
-                    error = "حدّث برنامج الكمبيوتر إلى نسخة 4.5 أو أحدث لتفعيل التحكم والملفات.";
+                if (status == 404 && (path.startsWith("/v1/desktop") || path.startsWith("/v1/files")||path.startsWith("/v1/windows")||path.startsWith("/v1/dictation")))
+                    error = "حدّث برنامج الكمبيوتر إلى نسخة 5.0 لتفعيل أدوات التحكم والإملاء الجديدة.";
                 if (error.isEmpty()) error = "تعذر تنفيذ الطلب (HTTP " + status + ").";
                 error = error.replace(token, "[hidden]");
                 throw new ApiException(error.substring(0, Math.min(400, error.length())), status);

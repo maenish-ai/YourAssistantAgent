@@ -1,11 +1,33 @@
-# Your Assistant Agent 4.9
+# Your Assistant Agent 5.0
 
-A personal Windows assistant with its own Android 1.5 companion, shared branding,
+A personal Windows assistant with its own Android 1.6 companion, shared branding,
 remote desktop, file transfers and reviewed GitHub/Facebook tools.
 
-Android **1.5.1** fixes an immediate crash on the Scan QR button: ZXing's
-published dependency metadata omitted AndroidX classes needed at runtime.
-See [the QR scanner fix and update steps](README_ANDROID_V151_AR.md).
+## Windows control and phone dictation
+
+[Read the Arabic 5.0 setup guide](README_V500_AR.md). Update both Windows and
+Android. Pair phone QR includes an explicit **Enable full desktop access and
+show QR** button enabling screen/input, all local drives, computer AI and the
+existing AC sleep guard. Permissions remain opt-in.
+
+Arabic close/switch/open requests reach the computer route. Exact URL and
+current-tab/window operations work independently of UIA text or model routing.
+The planner can list, focus, close, minimize and maximize observed windows and
+select/close observed browser tabs. It can use window tools when page
+accessibility is unavailable. Close is graceful: an unsaved-work prompt may
+remain for the owner to handle from the phone. The phone also has direct window
+selection and close-tab/window controls.
+
+Phone dictation records up to 60 seconds in the foreground, sends AAC through
+the paired HTTPS connection to Windows, and uses the existing Groq Whisper
+account on the PC. The result fills an editable composer; it is never sent as a
+task automatically. Audio files are deleted after processing or cancellation;
+stale interrupted captures are cleaned on later startup. The phone holds no
+Groq key. Leaving the screen cancels an active recording.
+
+Android includes the 1.5.1 QR runtime dependency fix and camera-activity
+lifecycle regression tests. No physical phone, owner's account or Windows
+desktop has been validated from this Linux workspace.
 
 ## Facebook, Arabic and dictation fixes
 
@@ -20,7 +42,7 @@ paragraph direction and caret behavior, preserving logical text and clipboard
 order. Finishing dictation retains the captured tail and never auto-sends it.
 Recognition still depends on the recording and the speech provider.
 
-[Start with the Arabic 4.9 update guide](README_V490_AR.md). Native Windows
+[Earlier Arabic and Facebook changes](README_V490_AR.md). Native Windows
 rendering and the owner's Facebook session still require device validation;
 Linux checks do not establish those results.
 
@@ -88,8 +110,8 @@ The optional older external relay remains available in advanced settings; see
 
 Source ZIPs are not Windows installers. Upload the source to your repository
 root and run `.github/workflows/build-windows.yml`. It builds Windows installer
-artifact **YourAssistantAgent-Windows-Setup-v4.9.0** and Android Debug. Private
-Android signing secrets additionally enable **YourAssistantAgent-Android-Release-v1.5.1**.
+artifact **YourAssistantAgent-Windows-Setup-v5.0.0** and Android Debug. Private
+Android signing secrets additionally enable **YourAssistantAgent-Android-Release-v1.6.0**.
 Never commit signing files or `desktop-setup.json`.
 
 For source use, install Python 3.11 and dependencies:

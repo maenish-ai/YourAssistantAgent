@@ -126,6 +126,11 @@ class RemoteAssistant:
         if len(text) > 5000:
             self._reply('الرسالة طويلة. أرسل طلباً لا يتجاوز 5000 حرف.')
             return
+        from ..agent.intent import explicit_example_only
+        if explicit_example_only(text):
+            self._invalidate();self.db.clear_pending_action(self.session_id)
+            self._reply('فهمت أنه مثال فقط؛ لم أفتح أو أغلق نافذة ولم أجهّز عملية.')
+            return
         if text.lower() in {'/new', '/newchat'}:
             self._invalidate()
             self.db.clear_pending_action(self.session_id)
@@ -146,10 +151,12 @@ class RemoteAssistant:
                         'أرسل طلبك أو ZIP. راجع المعاينة واضغط موافق؛ كلمة نعم وحدها لا تنفّذ عملية.\n'
                         'محادثة جديدة: /new — إلغاء المعاينة: /cancel — الحالة: /status')
             return
-        desktop_intent = text.startswith('/computer ') or (not is_upload_request(text) and bool(re.search(
-            r'افتح|شغّل|شغل|انقل|نقل|ملفات|نزّل|واتساب|واتس|whatsapp|متصفح|سطح المكتب|الكمبيوتر|ابحث|سيرش|بحث.*(?:نت|انترنت)|حمّل|حمل.*(?:ملف|صور)|download|browser|computer|\bopen\b|\bsearch\b',text,re.I)))
+        from .desktop_intent import is_desktop_request
+        desktop_intent = not is_upload_request(text) and is_desktop_request(text)
         if re.search(r'متصفح النشر|publishing.*(?:profile|browser)',text,re.I):desktop_intent=False
-        if desktop_intent and not re.search(r'جروب|قروب|مجموعات|groups',text,re.I):
+        from ..agent.intent import normalized_command
+        closing=bool(re.search(r'اغلق|اغلاق|سكر|اقفل|اخرج|اطلع|\bclose\b',normalized_command(text)))
+        if desktop_intent and (closing or not re.search(r'جروب|قروب|مجموعات|groups',text,re.I)):
             if not (getattr(self.settings,'remote_desktop_enabled',False) and getattr(self.settings,'remote_ai_enabled',False)):
                 self._reply('فعّل التحكم بالكمبيوتر ومساعد الكمبيوتر من إعدادات نسخة Windows أولاً. للتحكم اليدوي استخدم زر سطح المكتب على الهاتف.')
                 return
@@ -160,9 +167,9 @@ class RemoteAssistant:
             self.db.add_message('user', instruction, 'hammer', self.session_id)
             self.desktop.cancel.clear()
             self._offer('desktop_ai', instruction, instruction,
-                'مهمة على الكمبيوتر:\n' + instruction + '\n\nبعد الموافقة سيقرأ المساعد عناصر النافذة ويرسل تسمياتها إلى Groq، ثم ينفّذ حتى 16 خطوة خلال 3 دقائق. '
+                'مهمة على الكمبيوتر:\n' + instruction + '\n\nبعد الموافقة ينفّذ المساعد أدوات الكمبيوتر، ويستخدم Groq لتخطيط المهام المركّبة وقراءة تسميات الواجهة. الحد 24 خطوة خلال 3 دقائق. '
                 'قد تتضمن الخطوات نقرات وكتابة وفتح صفحات. راقب الشاشة، ويمكنك إيقاف الخطوات التالية من زر إيقاف المهمة. '
-                'تسجيل الدخول والشاشات المحمية قد تحتاج تحكماً يدوياً. هل توافق على هذه المهمة؟')
+                'يمكنك التعامل مع تسجيل دخول المواقع والحفظ من شاشة الهاتف؛ شاشة قفل Windows وUAC خارج الجلسة العادية. هل توافق على هذه المهمة؟')
             return
         with self._lock:
             zip_pending = bool(self._approval and self._approval.kind == 'github')
@@ -294,6 +301,7 @@ class RemoteAssistant:
     def capabilities(self):
         enabled = bool(getattr(self.settings,'remote_desktop_enabled',False)) and not self._closed
         return {'desktop': enabled and os.name=='nt', 'files': enabled,
+                'dictation':not self._closed,'window_control':enabled and os.name=='nt',
                 'computer_ai': enabled and bool(getattr(self.settings,'remote_ai_enabled',False)),
                 'transfer_limit': 256*1024*1024, 'primary_monitor_only': True,
                 'all_drives': bool(getattr(self.settings,'remote_files_all_drives',False)),
@@ -308,6 +316,25 @@ class RemoteAssistant:
         self.check_desktop()
         try:self.desktop.input(data)
         except Exception as exc:self._reply('تعذر التحكم: '+str(exc))
+
+    def desktop_control(self,data):
+        self.check_desktop()
+        try:
+            result=self.desktop.window_action(data.get('id'),data.get('action'))
+            self._reply(result.get('result','أُرسل إجراء النافذة. راقب الشاشة.'))
+        except Exception as exc:self._reply('تعذر التحكم بالنافذة: '+str(exc))
+
+    def dictation(self,path,identifier):
+        """Return editable text only; never pass speech directly to text()/tools."""
+        path=Path(path)
+        try:
+            if self._closed:return
+            from ..voice.cloud_service import CloudVoiceService
+            text=CloudVoiceService(self.settings).transcribe_file(path,mime='audio/mp4')
+            if not self._closed:self.publish('',dictation_id=identifier,dictation_text=text[:5000])
+        except Exception:
+            if not self._closed:self.publish('',dictation_id=identifier,dictation_error='تعذر تفريغ الصوت. تحقق من مفتاح Groq وحدوده والاتصال، ثم أعد التسجيل.')
+        finally:path.unlink(missing_ok=True)
 
     def file_import(self,path,folder,name):
         try:
@@ -352,6 +379,8 @@ def build_remote_worker(settings, security, db, runtime, facebook, activity=None
     for item in inbox.glob('*.zip'):
         if item.is_file() and not item.is_symlink() and time.time() - item.stat().st_mtime > 86400:
             item.unlink(missing_ok=True)
+    for item in inbox.glob('*.m4a'):
+        if item.is_file() and not item.is_symlink() and time.time()-item.stat().st_mtime>600:item.unlink(missing_ok=True)
     holder = {}
     assistant = RemoteAssistant(db, settings, runtime, facebook,
                                 lambda text, **kwargs: holder['server'].publish(text, **kwargs),

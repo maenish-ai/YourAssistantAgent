@@ -40,6 +40,7 @@ import java.util.concurrent.Executors;
 /** Small native Android client for the user's own home-computer assistant. */
 public final class MainActivity extends Activity {
     private static final int PICK_ZIP = 40;
+    private static final int RECORD_PERMISSION=41;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService network = Executors.newSingleThreadExecutor();
     private final Set<String> usedApprovalTokens = new HashSet<>();
@@ -50,6 +51,12 @@ public final class MainActivity extends Activity {
     private TextView status;
     private Button connectButton, disconnectButton, sendButton, attachButton, newChatButton, desktopButton, filesButton, computerButton;
     private boolean desktopAllowed, filesAllowed, aiAllowed;
+    private boolean dictationAllowed;
+    private boolean recordAfterPermission;
+    private Button micButton;
+    private PhoneDictation dictation;
+    private String pendingDictationId;
+    private final Runnable dictationTimeout=()->{if(pendingDictationId!=null){pendingDictationId=null;status.setText("تأخر تفريغ الصوت. لم يُرسل أي أمر؛ يمكنك إعادة التسجيل.");updateButtons();}};
     private LinearLayout connectionFields, transcript;
     private ScrollView scroll;
     private boolean resumed, destroyed, connected, busy, polling;
@@ -63,6 +70,13 @@ public final class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         credentials = new SecureStore(this);
         buildViews();
+        dictation=new PhoneDictation(this,new PhoneDictation.Listener(){
+            public void recording(boolean active){micButton.setText(active?"إنهاء التسجيل":"🎙 إملاء صوتي");if(active)status.setText("أسجل صوتك… اضغط إنهاء التسجيل؛ النص يرجع للمراجعة قبل الإرسال.");updateButtons();}
+            public void ready(File audio){uploadDictation(audio);}
+            public void error(String message){status.setText(message);updateButtons();}
+        });
+        if(savedInstanceState!=null)pendingDictationId=savedInstanceState.getString("dictation_id");
+        if(pendingDictationId!=null)main.postDelayed(dictationTimeout,90000);
         serverField.setText(credentials.url());
         try { tokenField.setText(credentials.token()); }
         catch (Exception e) {
@@ -78,6 +92,7 @@ public final class MainActivity extends Activity {
 
     @Override protected void onSaveInstanceState(Bundle state) {
         state.putBoolean("was_connected", connected);
+        state.putString("dictation_id",pendingDictationId);
         super.onSaveInstanceState(state);
     }
 
@@ -115,8 +130,9 @@ public final class MainActivity extends Activity {
         tasks.addView(newChatButton,weighted());tasks.addView(attachButton,weighted());root.addView(tasks,AppUi.space(this));
         composer=AppUi.field(this,"اطلب من مساعدك…");composer.setMinLines(1);composer.setMaxLines(3);composer.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         root.addView(composer,AppUi.space(this));
+        micButton=AppUi.button(this,"🎙 إملاء صوتي",this::toggleDictation,false);
         root.addView(AppUi.label(this,"المحادثة الذكية تستخدم Groq؛ التحكم اليدوي والملفات لهما أزرار منفصلة.",11,true));
-        sendButton=button("إرسال الطلب",this::sendText);root.addView(sendButton,AppUi.space(this));
+        sendButton=button("إرسال الطلب",this::sendText);LinearLayout sendRow=row();sendRow.addView(micButton,weighted());sendRow.addView(sendButton,weighted());root.addView(sendRow,AppUi.space(this));
     }
 
     private void scanPairing(){
@@ -155,9 +171,12 @@ public final class MainActivity extends Activity {
     private boolean current(int requestGeneration) { return !destroyed && generation == requestGeneration; }
 
     private void updateButtons() {
-        sendButton.setEnabled(connected && !busy);
-        attachButton.setEnabled(connected && !busy);
-        newChatButton.setEnabled(connected && !busy);
+        boolean voiceActive=dictation!=null&&dictation.active();
+        boolean voiceWaiting=pendingDictationId!=null;
+        sendButton.setEnabled(connected && !busy&&!voiceActive&&!voiceWaiting);
+        attachButton.setEnabled(connected && !busy&&!voiceActive&&!voiceWaiting);
+        newChatButton.setEnabled(connected && !busy&&!voiceActive&&!voiceWaiting);
+        micButton.setEnabled(voiceActive||(connected&&dictationAllowed&&!busy&&!voiceWaiting));
         composer.setEnabled(connected && !busy);
         connectButton.setEnabled(!busy);
         disconnectButton.setEnabled(api != null || allowReconnect);
@@ -188,13 +207,15 @@ public final class MainActivity extends Activity {
                     catch(Exception e){busy=false;connected=false;client.close();api=null;status.setText("تعذر حفظ الاقتران بأمان. أعد المحاولة.");updateButtons();return;}
                     connected = true;
                     desktopAllowed=permissions.optBoolean("desktop");filesAllowed=permissions.optBoolean("files");aiAllowed=permissions.optBoolean("computer_ai");
+                    dictationAllowed=permissions.optBoolean("dictation");
                     busy = false;
                     cursor = 0;
                     usedApprovalTokens.clear();
                     transcript.removeAllViews();
                     connectionFields.setVisibility(View.GONE);
                     applyEvents(response);
-                    status.setText(desktopAllowed?"● متصل • الشاشة والملفات حسب صلاحيات الكمبيوتر":"● متصل • فعّل التحكم من ربط الهاتف في Windows لإتاحة الشاشة والملفات");
+                    status.setText(desktopAllowed?"● متصل بـ "+permissions.optString("computer_name","الكمبيوتر")+" • Windows "+permissions.optString("version","")+(dictationAllowed?" • الإملاء متاح":" • حدّث Windows إلى 5.0 للإملاء"):
+                        "● متصل • اضغط تفعيل التحكم الكامل وعرض QR في برنامج Windows لإتاحة الشاشة والملفات والمساعد");
                     updateButtons();
                     schedulePoll();
                 });
@@ -221,6 +242,8 @@ public final class MainActivity extends Activity {
 
     private void disconnect() { disconnect(true); }
     private void disconnect(boolean userRequested) {
+        if(dictation!=null)dictation.cancel();
+        if(userRequested){pendingDictationId=null;recordAfterPermission=false;main.removeCallbacks(dictationTimeout);}
         if(userRequested){allowReconnect=false;credentials.autoConnect(false);}
         main.removeCallbacks(reconnect);
         ++generation;
@@ -252,8 +275,8 @@ public final class MainActivity extends Activity {
                 main.post(() -> {
                     if (!current(requestGeneration)) return;
                     polling = false;
-                    applyEvents(response);
-                    status.setText("متصل • التحديث تلقائي أثناء فتح التطبيق.");
+                    CharSequence before=status.getText();applyEvents(response);
+                    if(android.text.TextUtils.equals(before,status.getText()))status.setText("متصل • التحديث تلقائي أثناء فتح التطبيق.");
                     schedulePoll();
                 });
             } catch (ApiClient.ApiException e) {
@@ -287,7 +310,8 @@ public final class MainActivity extends Activity {
             if (id <= cursor) continue;
             if (event.optBoolean("clear_approval", false)) disableApprovals();
             String text = event.optString("text", "");
-            if ("approval".equals(event.optString("type"))) showApproval(event, text);
+            if("dictation".equals(event.optString("type")))applyDictation(event);
+            else if ("approval".equals(event.optString("type"))) showApproval(event, text);
             else appendText(text, "المساعد");
             if (event.has("download_path")) {
                 Button download = button("حفظ الملف على الهاتف", () -> {
@@ -361,6 +385,7 @@ public final class MainActivity extends Activity {
     }
 
     private void sendText() {
+        if((dictation!=null&&dictation.active())||pendingDictationId!=null)return;
         String text = composer.getText().toString().trim();
         if (!connected || busy || text.isEmpty()) return;
         if (text.length() > 5000) { status.setText("اختصر الرسالة إلى 5000 حرف أو أقل."); return; }
@@ -374,6 +399,7 @@ public final class MainActivity extends Activity {
     }
 
     private void newChat() {
+        if((dictation!=null&&dictation.active())||pendingDictationId!=null)return;
         if (!connected || busy) return;
         submit("/v1/new-chat", new JSONObject(), "طلبت محادثة جديدة.", () -> {
             disableApprovals();
@@ -457,6 +483,7 @@ public final class MainActivity extends Activity {
             else if("yaa-relay".equals(code.optString("type")))address="relay+"+code.getString("url");
             else throw new Exception();
             ApiClient validation=new ApiClient(address,secret);validation.close();
+            pendingDictationId=null;main.removeCallbacks(dictationTimeout);
             credentials.save(address,secret);credentials.autoConnect(true);
             serverField.setText(address);tokenField.setText(secret);allowReconnect=true;
             connect();
@@ -509,14 +536,63 @@ public final class MainActivity extends Activity {
         });
     }
 
+    private void toggleDictation(){
+        if(dictation.active()){dictation.finish();return;}
+        if(!connected||!dictationAllowed||busy||pendingDictationId!=null)return;
+        if(checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)!=android.content.pm.PackageManager.PERMISSION_GRANTED){
+            requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO},RECORD_PERMISSION);return;
+        }
+        dictation.start();
+    }
+
+    @Override public void onRequestPermissionsResult(int code,String[] permissions,int[] results){
+        super.onRequestPermissionsResult(code,permissions,results);
+        if(code!=RECORD_PERMISSION)return;
+        if(results.length>0&&results[0]==android.content.pm.PackageManager.PERMISSION_GRANTED){
+            recordAfterPermission=true;
+            if(resumed&&connected&&!busy&&pendingDictationId==null){recordAfterPermission=false;dictation.start();}
+        }else status.setText("لم يُسمح بالميكروفون. فعّل إذن التسجيل من إعدادات التطبيق؛ يمكنك الاستمرار بالكتابة.");
+    }
+
+    private void uploadDictation(File audio){
+        ApiClient client=api;
+        if(client==null||!connected||destroyed){audio.delete();return;}
+        String id=java.util.UUID.randomUUID().toString();pendingDictationId=id;
+        int requestGeneration=generation;busy=true;status.setText("أرسل الصوت للكمبيوتر لتفريغه…");updateButtons();
+        main.removeCallbacks(dictationTimeout);main.postDelayed(dictationTimeout,90000);
+        network.execute(()->{
+            try{
+                client.dictation(audio,id);
+                main.post(()->{if(!current(requestGeneration))return;busy=false;status.setText("وصل التسجيل. أنتظر النص من Groq؛ لن يُرسل كطلب تلقائياً.");updateButtons();schedulePoll();});
+            }catch(Exception e){
+                main.post(()->{if(!current(requestGeneration))return;busy=false;pendingDictationId=null;main.removeCallbacks(dictationTimeout);status.setText(e instanceof ApiClient.ApiException?e.getMessage():"تعذر إرسال التسجيل؛ لم يُرسل أمر للمساعد.");updateButtons();});
+            }finally{audio.delete();}
+        });
+    }
+
+    private void applyDictation(JSONObject event){
+        if(pendingDictationId==null||!pendingDictationId.equals(event.optString("dictation_id")))return;
+        pendingDictationId=null;main.removeCallbacks(dictationTimeout);
+        String text=event.optString("dictation_text","").trim();
+        if(!text.isEmpty()){
+            String before=composer.getText().toString();composer.append((before.isEmpty()||Character.isWhitespace(before.charAt(before.length()-1))?"":" ")+text);
+            composer.setSelection(composer.length());status.setText("راجع النص وعدّله ثم اضغط إرسال. لم يُنفّذ أي أمر صوتي تلقائياً.");
+        }else status.setText(event.optString("dictation_error","لم يصل كلام واضح. أعد التسجيل."));
+        updateButtons();
+    }
+
     @Override protected void onResume() {
         super.onResume();
         resumed = true;
+        if(pendingDictationId!=null){main.removeCallbacks(dictationTimeout);main.postDelayed(dictationTimeout,90000);}
+        if(recordAfterPermission&&connected&&!busy&&pendingDictationId==null){recordAfterPermission=false;dictation.start();}
         if(allowReconnect&&api==null&&!busy)connect();
         else schedulePoll();
     }
 
     @Override protected void onPause() {
+        main.removeCallbacks(dictationTimeout);
+        if(dictation!=null&&dictation.active()){dictation.cancel();status.setText("أُلغي التسجيل لأن التطبيق انتقل للخلفية؛ لم يُرسل الصوت.");}
         resumed = false;
         main.removeCallbacks(reconnect);
         main.removeCallbacks(poll);
@@ -525,6 +601,7 @@ public final class MainActivity extends Activity {
 
     @Override protected void onDestroy() {
         destroyed = true;
+        if(dictation!=null)dictation.cancel();
         ++generation;
         main.removeCallbacksAndMessages(null);
         if (api != null) api.close();

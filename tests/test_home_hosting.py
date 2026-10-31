@@ -115,3 +115,14 @@ def test_qr_is_not_shown_when_real_app_reports_server_start_failure(home_view):
     view.save();root.update()
     assert not any(child.cget('image') for child in view._qr_panel.winfo_children())
     assert 'did not start' in view.status.cget('text')
+
+
+def test_full_access_pairing_saves_real_desktop_ai_drive_and_awake_permissions(home_view):
+    view,root,calls=home_view
+    view.vars['remote_home_lan_url'].set('https://192.168.1.10:8443')
+    assert not view.settings.remote_desktop_enabled
+    view._full_access_pairing();root.update()
+    saved=calls[-1]
+    assert saved.remote_enabled and saved.remote_desktop_enabled and saved.remote_ai_enabled
+    assert saved.remote_files_all_drives and saved.remote_keep_awake
+    assert any(child.cget('image') for child in view._qr_panel.winfo_children())

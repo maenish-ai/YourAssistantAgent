@@ -29,6 +29,8 @@ hiddenimports = [
     "yaa_lite.remote.settings",
     "yaa_lite.remote.desktop",
     "yaa_lite.remote.desktop_agent",
+    "yaa_lite.remote.window_control",
+    "yaa_lite.remote.desktop_intent",
     "yaa_lite.remote.files",
     "yaa_lite.remote.relay_bridge",
     "yaa_lite.remote.relay_protocol",

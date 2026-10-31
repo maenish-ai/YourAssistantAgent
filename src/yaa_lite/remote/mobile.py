@@ -11,6 +11,7 @@ import hashlib
 import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 from pathlib import Path
 import queue
 import re
@@ -24,6 +25,7 @@ from urllib.parse import parse_qs, urlsplit
 import zipfile
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+MAX_AUDIO_BYTES = 2 * 1024 * 1024
 MAX_JSON_BYTES = 32 * 1024
 MAX_EVENTS_RESPONSE_BYTES = 1024 * 1024
 _REQUEST_ID = re.compile(r'^[A-Za-z0-9_-]{8,128}$')
@@ -56,19 +58,23 @@ class MobileServer:
         self._event_id = 0
         self._requests = {}
         self._jobs = queue.Queue(maxsize=16)
+        self._audio_jobs=queue.Queue(maxsize=2)
         self._stopping = threading.Event()
         self._accepting = threading.Event()
         self._server = None
         self._http_thread = None
         self._worker = None
+        self._audio_worker=None
         self._last_seen = 0.0
 
     def publish(self, text: str, approval_token: str | None = None, expires_at: float | None = None,
-                clear_approval: bool = False, download_path=None, download_name=None) -> dict:
+                clear_approval: bool = False, download_path=None, download_name=None,
+                dictation_id=None,dictation_text=None,dictation_error=None) -> dict:
         if len(str(text)) > 65536:
             raise MobileServerError('Android message exceeds event limit')
         if approval_token is not None and not _NONCE.fullmatch(approval_token):
             raise MobileServerError('Invalid approval identifier')
+        if dictation_id is not None and not _NONCE.fullmatch(str(dictation_id)):raise MobileServerError('Invalid dictation identifier')
         with self._lock:
             if self._stopping.is_set():
                 return {}
@@ -79,6 +85,10 @@ class MobileServer:
                 event['clear_approval'] = True
             if download_path is not None:
                 event.update(type='file', download_path=str(download_path), download_name=str(download_name or 'download'))
+            if dictation_id is not None:
+                event.update(type='dictation',dictation_id=str(dictation_id))
+                if dictation_text is not None:event['dictation_text']=str(dictation_text)[:5000]
+                if dictation_error is not None:event['dictation_error']=str(dictation_error)[:500]
             if approval_token:
                 event.update(token=approval_token, expires_at=float(expires_at or time.time() + 900))
             self._events.append(event)
@@ -138,23 +148,24 @@ class MobileServer:
                 return 429, {'error': 'request_limit_restart_connection'}
             job_id = secrets.token_urlsafe(12)
             try:
-                self._jobs.put_nowait((job_id, task))
+                (self._audio_jobs if task[0]=='dictation' else self._jobs).put_nowait((job_id, task))
             except queue.Full:
                 return 429, {'error': 'task_queue_full'}
             self._requests[request_id] = (fingerprint, job_id)
             return 202, {'job_id': job_id}
 
-    def _run_jobs(self):
+    def _run_jobs(self,jobs=None):
+        jobs=self._jobs if jobs is None else jobs
         while not self._stopping.is_set():
             try:
-                job_id, task = self._jobs.get(timeout=.2)
+                job_id, task = jobs.get(timeout=.2)
             except queue.Empty:
                 continue
             try:
                 if self._stopping.is_set():
                     if task[0] == 'document':
                         task[1].unlink(missing_ok=True)
-                    elif task[0] == 'file_import':
+                    elif task[0] in {'file_import','dictation'}:
                         task[1][0].unlink(missing_ok=True)
                     continue
                 kind, value = task
@@ -166,6 +177,8 @@ class MobileServer:
                     self.handler.desktop_input(value)
                 elif kind == 'file_import':
                     self.handler.file_import(*value)
+                elif kind=='dictation':self.handler.dictation(*value)
+                elif kind=='desktop_control':self.handler.desktop_control(value)
                 else:
                     self.handler.callback(value)
             except Exception:
@@ -175,10 +188,10 @@ class MobileServer:
                 self.activity('remote_task_error', f'job={job_id}; operation failed')
                 if task[0] == 'document':
                     task[1].unlink(missing_ok=True)
-                elif task[0] == 'file_import':
+                elif task[0] in {'file_import','dictation'}:
                     task[1][0].unlink(missing_ok=True)
             finally:
-                self._jobs.task_done()
+                jobs.task_done()
 
     def start(self) -> bool:
         if self._accepting.is_set():
@@ -241,6 +254,11 @@ class MobileServer:
                 parsed = urlsplit(self.path)
                 if parsed.path == '/v1/capabilities':
                     return self._send(200, companion.handler.capabilities())
+                if parsed.path=='/v1/windows':
+                    try:
+                        companion.handler.check_desktop()
+                        return self._send(200,companion.handler.desktop.list_windows())
+                    except Exception:return self._send(400,{'error':'تعذر قراءة النوافذ. تحقق من جلسة Windows وصلاحيات التحكم.'})
                 if parsed.path in {'/v1/desktop', '/v1/files', '/v1/files/download'}:
                     transfer_started = False
                     try:
@@ -316,7 +334,7 @@ class MobileServer:
                     return
                 parsed = urlsplit(self.path)
                 path = parsed.path
-                if path not in {'/v1/messages', '/v1/new-chat', '/v1/uploads', '/v1/approvals', '/v1/desktop/input', '/v1/desktop/stop', '/v1/files/upload'}:
+                if path not in {'/v1/messages', '/v1/new-chat', '/v1/uploads', '/v1/approvals', '/v1/desktop/input', '/v1/desktop/stop', '/v1/files/upload','/v1/windows/action','/v1/dictation'}:
                     return self._send(404, {'error': 'not_found'})
                 request_id = self.headers.get('X-Request-ID', '')
                 if not _REQUEST_ID.fullmatch(request_id):
@@ -324,16 +342,21 @@ class MobileServer:
                 content_type = self.headers.get('Content-Type', '').split(';', 1)[0].strip().lower()
                 is_upload = path == '/v1/uploads'
                 is_file = path == '/v1/files/upload'
-                if content_type != ('application/octet-stream' if is_file else 'application/zip' if is_upload else 'application/json'):
+                is_audio=path=='/v1/dictation'
+                if content_type != ('audio/mp4' if is_audio else 'application/octet-stream' if is_file else 'application/zip' if is_upload else 'application/json'):
                     return self._send(415, {'error': 'unsupported_media_type'})
                 from .files import MAX_TRANSFER
-                length = self._length(MAX_TRANSFER if is_file else MAX_UPLOAD_BYTES if is_upload else MAX_JSON_BYTES, allow_empty=is_file)
+                length = self._length(MAX_AUDIO_BYTES if is_audio else MAX_TRANSFER if is_file else MAX_UPLOAD_BYTES if is_upload else MAX_JSON_BYTES, allow_empty=is_file)
                 if length is None:
                     return
                 uploaded = None
                 try:
                     digest = hashlib.sha256(self.path.encode('utf-8'))
-                    if is_upload or is_file:
+                    if is_upload or is_file or is_audio:
+                        if is_audio:
+                            query=parse_qs(parsed.query)
+                            if set(query)!={'id'} or len(query['id'])!=1 or not _NONCE.fullmatch(query['id'][0]):raise ValueError()
+                            identifier=query['id'][0]
                         if is_file:
                             companion.handler.check_desktop()
                             query = parse_qs(parsed.query, keep_blank_values=True)
@@ -341,9 +364,12 @@ class MobileServer:
                             folder, name = query['folder'][0], query['name'][0]
                             companion.handler.files.resolve(folder)
                             companion.handler.files.name(name)
-                        uploaded = companion.inbox / (secrets.token_hex(16) + ('.bin' if is_file else '.zip'))
+                        uploaded = companion.inbox / (secrets.token_hex(16) + ('.m4a' if is_audio else '.bin' if is_file else '.zip'))
                         remaining = length
                         with uploaded.open('xb') as output:
+                            if is_audio:
+                                try:os.chmod(uploaded,0o600)
+                                except OSError:pass
                             while remaining:
                                 block = self.rfile.read(min(65536, remaining))
                                 if not block:
@@ -353,7 +379,11 @@ class MobileServer:
                                 remaining -= len(block)
                         if is_upload and not zipfile.is_zipfile(uploaded):
                             raise ValueError()
-                        task = ('file_import', (uploaded, folder, name)) if is_file else ('document', uploaded)
+                        if is_audio:
+                            with uploaded.open('rb') as audio:
+                                if audio.read(12)[4:8]!=b'ftyp':raise ValueError()
+                            task=('dictation',(uploaded,identifier))
+                        else:task = ('file_import', (uploaded, folder, name)) if is_file else ('document', uploaded)
                     else:
                         raw = self.rfile.read(length)
                         if len(raw) != length:
@@ -370,6 +400,10 @@ class MobileServer:
                         elif path == '/v1/desktop/input':
                             companion.handler.check_desktop()
                             task = ('desktop_input', data)
+                        elif path=='/v1/windows/action':
+                            companion.handler.check_desktop()
+                            if set(data)!={'id','action'} or not isinstance(data['id'],str) or not _NONCE.fullmatch(data['id']) or data['action'] not in {'focus','close','minimize','maximize','restore'}:raise ValueError()
+                            task=('desktop_control',data)
                         elif path == '/v1/desktop/stop':
                             if data:raise ValueError()
                             companion.handler.stop_desktop_task()
@@ -421,8 +455,10 @@ class MobileServer:
         self.port = self._server.server_address[1]
         self._accepting.set()
         self._worker = threading.Thread(target=self._run_jobs, daemon=True, name='yaa-android-tasks')
+        self._audio_worker=threading.Thread(target=self._run_jobs,args=(self._audio_jobs,),daemon=True,name='yaa-android-dictation')
         self._http_thread = threading.Thread(target=self._server.serve_forever, daemon=True, name='yaa-android-api')
         self._worker.start()
+        self._audio_worker.start()
         self._http_thread.start()
         self._power.start()
         self.activity('remote_started', f'Android companion port:{self.port}, TLS:{self.tls_context is not None}')
@@ -437,19 +473,17 @@ class MobileServer:
                 self.handler.close()
             except Exception:
                 self.activity('remote_close_error', 'Android handler cleanup failed')
-        while True:
-            try:
-                _, task = self._jobs.get_nowait()
-            except queue.Empty:
-                break
-            if task[0] == 'document':
-                task[1].unlink(missing_ok=True)
-            elif task[0] == 'file_import':
-                task[1][0].unlink(missing_ok=True)
-            self._jobs.task_done()
+        for jobs in (self._jobs,self._audio_jobs):
+            while True:
+                try:_,task=jobs.get_nowait()
+                except queue.Empty:break
+                if task[0]=='document':task[1].unlink(missing_ok=True)
+                elif task[0] in {'file_import','dictation'}:task[1][0].unlink(missing_ok=True)
+                jobs.task_done()
         if self._server:
             self._server.shutdown()
             self._server.server_close()
             self._server = None
         if self._worker and self._worker is not threading.current_thread():
             self._worker.join(timeout=.5)
+        if self._audio_worker and self._audio_worker is not threading.current_thread():self._audio_worker.join(timeout=.5)

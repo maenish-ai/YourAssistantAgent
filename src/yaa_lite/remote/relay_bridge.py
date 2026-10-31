@@ -132,10 +132,11 @@ class RelayBridge:
         if op=='upload_start':
             if len(self.transfers)>=4:raise ValueError('too_many_file_transfers')
             path=self._path(args.get('path'));mime=args.get('mime');size=args.get('size')
-            cap=20*1024*1024 if path=='/v1/uploads' else MAX_TRANSFER
+            audio=path.startswith('/v1/dictation?')
+            cap=2*1024*1024 if audio else 20*1024*1024 if path=='/v1/uploads' else MAX_TRANSFER
             if (isinstance(size,bool) or not isinstance(size,int) or not 0<=size<=cap or
-                not ((path=='/v1/uploads' and mime=='application/zip') or (path.startswith('/v1/files/upload?') and mime=='application/octet-stream'))):raise ValueError('invalid_file_transfer')
-            if path!='/v1/uploads':
+                not ((audio and mime=='audio/mp4') or (path=='/v1/uploads' and mime=='application/zip') or (path.startswith('/v1/files/upload?') and mime=='application/octet-stream'))):raise ValueError('invalid_file_transfer')
+            if path.startswith('/v1/files/upload?'):
                 self.server.handler.check_desktop()
                 query=parse_qs(urlsplit(path).query,keep_blank_values=True)
                 if set(query)!={'folder','name'} or any(len(v)!=1 for v in query.values()):raise ValueError('invalid_file_target')

@@ -19,10 +19,10 @@ def test_real_folder_copy_move_and_existing_destination_protection(files):
     created=files.create_folder('reports','نسخ')
     assert created['path']=='reports/نسخ'
     copied=files.copy_file('report.txt',created['path'],'new.txt')
-    assert files.resolve(copied['path']).read_text()=='محتوى الملف'
+    assert files.resolve(copied['path']).read_text(encoding='utf-8')=='محتوى الملف'
     moved=files.move_file('report.txt','reports','moved.txt')
     assert not (files.root/'report.txt').exists()
-    assert files.resolve(moved['path']).read_text()=='محتوى الملف'
+    assert files.resolve(moved['path']).read_text(encoding='utf-8')=='محتوى الملف'
     with pytest.raises(FileError): files.copy_file(moved['path'],'reports/نسخ','new.txt')
     with pytest.raises(FileError): files.move_file(moved['path'],'reports/نسخ','new.txt')
     assert files.resolve(moved['path']).exists()
@@ -71,7 +71,7 @@ def test_zip_extract_is_general_and_returns_observed_new_paths(files):
     result=files.extract_zip('bundle.zip','reports','مشروع جديد')
     assert result['files']==2 and result['path']=='reports/مشروع جديد'
     assert files.resolve(result['path']+'/data/readme.txt').read_text()=='hello'
-    assert files.resolve(result['path']+'/صور/notes.txt').read_text()=='عربي'
+    assert files.resolve(result['path']+'/صور/notes.txt').read_text(encoding='utf-8')=='عربي'
     assert (files.root/'bundle.zip').exists()
     with pytest.raises(FileError):files.extract_zip('bundle.zip','reports','مشروع جديد')
     assert not list((files.root/'reports').glob('.yaa-extract-*'))
@@ -85,6 +85,12 @@ def test_zip_extract_is_general_and_returns_observed_new_paths(files):
 ])
 def test_invalid_zip_publishes_nothing(files,names):
     make_zip(files,names)
+    # zipfile normalizes backslashes to forward slashes when creating ZIPs on Windows.
+    # In that case the archive no longer contains the invalid path being tested.
+    if names == [('folder\\escape.txt','escape')]:
+        with zipfile.ZipFile(files.root/'bundle.zip') as archive:
+            if archive.namelist() == ['folder/escape.txt']:
+                pytest.skip('Windows zipfile normalized the unsafe separator while writing the fixture')
     with pytest.raises(FileError):files.extract_zip('bundle.zip','reports','output')
     assert not (files.root/'reports'/'output').exists()
     assert not list((files.root/'reports').iterdir())
@@ -110,4 +116,4 @@ def test_move_preserves_changed_source_and_copied_bytes(files,monkeypatch):
     monkeypatch.setattr(files,'import_file',copy_then_source_changed)
     with pytest.raises(FileError,match='تغيّر المصدر'):files.move_file('report.txt','reports','copied.txt')
     assert (files.root/'report.txt').read_text()=='changed during copy'
-    assert (files.root/'reports/copied.txt').read_text()=='محتوى الملف'
+    assert (files.root/'reports/copied.txt').read_text(encoding='utf-8')=='محتوى الملف'

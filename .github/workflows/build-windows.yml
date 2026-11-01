@@ -73,6 +73,7 @@ jobs:
         shell: pwsh
         run: |
           $env:PYTHONPATH = "$PWD\src"
+          $env:PYTHONUTF8 = "1"
           python -m pytest -q tests --import-mode=importlib
 
       - name: Verify cloud-only runtime payload
@@ -93,8 +94,8 @@ jobs:
         run: |
           $exe = "$PWD\dist\YourAssistantAgent\YourAssistantAgent.exe"
           if (-not (Test-Path $exe)) { throw 'YourAssistantAgent.exe was not created' }
-          & $exe --self-test
-          if ($LASTEXITCODE -ne 0) { throw "Packaged startup self-test failed with exit code $LASTEXITCODE" }
+          $p = Start-Process -FilePath $exe -ArgumentList '--self-test' -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw "Packaged startup self-test failed with exit code $($p.ExitCode)" }
 
       - name: Optional Authenticode sign application EXE
         shell: pwsh
@@ -151,18 +152,6 @@ jobs:
           if (-not $f) { throw 'Installer EXE was not created' }
           $hash = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower()
           "$hash  $($f.Name)" | Set-Content ($f.FullName + '.sha256.txt')
-
-      - name: Upload build diagnostics on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: Windows-Build-Diagnostics
-          path: |
-            build/**/warn-*.txt
-            build/**/xref-*.html
-            build/**/Analysis-*.toc
-          if-no-files-found: warn
-          retention-days: 7
 
       - uses: actions/upload-artifact@v4
         with:

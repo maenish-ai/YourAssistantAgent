@@ -176,10 +176,10 @@ jobs:
       - uses: android-actions/setup-android@v3
         with:
           # The action's default includes the retired SDK package "tools".
-          packages: 'platform-tools platforms;android-35 build-tools;34.0.0'
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
       - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.9'
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
       - name: Restore private Android release key when configured
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -195,6 +195,8 @@ jobs:
               with open(os.environ['GITHUB_ENV'],'a') as output:
                   output.write('YAA_ANDROID_KEYSTORE='+str(path)+'\n')
           PYKEY
+      - name: Make Gradle wrapper executable
+        run: chmod +x android/gradlew
       - name: Test, lint and build Android companion
         env:
           YAA_ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
@@ -202,9 +204,9 @@ jobs:
           YAA_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           if [ -n "$YAA_ANDROID_KEYSTORE" ]; then
-            gradle -p android --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleRelease
+            ./android/gradlew -p android --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleRelease
           else
-            gradle -p android --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+            ./android/gradlew -p android --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
           fi
       - name: Upload signed Android release
         if: env.YAA_ANDROID_KEYSTORE != ''

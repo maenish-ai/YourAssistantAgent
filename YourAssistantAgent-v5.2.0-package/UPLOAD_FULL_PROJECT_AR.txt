@@ -1,9 +1,0 @@
-Your Assistant Agent v2.0.0 — رفع المشروع الكامل إلى GitHub
-
-1) فك ضغط ملف FULL PROJECT.
-2) ارفع محتوياته إلى جذر مستودع maenish-ai/YourAssistantAgent على main، مع استبدال الملفات القديمة.
-3) تأكد أن .github/workflows يحتوي فقط build-windows.yml.
-4) افتح GitHub Actions وانتظر Build Windows Setup.
-5) بعد نجاحه نزّل artifact باسم YourAssistantAgent-Windows-Setup وثبّت Setup v2.0.0.
-
-مهم: ملفات Hammer/llama.cpp الكبيرة ليست داخل ZIP المصدر. Workflow ينزلها ويتحقق من SHA256 أثناء البناء.

@@ -1,1 +1,0 @@
-v4.1.0 version metadata + prior v4.1 overlay. Extract ALL files into repository root, review in GitHub Desktop, commit and push. No PowerShell patch command. Windows Actions build not yet verified. This is NOT a guarantee all planned features are complete.

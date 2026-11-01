@@ -1,4 +1,0 @@
-When applying the v2.0.0 PATCH over the exact v1.7.0 source tree, delete this obsolete file:
-- UPLOAD_V1.7.0_AR.txt
-
-The FULL PROJECT ZIP already contains the clean v2.0.0 tree, so no manual deletion is needed when replacing the repository contents with the full project.

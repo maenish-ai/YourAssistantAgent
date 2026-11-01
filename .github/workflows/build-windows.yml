@@ -73,7 +73,7 @@ jobs:
         shell: pwsh
         run: |
           $env:PYTHONPATH = "$PWD\src"
-          python -m pytest -q
+          python -m pytest -q tests --import-mode=importlib
 
       - name: Verify cloud-only runtime payload
         shell: pwsh

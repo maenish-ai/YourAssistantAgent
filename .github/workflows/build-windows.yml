@@ -36,11 +36,20 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
+      - name: Print Windows build environment
+        shell: pwsh
+        run: |
+          python --version
+          python -m pip --version
+          Write-Host "Commit: $env:GITHUB_SHA"
+          Write-Host "Runner: $env:RUNNER_OS"
+
       - name: Install Python dependencies
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements-dev.txt
+          python -m pip install -r requirements-dev.txt 2>&1 | Tee-Object -FilePath windows-dependencies.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Verify lightweight cloud and dictation dependencies
         shell: pwsh
@@ -73,7 +82,8 @@ jobs:
         shell: pwsh
         run: |
           $env:PYTHONPATH = "$PWD\src"
-          python -m pytest -q tests --import-mode=importlib
+          python -m pytest -q tests --import-mode=importlib 2>&1 | Tee-Object -FilePath windows-tests.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Verify cloud-only runtime payload
         shell: pwsh
@@ -86,7 +96,9 @@ jobs:
 
       - name: Build app folder
         shell: pwsh
-        run: python -m PyInstaller --noconfirm --clean build_app.spec
+        run: |
+          python -m PyInstaller --noconfirm --clean build_app.spec 2>&1 | Tee-Object -FilePath windows-pyinstaller.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Verify packaged EXE starts cleanly
         shell: pwsh
@@ -152,6 +164,18 @@ jobs:
           $hash = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower()
           "$hash  $($f.Name)" | Set-Content ($f.FullName + '.sha256.txt')
 
+      - name: Upload Windows diagnostic logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: YourAssistantAgent-Windows-Failure-Diagnostics
+          path: |
+            windows-*.log
+            build/YourAssistantAgent/warn-YourAssistantAgent.txt
+            build/YourAssistantAgent/xref-YourAssistantAgent.html
+          if-no-files-found: warn
+          retention-days: 14
+
       - uses: actions/upload-artifact@v4
         with:
           name: YourAssistantAgent-Windows-Setup-v5.2.0
@@ -176,10 +200,10 @@ jobs:
       - uses: android-actions/setup-android@v3
         with:
           # The action's default includes the retired SDK package "tools".
-          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+          packages: 'platform-tools platforms;android-35 build-tools;34.0.0'
       - uses: gradle/actions/setup-gradle@v4
         with:
-          cache-read-only: ${{ github.event_name == 'pull_request' }}
+          gradle-version: '8.9'
       - name: Restore private Android release key when configured
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -195,8 +219,6 @@ jobs:
               with open(os.environ['GITHUB_ENV'],'a') as output:
                   output.write('YAA_ANDROID_KEYSTORE='+str(path)+'\n')
           PYKEY
-      - name: Make Gradle wrapper executable
-        run: chmod +x android/gradlew
       - name: Test, lint and build Android companion
         env:
           YAA_ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
@@ -204,9 +226,9 @@ jobs:
           YAA_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           if [ -n "$YAA_ANDROID_KEYSTORE" ]; then
-            ./android/gradlew -p android --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleRelease
+            gradle -p android --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleRelease
           else
-            ./android/gradlew -p android --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+            gradle -p android --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
           fi
       - name: Upload signed Android release
         if: env.YAA_ANDROID_KEYSTORE != ''

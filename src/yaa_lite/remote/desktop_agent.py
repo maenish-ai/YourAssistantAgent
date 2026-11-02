@@ -21,6 +21,7 @@ def tools():
         ('tab_action','Select or close one tab ID returned by list_browser_tabs. For multiple tabs use only explicit requested targets, not unrelated tabs.',{'id':{'type':'string'},'action':{'type':'string','enum':['focus','close']}}),
         ('browser_action','Operate an observed browser window. Empty window_id means active browser. Closing current tab does not require page accessibility.',{'window_id':{'type':'string'},'action':{'type':'string','enum':['close_tab','new_tab','back','forward','refresh','reopen_tab']}}),
         ('list_files', 'List names/paths in the owner-shared file area, without reading content. Empty path means root, empty contains means no filter.', {'path': {'type':'string'},'contains':{'type':'string'}}),
+        ('find_recent_uploads', 'Find recently received phone files inside the owner-shared folder and its subfolders. Returns real paths, never assumes an attachment was uploaded.', {'contains':{'type':'string'}}),
         ('open_folder', 'Open an existing folder in Windows Explorer using its exact observed path from list_files.', {'path':{'type':'string'}}),
         ('create_folder', 'Create a new folder in an observed parent folder. Refuses replacing existing data.', {'parent':{'type':'string'},'name':{'type':'string'}}),
         ('copy_file', 'Copy an existing observed file to an observed destination folder. Empty new_name retains the filename; existing targets are never overwritten.', {'source':{'type':'string'},'destination_folder':{'type':'string'},'new_name':{'type':'string'}}),
@@ -70,6 +71,7 @@ _ACTION_LABELS = {
     'press_keys': 'استخدام اختصار لوحة المفاتيح',
     'list_files': 'فحص الملفات المتاحة',
     'extract_zip': 'فك الملف المضغوط',
+    'find_recent_uploads': 'البحث عن الملفات القادمة من الهاتف',
     'send_file_to_phone': 'تجهيز ملف للهاتف',
     'window_action': 'التحكم في نافذة',
     'browser_action': 'التحكم في المتصفح',
@@ -79,6 +81,37 @@ _ACTION_LABELS = {
 def _progress_label(name):
     return _ACTION_LABELS.get(name, 'تنفيذ إجراء على الكمبيوتر')
 
+
+
+def _find_recent_uploads(files, contains='', *, max_folders=30, max_results=20):
+    """Bounded metadata-only search, confined to the configured shared file area."""
+    from collections import deque
+    pending = deque([''])
+    visited = 0
+    matches = []
+    needle = contains.casefold()
+    while pending and visited < max_folders:
+        folder = pending.popleft()
+        try:
+            listing = files.listing(folder)
+        except (OSError, ValueError):
+            continue
+        visited += 1
+        for entry in listing.get('entries', []):
+            path = entry.get('path', '')
+            if entry.get('directory'):
+                if path and len(pending) < max_folders:
+                    pending.append(path)
+            elif needle in str(entry.get('name', '')).casefold():
+                try:
+                    mtime = files.resolve(path, file=True).stat().st_mtime
+                except (OSError, ValueError):
+                    continue
+                matches.append((mtime, {'name':entry.get('name',''), 'path':path, 'size':entry.get('size',0)}))
+    matches.sort(key=lambda item: item[0], reverse=True)
+    return {'entries':[item for _, item in matches[:max_results]],
+            'folders_checked':visited, 'search_incomplete':bool(pending) or len(matches)>max_results,
+            'note':'Only files already present in the configured Windows shared area are visible.'}
 
 def run_desktop_task(runtime, desktop, instruction, publish, *, max_steps=24, files=None, offer_download=None, history=None):
     if desktop.cancel.is_set():
@@ -113,8 +146,8 @@ def run_desktop_task(runtime, desktop, instruction, publish, *, max_steps=24, fi
         'These are GENERAL computer tools for any requested website/application/document, not a list of supported example brands. '
         'Find installed applications using list_applications and launch the exact observed ID; ambiguous names require clarification. '
         'Use generic folder/copy/move/extract tools for file work rather than pretending it requires a specific repository. '
-        'List folders and files first and use actual returned paths. New folder/file names must come from the owner request or ask for them. '
-        'Do not restrict the owner to example website/page/project names from earlier conversations. '
+        'When the owner mentions a file sent from Android, call find_recent_uploads first (if file tools exist). '
+        'If the file is missing, explain it has not reached the Windows shared folder; never claim lack of general desktop permissions. '
         'For WhatsApp or other messages, use only the recipient and exact content the user explicitly specified; '
         'if either is missing ask and stop. For file transfers use list_files metadata and send_file_to_phone. '
         'Use exact relative paths returned by list_files. Never claim a file reached the phone: the owner must save it there. '
@@ -177,6 +210,8 @@ def run_desktop_task(runtime, desktop, instruction, publish, *, max_steps=24, fi
                     if len(json.dumps(shown,ensure_ascii=False))+len(json.dumps(entry,ensure_ascii=False))>2800:break
                     shown.append(entry)
                 result = {'entries':shown, 'truncated':len(matches)>len(shown), 'root_name':listing['root_name']}
+            elif name == 'find_recent_uploads' and files is not None:
+                result = _find_recent_uploads(files, str(args.get('contains','')))
             elif name == 'send_file_to_phone' and files is not None and offer_download is not None:
                 from .files import MAX_TRANSFER
                 path = files.resolve(args.get('path',''), file=True)
@@ -191,16 +226,16 @@ def run_desktop_task(runtime, desktop, instruction, publish, *, max_steps=24, fi
                 operation=getattr(files,name)
                 result=operation(**args)
             else: raise ValueError('Unknown desktop tool')
-            if name not in {'observe_desktop','list_files','send_file_to_phone','list_windows','list_browser_tabs','list_applications'}:
+            if name not in {'observe_desktop','list_files','find_recent_uploads','send_file_to_phone','list_windows','list_browser_tabs','list_applications'}:
                 time.sleep(.35)
                 result['observation'] = _view(_observe(desktop))
         except Exception as exc:
             result = {'ok': False, 'error': str(exc)}
         if result.get('ok') is False:
             publish(f'الخطوة {step + 1} تعذرت: '+str(result.get('error') or 'خطأ غير معروف')[:160])
-        elif name not in {'observe_desktop','list_files','list_windows','list_browser_tabs','list_applications'}:
+        elif name not in {'observe_desktop','list_files','find_recent_uploads','list_windows','list_browser_tabs','list_applications'}:
             publish(f'الخطوة {step + 1} أُرسلت للكمبيوتر؛ جاري فحص النتيجة')
-        read_only={'observe_desktop','list_files','send_file_to_phone','list_windows','list_browser_tabs','list_applications'}
+        read_only={'observe_desktop','list_files','find_recent_uploads','send_file_to_phone','list_windows','list_browser_tabs','list_applications'}
         if name not in read_only:
             last_action_failure=str(result.get('error') or 'أداة الكمبيوتر لم تنفّذ الإجراء.') if result.get('ok') is False else None
         messages.append({'role': 'assistant', 'content': None, 'tool_calls': [{

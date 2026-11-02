@@ -1,22 +1,12 @@
 @echo off
 setlocal
-cd /d "%~dp0"
-if not exist ".github\workflows\build-windows.yml" (
-  echo ERROR: Extract this ZIP into the YourAssistantAgent repository ROOT first.
-  pause
-  exit /b 1
-)
-where py >nul 2>nul
-if %errorlevel%==0 (
-  py -3 "FIX-GITHUB-ACTIONS.py"
-) else (
-  python "FIX-GITHUB-ACTIONS.py"
-)
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0APPLY-FIX.ps1"
 if errorlevel 1 (
- echo Fix failed. See error above.
+ echo.
+ echo Fix did not complete. Read the message above.
  pause
  exit /b 1
 )
 echo.
-echo Done. Open GitHub Desktop, review 2 changes, Commit and Push.
+echo Now open GitHub Desktop: Commit to main, then Push origin.
 pause

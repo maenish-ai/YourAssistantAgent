@@ -320,7 +320,13 @@ public final class MainActivity extends Activity {
                         "failed".equals(state) ? "⚠ تعذرت المهمة" :
                         "stopped".equals(state) ? "■ توقفت المهمة" :
                         "started".equals(state) ? "▶ بدأت المهمة" : "◷ جاري التنفيذ";
-                appendText(label + "\n" + text, "تقدم المهمة");
+                String taskId = progress == null ? "" : progress.optString("task_id", "");
+                int step = progress == null ? 0 : progress.optInt("step", 0);
+                String detail = taskId.isEmpty() ? "" : " • مهمة " + taskId.substring(0, Math.min(8, taskId.length()));
+                String number = step > 0 ? " • خطوة " + step : "";
+                String time = DateFormat.getTimeInstance(DateFormat.SHORT, Locale.getDefault())
+                        .format(new Date((long)(event.optDouble("created_at", System.currentTimeMillis()/1000.0)*1000)));
+                appendText(time + " • " + label + detail + number + "\n" + text, "تقدم المهمة");
             }
             else if("dictation".equals(event.optString("type")))applyDictation(event);
             else if ("approval".equals(event.optString("type"))) showApproval(event, text);

@@ -305,24 +305,26 @@ class RemoteAssistant:
                 from .desktop_agent import run_desktop_task
                 self.check_desktop()
                 if not getattr(self.settings,'remote_ai_enabled',False):raise ValueError('Computer AI is disabled')
-                self.publish('بدأ تنفيذ المهمة على الكمبيوتر', progress={'state':'started','step':0})
+                import secrets
+                task_id = secrets.token_urlsafe(9)
+                self.publish('بدأ تنفيذ المهمة على الكمبيوتر', progress={'state':'started','step':0,'task_id':task_id})
                 def report_step(message):
                     import re
                     match = re.match(r'^خطوة (\d+):', str(message))
                     if match:
-                        self.publish(str(message), progress={'state':'working','step':int(match.group(1))})
+                        self.publish(str(message), progress={'state':'working','step':min(100,int(match.group(1))),'task_id':task_id})
                     else:
-                        self.publish(str(message), progress={'state':'working','step':0})
+                        self.publish(str(message), progress={'state':'working','step':0,'task_id':task_id})
                 result = run_desktop_task(self.runtime,self.desktop,str(approval.payload),report_step,
                     files=self.files,history=list(self._desktop_history),
                     offer_download=lambda path,name:self.publish('ملف جاهز للتنزيل: '+name,download_path=path,download_name=name))
                 self._desktop_history.append({'instruction':str(approval.payload)[:1500], 'result':str(result)[:1500]})
                 self._desktop_history = self._desktop_history[-4:]
                 state = 'stopped' if 'أُوقف' in str(result) or 'توقفت المهمة' in str(result) else ('failed' if 'لم تكتمل' in str(result) or 'تعذر' in str(result) else 'done')
-                self.publish(str(result), progress={'state':state,'step':0})
+                self.publish(str(result), progress={'state':state,'step':0,'task_id':task_id})
                 self._reply(result)
             except Exception as exc:
-                self.publish('توقفت مهمة الكمبيوتر', progress={'state':'failed','step':0})
+                self.publish('توقفت مهمة الكمبيوتر', progress={'state':'failed','step':0,'task_id':locals().get('task_id', '')})
                 self._reply('توقفت مهمة الكمبيوتر: ' + str(exc))
         else:
             try:

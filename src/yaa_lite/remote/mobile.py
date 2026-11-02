@@ -88,7 +88,15 @@ class MobileServer:
                 if state not in ('started', 'working', 'done', 'failed', 'stopped'):
                     raise MobileServerError('Invalid task progress state')
                 event['type'] = 'progress'
-                event['progress'] = {'state': state, 'step': max(0, min(100, int(progress.get('step', 0))))}
+                task_id = progress.get('task_id', '')
+                if not isinstance(task_id, str) or len(task_id) > 64 or (task_id and not re.fullmatch(r'[A-Za-z0-9_-]{8,64}', task_id)):
+                    raise MobileServerError('Invalid task identifier')
+                step = progress.get('step', 0)
+                if isinstance(step, bool) or not isinstance(step, int) or not 0 <= step <= 100:
+                    raise MobileServerError('Invalid task progress step')
+                event['progress'] = {'state': state, 'step': step}
+                if task_id:
+                    event['progress']['task_id'] = task_id
             if clear_approval:
                 event['clear_approval'] = True
             if download_path is not None:

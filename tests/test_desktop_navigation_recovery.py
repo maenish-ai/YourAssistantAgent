@@ -101,3 +101,21 @@ def test_followup_context_is_bounded_and_not_additional_authorization(monkeypatc
     history=[{'instruction':'very-old','result':'old'}]+[
         {'instruction':'افتح الصفحة المطلوبة','result':'طلب فتح الرابط أرسل'} for _ in range(4)]
     assert 'حدد' in run_desktop_task(Runtime(),desktop,'أغلقها',lambda _:None,history=history)
+
+
+def test_direct_task_emits_human_progress_and_does_not_claim_verified_page_load():
+    events = []
+    desktop = SimpleNamespace(cancel=threading.Event(), open_url=lambda url: {
+        'ok': True, 'result': 'طلب فتح الرابط أُرسل للمتصفح؛ راقب الشاشة للتأكد من التحميل.'})
+    answer = run_desktop_task(None, desktop, 'افتح فيسبوك', events.append)
+    assert any('فتح رابط في المتصفح' in event for event in events)
+    assert 'راقب الشاشة' in answer
+
+
+def test_direct_task_reports_failure_without_claiming_success():
+    events = []
+    desktop = SimpleNamespace(cancel=threading.Event(), open_url=lambda url: {
+        'ok': False, 'error': 'المتصفح غير متاح'})
+    answer = run_desktop_task(None, desktop, 'افتح فيسبوك', events.append)
+    assert 'تعذر' in answer
+    assert 'المتصفح غير متاح' in answer

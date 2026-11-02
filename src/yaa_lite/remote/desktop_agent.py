@@ -58,6 +58,28 @@ def _metadata_view(data,key,offset=0):
     return {key:shown,'window':data.get('window',''),'note':data.get('note',''),'next_offset':next_offset}
 
 
+# Progress messages describe observed actions, not unverified success.
+_ACTION_LABELS = {
+    'open_url': 'فتح رابط في المتصفح',
+    'launch_application': 'تشغيل برنامج على الكمبيوتر',
+    'observe_desktop': 'قراءة النافذة الحالية',
+    'list_windows': 'فحص النوافذ المفتوحة',
+    'list_applications': 'البحث عن برنامج مثبت',
+    'click_element': 'الضغط على عنصر في النافذة',
+    'type_text': 'كتابة نص في النافذة',
+    'press_keys': 'استخدام اختصار لوحة المفاتيح',
+    'list_files': 'فحص الملفات المتاحة',
+    'extract_zip': 'فك الملف المضغوط',
+    'send_file_to_phone': 'تجهيز ملف للهاتف',
+    'window_action': 'التحكم في نافذة',
+    'browser_action': 'التحكم في المتصفح',
+}
+
+
+def _progress_label(name):
+    return _ACTION_LABELS.get(name, 'تنفيذ إجراء على الكمبيوتر')
+
+
 def run_desktop_task(runtime, desktop, instruction, publish, *, max_steps=24, files=None, offer_download=None, history=None):
     if desktop.cancel.is_set():
         return 'أُوقفت المهمة قبل بدء التحكم.'
@@ -67,7 +89,7 @@ def run_desktop_task(runtime, desktop, instruction, publish, *, max_steps=24, fi
     if direct:
         name,args=direct
         try:
-            publish('تنفيذ على الكمبيوتر: '+name)
+            publish('بدأت المهمة: '+_progress_label(name))
             if name=='active_window':
                 windows=desktop.list_windows()['windows'];active=next((w for w in windows if w['active']),None)
                 if not active:raise ValueError('لا توجد نافذة مستخدم نشطة قابلة للتحكم. اطلب عرض النوافذ واختر واحدة.')
@@ -78,7 +100,7 @@ def run_desktop_task(runtime, desktop, instruction, publish, *, max_steps=24, fi
             if isinstance(result,dict) and result.get('ok') is False:
                 return 'تعذر تنفيذ الإجراء: '+str(result.get('error') or 'لم تقبل أداة الكمبيوتر الإجراء.')
             if name=='list_windows':return '\n'.join(w['title'] for w in result['windows']) or 'لا توجد نوافذ مستخدم ظاهرة.'
-            return ('فتحت بحثاً عن اسم الصفحة، اختر النتيجة المطلوبة من الشاشة. ' if args.get('search') else '')+str(result.get('result') or 'أُرسل الإجراء إلى النافذة المحددة. راقب الشاشة للتأكد من النتيجة.')
+            return ('طلبت فتح نتائج البحث؛ اختر النتيجة المطلوبة من الشاشة. ' if args.get('search') else '')+str(result.get('result') or 'أُرسل الإجراء إلى الكمبيوتر. راقب الشاشة للتأكد من النتيجة.')
         except Exception as exc:return 'تعذر تنفيذ الإجراء: '+str(exc)
     observation = _view(_observe(desktop))
     messages = [{'role': 'system', 'content': (
@@ -132,7 +154,7 @@ def run_desktop_task(runtime, desktop, instruction, publish, *, max_steps=24, fi
         name, args = call.get('name'), call.get('arguments') or {}
         if desktop.cancel.is_set() or time.monotonic() > deadline:
             return 'أُوقفت المهمة قبل الخطوة التالية.'
-        publish(f'خطوة {step + 1}: {name}')
+        publish(f'خطوة {step + 1}: {_progress_label(name)}')
         try:
             if name == 'observe_desktop': result = _view(_observe(desktop),max(0,min(120,int(args.get('offset',0)))))
             elif name == 'click_element': result = desktop.click_element(args.get('id'))
@@ -174,6 +196,10 @@ def run_desktop_task(runtime, desktop, instruction, publish, *, max_steps=24, fi
                 result['observation'] = _view(_observe(desktop))
         except Exception as exc:
             result = {'ok': False, 'error': str(exc)}
+        if result.get('ok') is False:
+            publish(f'الخطوة {step + 1} تعذرت: '+str(result.get('error') or 'خطأ غير معروف')[:160])
+        elif name not in {'observe_desktop','list_files','list_windows','list_browser_tabs','list_applications'}:
+            publish(f'الخطوة {step + 1} أُرسلت للكمبيوتر؛ جاري فحص النتيجة')
         read_only={'observe_desktop','list_files','send_file_to_phone','list_windows','list_browser_tabs','list_applications'}
         if name not in read_only:
             last_action_failure=str(result.get('error') or 'أداة الكمبيوتر لم تنفّذ الإجراء.') if result.get('ok') is False else None

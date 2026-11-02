@@ -1,12 +1,9 @@
-YourAssistantAgent - GitHub Desktop Actions repair
+FIX FOR GitHub Actions run 41505278135
 
-1. In GitHub Desktop: Repository > Show in Explorer.
-2. Copy APPLY-FIX.bat and APPLY-FIX.ps1 into that repository folder, next to android and .github.
-3. Double-click APPLY-FIX.bat.
-4. In GitHub Desktop, Commit to main and Push origin.
+1. Open GitHub Desktop > Repository > Show in Explorer.
+2. Extract this ZIP directly into the repository root, merging .github and replacing build-windows.yml.
+3. Double-click REMOVE-DUPLICATE.bat to delete the duplicate workflow.
+4. In GitHub Desktop confirm the modified build-windows.yml AND deleted android-female-voice.yml appear under Changes.
+5. Commit and Push origin.
 
-This fixes two errors from run 41505278135:
-- Removes duplicate android-female-voice.yml (and old windows-build.yml if present).
-- Installs onnx==1.17.0 in the Android job in build-windows.yml.
-
-This does not guarantee the Android model conversion or APK runtime will work; check the next Actions run.
+This fixes the confirmed Windows duplicate workflow check and missing Python onnx module in the canonical Android job. New build errors may still occur.

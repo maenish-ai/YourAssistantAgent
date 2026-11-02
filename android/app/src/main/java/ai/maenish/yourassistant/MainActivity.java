@@ -2,6 +2,7 @@ package ai.maenish.yourassistant;
 
 import android.app.Activity;
 import android.speech.tts.TextToSpeech;
+import android.speech.tts.Voice;
 import android.speech.tts.UtteranceProgressListener;
 import com.google.zxing.integration.android.IntentIntegrator;
 import com.google.zxing.integration.android.IntentResult;
@@ -57,6 +58,8 @@ public final class MainActivity extends Activity {
     private boolean recordAfterPermission;
     private Button micButton, callButton;
     private TextToSpeech voice;
+    private String activeTtsEngine="";
+    private boolean ttsInitializing=false;
     private boolean callMode=false, waitingForReply=false, speaking=false;
     private long lastSpeechMs=0, listeningSinceMs=0;
     private final Runnable silenceDetector=new Runnable(){
@@ -86,17 +89,7 @@ public final class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         credentials = new SecureStore(this);
         buildViews();
-        voice=new TextToSpeech(this, result->{
-            if(result==TextToSpeech.SUCCESS){
-                voice.setLanguage(new Locale("ar"));
-                voice.setSpeechRate(1.0f);
-                voice.setOnUtteranceProgressListener(new UtteranceProgressListener(){
-                    @Override public void onStart(String id){main.post(()->speaking=true);}
-                    @Override public void onDone(String id){main.post(()->{speaking=false;if(callMode&&!waitingForReply)startCallListening();});}
-                    @Override public void onError(String id){main.post(()->{speaking=false;if(callMode&&!waitingForReply)startCallListening();});}
-                });
-            }
-        });
+        initializeVoiceEngine();
         dictation=new PhoneDictation(this,new PhoneDictation.Listener(){
             public void recording(boolean active){micButton.setText(active?"إنهاء التسجيل":"🎙 إملاء صوتي");if(active)status.setText(callMode?"مكالمة مباشرة • تحدث الآن، وسأتوقف عند نهاية كلامك":"أسجل صوتك… اضغط إنهاء التسجيل؛ النص يرجع للمراجعة قبل الإرسال.");updateButtons();}
             public void ready(File audio){uploadDictation(audio);}
@@ -161,6 +154,8 @@ public final class MainActivity extends Activity {
         micButton=AppUi.button(this,"🎙 إملاء صوتي",this::toggleDictation,false);
         callButton=AppUi.button(this,"☎ بدء محادثة صوتية",this::toggleCall,false);
         root.addView(callButton,AppUi.space(this));
+        root.addView(AppUi.button(this,"🔊 اختيار صوت موظفة طبيعي من الهاتف",
+            this::openVoiceSettings,false),AppUi.space(this));
         root.addView(AppUi.label(this,"المحادثة الذكية تستخدم Groq؛ التحكم اليدوي والملفات لهما أزرار منفصلة.",11,true));
         sendButton=button("إرسال الطلب",this::sendText);LinearLayout sendRow=row();sendRow.addView(micButton,weighted());sendRow.addView(sendButton,weighted());root.addView(sendRow,AppUi.space(this));
     }
@@ -594,6 +589,70 @@ public final class MainActivity extends Activity {
         });
     }
 
+    // Prefer a locally installed high-quality Arabic voice. This does not install
+    // a new voice engine or guarantee a Jordanian accent.
+    // Uses the phone's installed neural TTS engine (e.g. HayaiTTS) when
+    // selected in Android's system settings. No API key or cloud TTS required.
+    private void initializeVoiceEngine(){
+        if(ttsInitializing)return;
+        ttsInitializing=true;
+        if(voice!=null){voice.stop();voice.shutdown();voice=null;}
+        voice=new TextToSpeech(this, result->main.post(()->{
+            ttsInitializing=false;
+            if(destroyed)return;
+            if(result!=TextToSpeech.SUCCESS){
+                status.setText("تعذر تشغيل محرك الصوت. تحقق من إعدادات تحويل النص إلى كلام.");
+                return;
+            }
+            activeTtsEngine=voice.getDefaultEngine();
+            configureArabicVoice();
+            voice.setOnUtteranceProgressListener(new UtteranceProgressListener(){
+                @Override public void onStart(String id){main.post(()->speaking=true);}
+                @Override public void onDone(String id){main.post(()->{
+                    speaking=false;if(callMode&&!waitingForReply)startCallListening();
+                });}
+                @Override public void onError(String id){main.post(()->{
+                    speaking=false;if(callMode&&!waitingForReply)startCallListening();
+                });}
+            });
+        }));
+    }
+
+    private void openVoiceSettings(){
+        if(callMode)endCall();
+        try {
+            startActivity(new Intent("com.android.settings.TTS_SETTINGS"));
+        }catch(Exception e){
+            status.setText("افتح إعدادات الهاتف ← تحويل النص إلى كلام، واختر محرك الصوت العصبي.");
+        }
+    }
+
+    private void configureArabicVoice(){
+        if(voice==null)return;
+        Locale preferred=new Locale("ar","JO");
+        int available=voice.setLanguage(preferred);
+        if(available==TextToSpeech.LANG_MISSING_DATA || available==TextToSpeech.LANG_NOT_SUPPORTED)
+            voice.setLanguage(new Locale("ar"));
+        Voice best=null;
+        int bestScore=Integer.MIN_VALUE;
+        try {
+            java.util.Set<Voice> voices=voice.getVoices();
+            if(voices!=null)for(Voice candidate:voices){
+                Locale locale=candidate.getLocale();
+                if(locale==null || !"ar".equals(locale.getLanguage()))continue;
+                int score=0;
+                if("JO".equalsIgnoreCase(locale.getCountry()))score+=100;
+                else if("SA".equalsIgnoreCase(locale.getCountry()))score+=20;
+                if(!candidate.isNetworkConnectionRequired())score+=10;
+                score+=candidate.getQuality()/10; // higher quality values are better
+                if(score>bestScore){best=candidate;bestScore=score;}
+            }
+            if(best!=null)voice.setVoice(best);
+        } catch(Exception ignored) { /* Retain engine default if voice discovery fails. */ }
+        voice.setSpeechRate(0.96f);
+        voice.setPitch(1.0f);
+    }
+
     private void toggleCall(){
         if(callMode){endCall();status.setText("انتهت المكالمة. يمكنك متابعة الكتابة.");return;}
         if(!connected||!dictationAllowed)return;
@@ -677,6 +736,12 @@ public final class MainActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        if(voice!=null && !ttsInitializing){
+            String engine=android.provider.Settings.Secure.getString(
+                getContentResolver(),"tts_default_synth");
+            if(engine!=null && !engine.equals(activeTtsEngine))initializeVoiceEngine();
+        }
+
         resumed = true;
         if(pendingDictationId!=null){main.removeCallbacks(dictationTimeout);main.postDelayed(dictationTimeout,90000);}
         if(recordAfterPermission&&connected&&!busy&&pendingDictationId==null){recordAfterPermission=false;dictation.start();}

@@ -69,7 +69,7 @@ class MobileServer:
 
     def publish(self, text: str, approval_token: str | None = None, expires_at: float | None = None,
                 clear_approval: bool = False, download_path=None, download_name=None,
-                dictation_id=None,dictation_text=None,dictation_error=None) -> dict:
+                dictation_id=None,dictation_text=None,dictation_error=None, progress=None) -> dict:
         if len(str(text)) > 65536:
             raise MobileServerError('Android message exceeds event limit')
         if approval_token is not None and not _NONCE.fullmatch(approval_token):
@@ -81,6 +81,14 @@ class MobileServer:
             self._event_id += 1
             event = {'id': self._event_id, 'type': 'approval' if approval_token else 'message',
                      'text': str(text), 'created_at': time.time()}
+            if progress is not None:
+                if not isinstance(progress, dict):
+                    raise MobileServerError('Invalid task progress')
+                state = progress.get('state')
+                if state not in ('started', 'working', 'done', 'failed', 'stopped'):
+                    raise MobileServerError('Invalid task progress state')
+                event['type'] = 'progress'
+                event['progress'] = {'state': state, 'step': max(0, min(100, int(progress.get('step', 0))))}
             if clear_approval:
                 event['clear_approval'] = True
             if download_path is not None:

@@ -260,3 +260,26 @@ assert ('scheduling is disabled' in result.text) is (not enabled)
                             cwd=root, env={**os.environ, 'PYTHONPATH': str(root / 'src')},
                             capture_output=True, text=True, timeout=20)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_busy_preview_reports_active_step_without_misdiagnosing_login(setup):
+    from types import SimpleNamespace
+    from yaa_lite.personal_assistant_v220 import _campaign_preview
+    db, settings, service, browser = setup
+    session = db.create_session('hammer')
+    events = []
+    controller = SimpleNamespace(db=db, settings=settings, facebook=service,
+                                 t=lambda ar, en: en,
+                                 _activity=lambda *args: events.append(args))
+    service._current_step = 'sharing_group_2'
+    service._exec_lock.acquire()
+    try:
+        reply = _campaign_preview(controller, 'Share post',
+                                  {'source_page_url': 'https://www.facebook.com/page'}, session)
+    finally:
+        service._exec_lock.release()
+    assert 'busy with another task' in reply.text
+    assert 'sharing_group_2' in reply.text
+    assert 'Sign in' not in reply.text
+    assert db.get_pending_action(session) is None
+    assert any(event[0] == 'facebook_preview_busy' for event in events)

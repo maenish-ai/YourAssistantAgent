@@ -313,7 +313,16 @@ public final class MainActivity extends Activity {
             if (id <= cursor) continue;
             if (event.optBoolean("clear_approval", false)) disableApprovals();
             String text = event.optString("text", "");
-            if("dictation".equals(event.optString("type")))applyDictation(event);
+            if("progress".equals(event.optString("type"))) {
+                JSONObject progress = event.optJSONObject("progress");
+                String state = progress == null ? "working" : progress.optString("state", "working");
+                String label = "done".equals(state) ? "✓ اكتملت المهمة" :
+                        "failed".equals(state) ? "⚠ تعذرت المهمة" :
+                        "stopped".equals(state) ? "■ توقفت المهمة" :
+                        "started".equals(state) ? "▶ بدأت المهمة" : "◷ جاري التنفيذ";
+                appendText(label + "\n" + text, "تقدم المهمة");
+            }
+            else if("dictation".equals(event.optString("type")))applyDictation(event);
             else if ("approval".equals(event.optString("type"))) showApproval(event, text);
             else appendText(text, "المساعد");
             if (event.has("download_path")) {

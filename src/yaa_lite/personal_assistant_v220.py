@@ -459,9 +459,27 @@ def _campaign_preview(controller, user_text: str, args: dict, session_id: int, s
             raise ValueError('The publishing preview did not return concrete posts and groups')
     except Exception as exc:
         controller.db.clear_pending_action(session_id)
+        # A busy execution lock is not a login failure. Do not send the user
+        # to reauthenticate when a previous publishing job is still active.
+        busy = isinstance(exc, RuntimeError) and str(exc).startswith('Another Facebook task is running')
+        if busy:
+            current = controller.facebook.current_status() if hasattr(controller.facebook, 'current_status') else {}
+            step = str(current.get('step') or 'unknown')
+            controller._activity('facebook_preview_busy', f'current_step={step}', status,
+                                 controller.t('Facebook مشغول بمهمة أخرى', 'Facebook is busy with another task'))
+            return AgentResponse(controller.t(
+                f'فيسبوك مشغول بمهمة أخرى حاليًا (الخطوة: {step}). انتظر اكتمالها ثم أعد طلب المعاينة. لم يتم نشر أي شيء من هذا الطلب.',
+                f'Facebook is busy with another task (step: {step}). Wait for it to finish and retry the preview. Nothing was published by this request.',
+            ), used_model=True, used_tools=True, detail=str(exc))
+        login_issue = any(term in str(exc).lower() for term in ('sign-in', 'sign in', 'login', 'logged in', 'authentication'))
+        if login_issue:
+            return AgentResponse(controller.t(
+                f'تعذر تجهيز معاينة النشر: {exc}\nلم يتم نشر شيء. سجّل الدخول في متصفح النشر المُدار ثم حاول مجددًا.',
+                f'Could not prepare the publishing preview: {exc}\nNothing was published. Sign in to the managed publishing browser and retry.',
+            ), used_model=True, used_tools=True, detail=str(exc))
         return AgentResponse(controller.t(
-            f'تعذر تجهيز معاينة النشر: {exc}\nلم يتم نشر شيء. قد تحتاج تسجيل الدخول في متصفح النشر المُدار؛ اتصال إضافة المتصفح وحده لا يكفي.',
-            f'Could not prepare the publishing preview: {exc}\nNothing was published. Sign in to the managed publishing browser if needed; an extension connection alone is insufficient.',
+            f'تعذر تجهيز معاينة النشر: {exc}\nلم يتم نشر شيء. تحقق من التفاصيل؛ تسجيل الدخول مطلوب فقط إذا كانت المشكلة في الجلسة.',
+            f'Could not prepare the publishing preview: {exc}\nNothing was published. Check the error details; sign-in is needed only if the session is the problem.',
         ), used_model=True, used_tools=True, detail=str(exc))
     name = str(args.get('name') or 'Facebook campaign')[:120]
     plan = {

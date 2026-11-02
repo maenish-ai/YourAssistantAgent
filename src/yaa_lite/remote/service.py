@@ -305,7 +305,6 @@ class RemoteAssistant:
                 from .desktop_agent import run_desktop_task
                 self.check_desktop()
                 if not getattr(self.settings,'remote_ai_enabled',False):raise ValueError('Computer AI is disabled')
-                import secrets
                 task_id = secrets.token_urlsafe(9)
                 self.publish('بدأ تنفيذ المهمة على الكمبيوتر', progress={'state':'started','step':0,'task_id':task_id})
                 def report_step(message):

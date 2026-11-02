@@ -1,5 +1,5 @@
 #define MyAppName "Your Assistant Agent"
-#define MyAppVersion "6.0.0-dev"
+#define MyAppVersion "6.0.0"
 #define MyAppPublisher "Your Assistant Agent"
 #define MyAppExeName "YourAssistantAgent.exe"
 #define MyAppURL "https://github.com/maenish-ai/YourAssistantAgent"
@@ -8,7 +8,7 @@
 AppId={{C82F4E4A-719F-45A5-8CF9-8457B108A140}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
-AppVerName={#MyAppName} {#MyAppVersion}
+AppVerName={#MyAppName} {#MyAppVersion}-dev
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}

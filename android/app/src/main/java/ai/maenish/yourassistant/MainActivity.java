@@ -58,6 +58,7 @@ public final class MainActivity extends Activity {
     private boolean recordAfterPermission;
     private Button micButton, callButton;
     private TextToSpeech voice;
+    private BundledFemaleVoice bundledVoice;
     private String activeTtsEngine="";
     private boolean ttsInitializing=false;
     private boolean callMode=false, waitingForReply=false, speaking=false;
@@ -89,6 +90,12 @@ public final class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         credentials = new SecureStore(this);
         buildViews();
+        bundledVoice=new BundledFemaleVoice(this, main, new BundledFemaleVoice.Listener(){
+            public void onStart(){speaking=true;}
+            public void onDone(){speaking=false;if(callMode&&!waitingForReply)startCallListening();}
+            public void onError(String reason){status.setText("تعذر تشغيل الصوت المحلي: "+reason);}
+        });
+        bundledVoice.initialize();
         initializeVoiceEngine();
         dictation=new PhoneDictation(this,new PhoneDictation.Listener(){
             public void recording(boolean active){micButton.setText(active?"إنهاء التسجيل":"🎙 إملاء صوتي");if(active)status.setText(callMode?"مكالمة مباشرة • تحدث الآن، وسأتوقف عند نهاية كلامك":"أسجل صوتك… اضغط إنهاء التسجيل؛ النص يرجع للمراجعة قبل الإرسال.");updateButtons();}
@@ -666,6 +673,10 @@ public final class MainActivity extends Activity {
         speaking=true;
         String clean=message.replaceAll("https?://\\S+","رابط");
         if(clean.length()>1200)clean=clean.substring(0,1200);
+        if(bundledVoice!=null && bundledVoice.ready()){
+            bundledVoice.speak(clean);
+            return;
+        }
         int result=voice.speak(clean,TextToSpeech.QUEUE_FLUSH,null,"reply-"+System.nanoTime());
         if(result==TextToSpeech.ERROR){speaking=false;if(!waitingForReply)startCallListening();}
     }
@@ -680,6 +691,7 @@ public final class MainActivity extends Activity {
     private void endCall(){
         callMode=false;waitingForReply=false;speaking=false;
         main.removeCallbacks(silenceDetector);
+        if(bundledVoice!=null)bundledVoice.stop();
         if(voice!=null)voice.stop();
         if(dictation!=null&&dictation.active())dictation.cancel();
         if(callButton!=null)updateButtons();
@@ -762,6 +774,7 @@ public final class MainActivity extends Activity {
     @Override protected void onDestroy() {
         destroyed = true;
         if(dictation!=null)dictation.cancel();
+        if(bundledVoice!=null)bundledVoice.close();
         if(voice!=null){voice.stop();voice.shutdown();}
         ++generation;
         main.removeCallbacksAndMessages(null);

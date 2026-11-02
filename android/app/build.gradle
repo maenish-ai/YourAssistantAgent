@@ -1,4 +1,4 @@
-plugins { id 'com.android.application' }
+plugins { id 'com.android.application'; id 'org.jetbrains.kotlin.android' }
 
 android {
     namespace 'ai.maenish.yourassistant'
@@ -7,9 +7,10 @@ android {
         applicationId 'ai.maenish.yourassistant'
         minSdk 26
         targetSdk 35
-        versionCode 11
-        versionName '6.0.0-dev'
+        versionCode 10
+        versionName '1.7.0'
     }
+    kotlinOptions { jvmTarget = '17' }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
@@ -39,6 +40,7 @@ android {
 }
 
 dependencies {
+    implementation 'com.xdcobra.sherpa:sherpa-onnx:1.13.8-1'
     // AndroidX pulls Kotlin transitively even though this app is Java. Align
     // the pre/post-1.8 JDK stdlib artifacts to avoid duplicate APK classes.
     implementation platform('org.jetbrains.kotlin:kotlin-bom:1.8.22')
@@ -50,3 +52,11 @@ dependencies {
     testImplementation 'junit:junit:4.13.2'
     testImplementation 'org.robolectric:robolectric:4.14.1'
 }
+
+// Fetch + convert the Arabic female Piper model before Android packages assets.
+// Build fails if the model or phonemizer data cannot be prepared.
+tasks.register('prepareBundledFemaleVoice', Exec) {
+    workingDir rootProject.projectDir.parentFile
+    commandLine 'python3', 'tools/prepare_bundled_female_voice.py'
+}
+preBuild.dependsOn tasks.named('prepareBundledFemaleVoice')

@@ -15,6 +15,7 @@ final class PhoneDictation {
         if(old!=null)for(File item:old)if(System.currentTimeMillis()-item.lastModified()>600000)item.delete();
     }
     boolean active(){return recorder!=null;}
+    int amplitude(){try{return recorder==null?0:recorder.getMaxAmplitude();}catch(RuntimeException e){return 0;}}
     void start(){
         if(active())return;
         try{

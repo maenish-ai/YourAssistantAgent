@@ -1,6 +1,8 @@
 package ai.maenish.yourassistant;
 
 import android.app.Activity;
+import android.speech.tts.TextToSpeech;
+import android.speech.tts.UtteranceProgressListener;
 import com.google.zxing.integration.android.IntentIntegrator;
 import com.google.zxing.integration.android.IntentResult;
 import android.content.Intent;
@@ -53,10 +55,24 @@ public final class MainActivity extends Activity {
     private boolean desktopAllowed, filesAllowed, aiAllowed;
     private boolean dictationAllowed;
     private boolean recordAfterPermission;
-    private Button micButton;
+    private Button micButton, callButton;
+    private TextToSpeech voice;
+    private boolean callMode=false, waitingForReply=false, speaking=false;
+    private long lastSpeechMs=0, listeningSinceMs=0;
+    private final Runnable silenceDetector=new Runnable(){
+        @Override public void run(){
+            if(!callMode||dictation==null||!dictation.active())return;
+            long now=android.os.SystemClock.elapsedRealtime();
+            int level=dictation.amplitude();
+            if(level>900)lastSpeechMs=now;
+            if(now-listeningSinceMs>1800 && lastSpeechMs>0 && now-lastSpeechMs>1250){dictation.finish();return;}
+            if(now-listeningSinceMs>12000){dictation.finish();return;}
+            main.postDelayed(this,150);
+        }
+    };
     private PhoneDictation dictation;
     private String pendingDictationId;
-    private final Runnable dictationTimeout=()->{if(pendingDictationId!=null){pendingDictationId=null;status.setText("تأخر تفريغ الصوت. لم يُرسل أي أمر؛ يمكنك إعادة التسجيل.");updateButtons();}};
+    private final Runnable dictationTimeout=()->{if(pendingDictationId!=null){pendingDictationId=null;status.setText("تأخر تفريغ الصوت. لم يُرسل أي أمر؛ يمكنك إعادة التسجيل.");if(callMode)main.postDelayed(this::startCallListening,600);updateButtons();}};
     private LinearLayout connectionFields, transcript;
     private ScrollView scroll;
     private boolean resumed, destroyed, connected, busy, polling;
@@ -70,8 +86,19 @@ public final class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         credentials = new SecureStore(this);
         buildViews();
+        voice=new TextToSpeech(this, result->{
+            if(result==TextToSpeech.SUCCESS){
+                voice.setLanguage(new Locale("ar"));
+                voice.setSpeechRate(1.0f);
+                voice.setOnUtteranceProgressListener(new UtteranceProgressListener(){
+                    @Override public void onStart(String id){main.post(()->speaking=true);}
+                    @Override public void onDone(String id){main.post(()->{speaking=false;if(callMode&&!waitingForReply)startCallListening();});}
+                    @Override public void onError(String id){main.post(()->{speaking=false;if(callMode&&!waitingForReply)startCallListening();});}
+                });
+            }
+        });
         dictation=new PhoneDictation(this,new PhoneDictation.Listener(){
-            public void recording(boolean active){micButton.setText(active?"إنهاء التسجيل":"🎙 إملاء صوتي");if(active)status.setText("أسجل صوتك… اضغط إنهاء التسجيل؛ النص يرجع للمراجعة قبل الإرسال.");updateButtons();}
+            public void recording(boolean active){micButton.setText(active?"إنهاء التسجيل":"🎙 إملاء صوتي");if(active)status.setText(callMode?"مكالمة مباشرة • تحدث الآن، وسأتوقف عند نهاية كلامك":"أسجل صوتك… اضغط إنهاء التسجيل؛ النص يرجع للمراجعة قبل الإرسال.");updateButtons();}
             public void ready(File audio){uploadDictation(audio);}
             public void error(String message){status.setText(message);updateButtons();}
         });
@@ -132,6 +159,8 @@ public final class MainActivity extends Activity {
         composer=AppUi.field(this,"اطلب من مساعدك…");composer.setMinLines(1);composer.setMaxLines(3);composer.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         root.addView(composer,AppUi.space(this));
         micButton=AppUi.button(this,"🎙 إملاء صوتي",this::toggleDictation,false);
+        callButton=AppUi.button(this,"☎ بدء محادثة صوتية",this::toggleCall,false);
+        root.addView(callButton,AppUi.space(this));
         root.addView(AppUi.label(this,"المحادثة الذكية تستخدم Groq؛ التحكم اليدوي والملفات لهما أزرار منفصلة.",11,true));
         sendButton=button("إرسال الطلب",this::sendText);LinearLayout sendRow=row();sendRow.addView(micButton,weighted());sendRow.addView(sendButton,weighted());root.addView(sendRow,AppUi.space(this));
     }
@@ -179,7 +208,8 @@ public final class MainActivity extends Activity {
         attachButton.setEnabled(connected && !busy&&!voiceActive&&!voiceWaiting);
         newChatButton.setEnabled(connected && !busy&&!voiceActive&&!voiceWaiting);
         diagnosticsButton.setEnabled(connected && !busy&&!voiceActive&&!voiceWaiting);
-        micButton.setEnabled(voiceActive||(connected&&dictationAllowed&&!busy&&!voiceWaiting));
+        micButton.setEnabled(!callMode&&(voiceActive||(connected&&dictationAllowed&&!busy&&!voiceWaiting)));
+        if(callButton!=null){callButton.setEnabled(callMode||(connected&&dictationAllowed));callButton.setText(callMode?"■ إنهاء المكالمة":"☎ بدء محادثة صوتية");}
         composer.setEnabled(connected && !busy);
         connectButton.setEnabled(!busy);
         disconnectButton.setEnabled(api != null || allowReconnect);
@@ -245,6 +275,7 @@ public final class MainActivity extends Activity {
 
     private void disconnect() { disconnect(true); }
     private void disconnect(boolean userRequested) {
+        endCall();
         if(dictation!=null)dictation.cancel();
         if(userRequested){pendingDictationId=null;recordAfterPermission=false;main.removeCallbacks(dictationTimeout);}
         if(userRequested){allowReconnect=false;credentials.autoConnect(false);}
@@ -320,17 +351,11 @@ public final class MainActivity extends Activity {
                         "failed".equals(state) ? "⚠ تعذرت المهمة" :
                         "stopped".equals(state) ? "■ توقفت المهمة" :
                         "started".equals(state) ? "▶ بدأت المهمة" : "◷ جاري التنفيذ";
-                String taskId = progress == null ? "" : progress.optString("task_id", "");
-                int step = progress == null ? 0 : progress.optInt("step", 0);
-                String detail = taskId.isEmpty() ? "" : " • مهمة " + taskId.substring(0, Math.min(8, taskId.length()));
-                String number = step > 0 ? " • خطوة " + step : "";
-                String time = DateFormat.getTimeInstance(DateFormat.SHORT, Locale.getDefault())
-                        .format(new Date((long)(event.optDouble("created_at", System.currentTimeMillis()/1000.0)*1000)));
-                appendText(time + " • " + label + detail + number + "\n" + text, "تقدم المهمة");
+                appendText(label + "\n" + text, "تقدم المهمة");
             }
             else if("dictation".equals(event.optString("type")))applyDictation(event);
-            else if ("approval".equals(event.optString("type"))) showApproval(event, text);
-            else appendText(text, "المساعد");
+            else if ("approval".equals(event.optString("type"))) {showApproval(event, text);if(callMode){waitingForReply=true;say("هناك طلب موافقة على الشاشة. راجعه واضغط موافق أو إلغاء.");}}
+            else {appendText(text, "المساعد");if(callMode && !text.isEmpty() && !"progress".equals(event.optString("type"))){waitingForReply=false;say(text);}}
             if (event.has("download_path")) {
                 Button download = button("حفظ الملف على الهاتف", () -> {
                     if (connected) startActivity(new Intent(this, FilesActivity.class)
@@ -569,6 +594,37 @@ public final class MainActivity extends Activity {
         });
     }
 
+    private void toggleCall(){
+        if(callMode){endCall();status.setText("انتهت المكالمة. يمكنك متابعة الكتابة.");return;}
+        if(!connected||!dictationAllowed)return;
+        callMode=true;waitingForReply=false;updateButtons();
+        say("أهلاً، أنا جاهزة. احكي لي شو بدك أعمل على الكمبيوتر.");
+    }
+    private void say(String message){
+        if(!callMode||voice==null)return;
+        if(dictation!=null&&dictation.active())dictation.cancel();
+        main.removeCallbacks(silenceDetector);
+        speaking=true;
+        String clean=message.replaceAll("https?://\\S+","رابط");
+        if(clean.length()>1200)clean=clean.substring(0,1200);
+        int result=voice.speak(clean,TextToSpeech.QUEUE_FLUSH,null,"reply-"+System.nanoTime());
+        if(result==TextToSpeech.ERROR){speaking=false;if(!waitingForReply)startCallListening();}
+    }
+    private void startCallListening(){
+        if(!callMode||!resumed||!connected||busy||speaking||waitingForReply||pendingDictationId!=null)return;
+        if(checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)!=android.content.pm.PackageManager.PERMISSION_GRANTED){
+            requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO},RECORD_PERMISSION);return;
+        }
+        dictation.start();listeningSinceMs=android.os.SystemClock.elapsedRealtime();lastSpeechMs=0;
+        main.removeCallbacks(silenceDetector);main.postDelayed(silenceDetector,200);
+    }
+    private void endCall(){
+        callMode=false;waitingForReply=false;speaking=false;
+        main.removeCallbacks(silenceDetector);
+        if(voice!=null)voice.stop();
+        if(dictation!=null&&dictation.active())dictation.cancel();
+        if(callButton!=null)updateButtons();
+    }
     private void toggleDictation(){
         if(dictation.active()){dictation.finish();return;}
         if(!connected||!dictationAllowed||busy||pendingDictationId!=null)return;
@@ -583,7 +639,7 @@ public final class MainActivity extends Activity {
         if(code!=RECORD_PERMISSION)return;
         if(results.length>0&&results[0]==android.content.pm.PackageManager.PERMISSION_GRANTED){
             recordAfterPermission=true;
-            if(resumed&&connected&&!busy&&pendingDictationId==null){recordAfterPermission=false;dictation.start();}
+            if(resumed&&connected&&!busy&&pendingDictationId==null){recordAfterPermission=false;if(callMode)startCallListening();else dictation.start();}
         }else status.setText("لم يُسمح بالميكروفون. فعّل إذن التسجيل من إعدادات التطبيق؛ يمكنك الاستمرار بالكتابة.");
     }
 
@@ -596,7 +652,7 @@ public final class MainActivity extends Activity {
         network.execute(()->{
             try{
                 client.dictation(audio,id);
-                main.post(()->{if(!current(requestGeneration))return;busy=false;status.setText("وصل التسجيل. أنتظر النص من Groq؛ لن يُرسل كطلب تلقائياً.");updateButtons();schedulePoll();});
+                main.post(()->{if(!current(requestGeneration))return;busy=false;status.setText(callMode?"أحلل كلامك عبر Groq…":"وصل التسجيل. أنتظر النص من Groq؛ لن يُرسل كطلب تلقائياً.");updateButtons();schedulePoll();});
             }catch(Exception e){
                 main.post(()->{if(!current(requestGeneration))return;busy=false;pendingDictationId=null;main.removeCallbacks(dictationTimeout);status.setText(e instanceof ApiClient.ApiException?e.getMessage():"تعذر إرسال التسجيل؛ لم يُرسل أمر للمساعد.");updateButtons();});
             }finally{audio.delete();}
@@ -608,9 +664,14 @@ public final class MainActivity extends Activity {
         pendingDictationId=null;main.removeCallbacks(dictationTimeout);
         String text=event.optString("dictation_text","").trim();
         if(!text.isEmpty()){
-            String before=composer.getText().toString();composer.append((before.isEmpty()||Character.isWhitespace(before.charAt(before.length()-1))?"":" ")+text);
-            composer.setSelection(composer.length());status.setText("راجع النص وعدّله ثم اضغط إرسال. لم يُنفّذ أي أمر صوتي تلقائياً.");
-        }else status.setText(event.optString("dictation_error","لم يصل كلام واضح. أعد التسجيل."));
+            if(callMode){
+                appendText(text,"أنت");waitingForReply=true;
+                try{submit("/v1/messages",new JSONObject().put("text",text),"تم إرسال كلامك إلى Groq؛ أنتظر الرد.",null);}catch(Exception e){waitingForReply=false;status.setText("تعذر إرسال الأمر الصوتي.");}
+            }else{
+                String before=composer.getText().toString();composer.append((before.isEmpty()||Character.isWhitespace(before.charAt(before.length()-1))?"":" ")+text);
+                composer.setSelection(composer.length());status.setText("راجع النص وعدّله ثم اضغط إرسال. لم يُنفّذ أي أمر صوتي تلقائياً.");
+            }
+        }else {status.setText(event.optString("dictation_error","لم يصل كلام واضح. أعد التسجيل."));if(callMode)main.postDelayed(this::startCallListening,600);}
         updateButtons();
     }
 
@@ -625,6 +686,7 @@ public final class MainActivity extends Activity {
 
     @Override protected void onPause() {
         main.removeCallbacks(dictationTimeout);
+        if(callMode)endCall();
         if(dictation!=null&&dictation.active()){dictation.cancel();status.setText("أُلغي التسجيل لأن التطبيق انتقل للخلفية؛ لم يُرسل الصوت.");}
         resumed = false;
         main.removeCallbacks(reconnect);
@@ -635,6 +697,7 @@ public final class MainActivity extends Activity {
     @Override protected void onDestroy() {
         destroyed = true;
         if(dictation!=null)dictation.cancel();
+        if(voice!=null){voice.stop();voice.shutdown();}
         ++generation;
         main.removeCallbacksAndMessages(null);
         if (api != null) api.close();

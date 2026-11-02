@@ -1,4 +1,4 @@
-# Your Assistant Agent 6.0.0-dev (development, not final)
+# Your Assistant Agent 5.2.0
 
 A personal Windows assistant with its own Android 1.7.0 companion, shared branding,
 remote desktop, file transfers and reviewed GitHub/Facebook tools.

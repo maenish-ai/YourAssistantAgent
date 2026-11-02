@@ -22,7 +22,7 @@ VSVersionInfo(
           StringStruct(u'LegalCopyright', u'Copyright (c) 2026 Your Assistant Agent'),
           StringStruct(u'OriginalFilename', u'YourAssistantAgent.exe'),
           StringStruct(u'ProductName', u'Your Assistant Agent'),
-          StringStruct(u'ProductVersion', u'6.0.0-dev'),
+          StringStruct(u'ProductVersion', u'6.0.0'),
         ]
       )
     ]),

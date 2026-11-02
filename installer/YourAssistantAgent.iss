@@ -8,7 +8,7 @@
 AppId={{C82F4E4A-719F-45A5-8CF9-8457B108A140}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
-AppVerName={#MyAppName} {#MyAppVersion}-dev
+AppVerName={#MyAppName} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
@@ -17,7 +17,7 @@ DefaultDirName={localappdata}\Programs\Your Assistant Agent
 DefaultGroupName={#MyAppName}
 UninstallDisplayIcon={app}\{#MyAppExeName}
 OutputDir=..\output
-OutputBaseFilename=YourAssistantAgent-Windows-Setup-v6.0.0-dev
+OutputBaseFilename=YourAssistantAgent-Windows-Setup-v6.0.0
 Compression=lzma2
 SolidCompression=yes
 ArchitecturesAllowed=x64compatible

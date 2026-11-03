@@ -1,8 +1,11 @@
-Windows GitHub Actions red-X repair
+YourAssistantAgent - Windows CI blocker repair
 
-1. Extract both APPLY-WINDOWS-FIX files into the ROOT of your GitHub Desktop repository, next to .git and .github.
-2. Double-click APPLY-WINDOWS-FIX.bat.
-3. In GitHub Desktop, confirm that .github/workflows/android-female-voice.yml is DELETED and build-windows.yml is MODIFIED.
-4. Commit to main and PUSH ORIGIN. Deleting a file locally without pushing does not affect GitHub Actions.
+1) GitHub Desktop > Repository > Show in Explorer.
+2) Extract all ZIP contents into the ROOT of the repository (same folder as .git).
+3) Double-click APPLY-ONCE.bat.
+4) GitHub Desktop > Changes: verify build-windows.yml modified and android-female-voice.yml deleted.
+5) Commit to main, then Push origin.
 
-This patch removes the duplicate workflow and the unnecessary one-workflow-only check. It does not alter the Windows application code. Future CI errors may require separate fixes.
+Why earlier repairs failed: GitHub Actions sees only pushed commits.
+This removes the exact Windows blocking check and duplicate workflow.
+Other Windows build steps may still fail; inspect the next run to confirm.

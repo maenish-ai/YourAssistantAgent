@@ -21,16 +21,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Ignore legacy workflow from triggering commit
-        shell: pwsh
-        run: |
-          Remove-Item ".github\workflows\windows-build.yml" -Force -ErrorAction SilentlyContinue
-          $remaining = @(Get-ChildItem ".github\workflows" -Filter "*.yml" | Select-Object -ExpandProperty Name)
-          Write-Host "Workflow files in build checkout: $($remaining -join ', ')"
-          if ($remaining.Count -ne 1 -or $remaining[0] -ne 'build-windows.yml') {
-            throw "Expected exactly one active workflow: build-windows.yml"
-          }
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'

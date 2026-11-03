@@ -1,33 +1,27 @@
 $ErrorActionPreference = 'Stop'
-try {
-  $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-  $candidates = @($here, (Split-Path -Parent $here), (Get-Location).Path) | Select-Object -Unique
-  $root = $null
-  foreach ($dir in $candidates) {
-    if ($dir -and (Test-Path (Join-Path $dir '.github/workflows/build-windows.yml')) -and (Test-Path (Join-Path $dir 'android'))) { $root = $dir; break }
-  }
-  if (-not $root) { throw 'Place both APPLY-FIX files in the root of YourAssistantAgent (next to the android and .github folders), then double-click APPLY-FIX.bat.' }
-  $path = Join-Path $root '.github/workflows/build-windows.yml'
-  $duplicate = Join-Path $root '.github/workflows/android-female-voice.yml'
-  $legacy = Join-Path $root '.github/workflows/windows-build.yml'
-  $content = [IO.File]::ReadAllText($path)
-  $marker = '      - name: Restore private Android release key when configured'
-  $install = @'
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Install bundled voice model converter
-        run: python -m pip install 'onnx==1.17.0'
-'@
-  if (-not $content.Contains('Install bundled voice model converter')) {
-    if (-not $content.Contains($marker)) { throw 'The Android build step was not found. No changes made.' }
-    $content = $content.Replace($marker, $install + "`n" + $marker)
-  }
-  $backup = $path + '.before-voice-fix.bak'
-  if (-not (Test-Path $backup)) { [IO.File]::WriteAllText($backup, [IO.File]::ReadAllText($path)) }
-  [IO.File]::WriteAllText($path, $content, (New-Object System.Text.UTF8Encoding($false)))
-  if (Test-Path $duplicate) { Remove-Item -LiteralPath $duplicate -Force; Write-Host 'Removed duplicate Android workflow.' }
-  if (Test-Path $legacy) { Remove-Item -LiteralPath $legacy -Force; Write-Host 'Removed legacy Windows workflow.' }
-  Write-Host 'Added ONNX to the canonical Android job.'
-  Write-Host 'Workflow fixed locally. You still must Commit and Push in GitHub Desktop.'
-} catch { Write-Host ('ERROR: ' + $_.Exception.Message) -ForegroundColor Red; exit 1 }
+$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+Set-Location -LiteralPath $root
+$workflow = Join-Path $root '.github\workflows\build-windows.yml'
+$duplicate = Join-Path $root '.github\workflows\android-female-voice.yml'
+if (-not (Test-Path -LiteralPath $workflow)) { throw 'Run this script from the repository root (build-windows.yml not found).' }
+if (-not (Test-Path -LiteralPath (Join-Path $root '.git'))) { throw 'Repository .git not found. Open the correct GitHub Desktop repository.' }
+# Remove the duplicate from the working tree; git stages its deletion below.
+if (Test-Path -LiteralPath $duplicate) {
+  Remove-Item -LiteralPath $duplicate -Force
+  Write-Host 'Removed duplicate Android workflow.' -ForegroundColor Green
+} else {
+  Write-Host 'Duplicate workflow already absent.' -ForegroundColor Yellow
+}
+# Do not alter tests or bypass CI; they should validate the intended repository structure.
+$all = @(Get-ChildItem -LiteralPath (Join-Path $root '.github\workflows') -File | Where-Object { $_.Extension -in @('.yml','.yaml') } | Select-Object -ExpandProperty Name)
+Write-Host ('Remaining workflow files: ' + ($all -join ', '))
+if ($all.Count -ne 1 -or $all[0] -ne 'build-windows.yml') { throw 'Other workflow files remain; review before committing.' }
+& git add -A -- '.github/workflows/android-female-voice.yml'
+if ($LASTEXITCODE -ne 0) { throw 'git add failed' }
+Write-Host 'Git status for workflows:'
+& git status --short -- '.github/workflows'
+if ($LASTEXITCODE -ne 0) { throw 'git status failed' }
+$tracked = @(& git ls-files -- '.github/workflows/android-female-voice.yml')
+if ($tracked.Count -gt 0 -and $tracked[0]) { Write-Host 'Deletion is staged; Git still lists the file until the commit. This is expected.' }
+Write-Host ''
+Write-Host 'NEXT: GitHub Desktop -> Commit to main -> Push origin. Verify the deletion appears in the commit.' -ForegroundColor Cyan

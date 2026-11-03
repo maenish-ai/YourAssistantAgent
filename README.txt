@@ -1,9 +1,8 @@
-FIX FOR GitHub Actions run 41505278135
+Windows GitHub Actions red-X repair
 
-1. Open GitHub Desktop > Repository > Show in Explorer.
-2. Extract this ZIP directly into the repository root, merging .github and replacing build-windows.yml.
-3. Double-click REMOVE-DUPLICATE.bat to delete the duplicate workflow.
-4. In GitHub Desktop confirm the modified build-windows.yml AND deleted android-female-voice.yml appear under Changes.
-5. Commit and Push origin.
+1. Extract both APPLY-WINDOWS-FIX files into the ROOT of your GitHub Desktop repository, next to .git and .github.
+2. Double-click APPLY-WINDOWS-FIX.bat.
+3. In GitHub Desktop, confirm that .github/workflows/android-female-voice.yml is DELETED and build-windows.yml is MODIFIED.
+4. Commit to main and PUSH ORIGIN. Deleting a file locally without pushing does not affect GitHub Actions.
 
-This fixes the confirmed Windows duplicate workflow check and missing Python onnx module in the canonical Android job. New build errors may still occur.
+This patch removes the duplicate workflow and the unnecessary one-workflow-only check. It does not alter the Windows application code. Future CI errors may require separate fixes.

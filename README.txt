@@ -1,6 +1,11 @@
-Android crash-resilience patch for YourAssistantAgent
-1) Extract APPLY-ANDROID-FIX.py and APPLY-ANDROID-FIX.bat into your GitHub Desktop repository root (the folder containing .git and android).
-2) Double-click APPLY-ANDROID-FIX.bat. It must say DONE.
-3) In GitHub Desktop, verify MainActivity.java is modified, Commit to main, Push origin.
-4) Wait for Android build to succeed. Download and install the NEW APK from GitHub Actions artifacts; old installed APK does not change when source code is pushed.
-This addresses unhandled errors in periodic event refresh and async TTS initialization. It is not proof of the underlying device crash cause; Android crash logs and device testing remain necessary to guarantee resolution.
+YourAssistantAgent - Android startup crash mitigation
+
+1. Extract this ZIP.
+2. Copy APPLY-ANDROID-STARTUP-FIX.py and APPLY-ANDROID-STARTUP-FIX.bat into the root of your local YourAssistantAgent GitHub Desktop checkout (same folder as android/).
+3. Double-click APPLY-ANDROID-STARTUP-FIX.bat (Python must be installed).
+4. Confirm DONE, then GitHub Desktop > Commit to main > Push origin.
+5. Wait for Android GitHub Actions build and install NEW APK.
+
+This patch prevents automatic native voice engine startup at app launch and catches unexpected errors during periodic event rendering. It does NOT prove the cause of the crash without Android crash logs.
+
+The bundled female voice is not eagerly initialized by this mitigation. Text chat and QR remain enabled; voice may fall back to Android system TTS when a call is started. This tradeoff is deliberate to isolate startup crashes.

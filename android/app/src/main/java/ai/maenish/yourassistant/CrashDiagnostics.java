@@ -24,6 +24,7 @@ final class CrashDiagnostics {
             .putString("stage","onCreate").putLong("start",System.currentTimeMillis()).commit();
     }
     void stage(String name){prefs.edit().putString("stage",name).apply();}
+    void suspended(){prefs.edit().putBoolean("startup_pending",false).apply();}
     void healthy(){prefs.edit().putBoolean("startup_pending",false).putInt("failures",0).apply();}
     boolean safeMode(){return prefs.getInt("failures",0)>=2 || prefs.getBoolean("force_safe",false);}
     void clearSafeMode(){prefs.edit().putInt("failures",0).putBoolean("force_safe",false).apply();}

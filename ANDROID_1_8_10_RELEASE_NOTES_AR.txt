@@ -1,0 +1,25 @@
+YourAssistantAgent Android 1.8.10 — complete source tree
+
+Fixes made in source:
+- Correct app versionCode=11 / versionName=1.8.10.
+- Correct GitHub Actions debug/release artifact labels to v1.8.10.
+- Delay automatic connection and avoid duplicate scheduled retries.
+- Do not automatically reconnect when Android recreates activity.
+- Defer native voice initialization until requested; use system TTS fallback.
+- Record limited Java crash diagnostics and enable safe mode on repeated interrupted starts.
+- Avoid treating a normal onPause/background event as a failed launch.
+
+IMPORTANT: No Android APK was built or installed in this environment.
+These changes reduce known startup risks but do not prove all crashes are fixed.
+The GitHub workflow must complete and the new APK must be tested on a real device.
+
+To replace your GitHub repository safely:
+1. Make a backup of the current GitHub Desktop clone.
+2. Open Repository > Show in Explorer in GitHub Desktop.
+3. Copy the CONTENTS of this extracted project into the clone root, replacing files.
+4. Do not delete the hidden .git folder.
+5. Commit and Push in GitHub Desktop.
+6. In GitHub Actions, run Build Windows Setup (or wait for the push build).
+7. Download the newly generated Android-Debug-v1.8.10 artifact.
+
+Do not delete your repository on GitHub; that would destroy its history and workflows.

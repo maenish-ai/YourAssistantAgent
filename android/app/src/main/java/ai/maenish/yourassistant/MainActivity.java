@@ -118,8 +118,7 @@ public final class MainActivity extends Activity {
         updateButtons();
         crashDiagnostics.stage("startup_complete");
         main.postDelayed(() -> { if (!destroyed && resumed) crashDiagnostics.healthy(); }, 15000);
-        if (!safeMode && !allowReconnect && savedInstanceState != null && savedInstanceState.getBoolean("was_connected", false)
-                && !tokenField.getText().toString().isEmpty()) main.post(this::connect);
+        // Do not auto-connect on activity recreation; the user can connect manually.
     }
 
     @Override protected void onSaveInstanceState(Bundle state) {
@@ -794,7 +793,8 @@ public final class MainActivity extends Activity {
         if(recordAfterPermission&&connected&&!busy&&pendingDictationId==null){recordAfterPermission=false;dictation.start();}
         if(allowReconnect&&api==null&&!busy){
             crashDiagnostics.stage("auto_connect_scheduled");
-            main.postDelayed(() -> { if(resumed&&!destroyed&&allowReconnect&&api==null&&!busy)connect(); }, 12000);
+            main.removeCallbacks(reconnect);
+            main.postDelayed(reconnect, 12000);
         }
         else schedulePoll();
     }
@@ -806,6 +806,7 @@ public final class MainActivity extends Activity {
         resumed = false;
         main.removeCallbacks(reconnect);
         main.removeCallbacks(poll);
+        if (crashDiagnostics != null) crashDiagnostics.suspended();
         super.onPause();
     }
 

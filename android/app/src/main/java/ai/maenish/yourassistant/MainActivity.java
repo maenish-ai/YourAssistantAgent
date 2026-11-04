@@ -83,20 +83,23 @@ public final class MainActivity extends Activity {
     private int generation;
     private long cursor;
     private boolean allowReconnect;
+    private boolean voiceRequested;
+    private boolean safeMode;
+    private CrashDiagnostics crashDiagnostics;
     private final Runnable reconnect=()->{if(resumed&&!destroyed&&allowReconnect&&api==null&&!busy)connect();};
     private final Runnable poll = this::pollEvents;
 
     @Override public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        crashDiagnostics = new CrashDiagnostics(this);
+        crashDiagnostics.begin();
+        safeMode = crashDiagnostics.safeMode();
+        crashDiagnostics.stage("secure_store");
         credentials = new SecureStore(this);
+        crashDiagnostics.stage("build_views");
         buildViews();
-        bundledVoice=new BundledFemaleVoice(this, main, new BundledFemaleVoice.Listener(){
-            public void onStart(){speaking=true;}
-            public void onDone(){speaking=false;if(callMode&&!waitingForReply)startCallListening();}
-            public void onError(String reason){status.setText("تعذر تشغيل الصوت المحلي: "+reason);}
-        });
-        bundledVoice.initialize();
-        initializeVoiceEngine();
+        // Native offline voice is deliberately lazy: do not load ONNX during app startup.
+        crashDiagnostics.stage("create_dictation");
         dictation=new PhoneDictation(this,new PhoneDictation.Listener(){
             public void recording(boolean active){micButton.setText(active?"إنهاء التسجيل":"🎙 إملاء صوتي");if(active)status.setText(callMode?"مكالمة مباشرة • تحدث الآن، وسأتوقف عند نهاية كلامك":"أسجل صوتك… اضغط إنهاء التسجيل؛ النص يرجع للمراجعة قبل الإرسال.");updateButtons();}
             public void ready(File audio){uploadDictation(audio);}
@@ -110,10 +113,12 @@ public final class MainActivity extends Activity {
             credentials.clear();
             status.setText("تعذر فتح رمز الاقتران المحفوظ. أدخله مجدداً من إعدادات الكمبيوتر.");
         }
-        allowReconnect=credentials.autoConnect() && ApiClient.automaticOrigin(credentials.url());
+        allowReconnect=!safeMode && credentials.autoConnect() && ApiClient.automaticOrigin(credentials.url());
         connectionFields.setVisibility(View.GONE);
         updateButtons();
-        if (!allowReconnect && savedInstanceState != null && savedInstanceState.getBoolean("was_connected", false)
+        crashDiagnostics.stage("startup_complete");
+        main.postDelayed(() -> { if (!destroyed && resumed) crashDiagnostics.healthy(); }, 15000);
+        if (!safeMode && !allowReconnect && savedInstanceState != null && savedInstanceState.getBoolean("was_connected", false)
                 && !tokenField.getText().toString().isEmpty()) main.post(this::connect);
     }
 
@@ -161,10 +166,37 @@ public final class MainActivity extends Activity {
         micButton=AppUi.button(this,"🎙 إملاء صوتي",this::toggleDictation,false);
         callButton=AppUi.button(this,"☎ بدء محادثة صوتية",this::toggleCall,false);
         root.addView(callButton,AppUi.space(this));
+        root.addView(AppUi.button(this,"تقرير أعطال التطبيق",this::showCrashReport,false),AppUi.space(this));
         root.addView(AppUi.button(this,"🔊 اختيار صوت موظفة طبيعي من الهاتف",
             this::openVoiceSettings,false),AppUi.space(this));
         root.addView(AppUi.label(this,"المحادثة الذكية تستخدم Groq؛ التحكم اليدوي والملفات لهما أزرار منفصلة.",11,true));
         sendButton=button("إرسال الطلب",this::sendText);LinearLayout sendRow=row();sendRow.addView(micButton,weighted());sendRow.addView(sendButton,weighted());root.addView(sendRow,AppUi.space(this));
+    }
+
+    private void showCrashReport(){
+        new android.app.AlertDialog.Builder(this).setTitle("تشخيص أعطال Android")
+            .setMessage(crashDiagnostics.report())
+            .setPositiveButton("نسخ التقرير",(d,w)->{
+                android.content.ClipboardManager cb=(android.content.ClipboardManager)getSystemService(CLIPBOARD_SERVICE);
+                if(cb!=null)cb.setPrimaryClip(android.content.ClipData.newPlainText("Android diagnostics",crashDiagnostics.report()));
+            })
+            .setNeutralButton("تشغيل عادي في المرة القادمة",(d,w)->crashDiagnostics.clearSafeMode())
+            .setNegativeButton("إغلاق",null).show();
+    }
+
+    private void ensureVoice(){
+        if(voiceRequested || safeMode) return;
+        voiceRequested=true;
+        crashDiagnostics.stage("voice_user_requested");
+        try {
+            bundledVoice=new BundledFemaleVoice(this,main,new BundledFemaleVoice.Listener(){
+                public void onStart(){speaking=true;}
+                public void onDone(){speaking=false;if(callMode&&!waitingForReply)startCallListening();}
+                public void onError(String reason){if(status!=null)status.setText("تعذر تشغيل الصوت المحلي؛ سيتم استخدام صوت الهاتف.");}
+            });
+            // Do not eagerly load the native ONNX model: system TTS is the stable fallback.
+            initializeVoiceEngine();
+        }catch(Throwable t){crashDiagnostics.failure("voice_setup",t);voiceRequested=false;}
     }
 
     private void scanPairing(){
@@ -219,6 +251,7 @@ public final class MainActivity extends Activity {
     }
 
     private void connect() {
+        crashDiagnostics.stage("connecting");
         final ApiClient client;
         final String url = serverField.getText().toString().trim();
         final String token = tokenField.getText().toString().trim();
@@ -240,6 +273,7 @@ public final class MainActivity extends Activity {
                     if (!current(requestGeneration)) return;
                     try { credentials.save(client.origin(),token); }
                     catch(Exception e){busy=false;connected=false;client.close();api=null;status.setText("تعذر حفظ الاقتران بأمان. أعد المحاولة.");updateButtons();return;}
+                    crashDiagnostics.stage("connected");
                     connected = true;
                     desktopAllowed=permissions.optBoolean("desktop");filesAllowed=permissions.optBoolean("files");aiAllowed=permissions.optBoolean("computer_ai");
                     dictationAllowed=permissions.optBoolean("dictation");
@@ -272,7 +306,7 @@ public final class MainActivity extends Activity {
 
     private void scheduleReconnect(){
         main.removeCallbacks(reconnect);
-        if(allowReconnect&&resumed&&!destroyed&&api==null)main.postDelayed(reconnect,5000);
+        if(allowReconnect&&resumed&&!destroyed&&api==null)main.postDelayed(reconnect,15000);
     }
 
     private void disconnect() { disconnect(true); }
@@ -663,6 +697,7 @@ public final class MainActivity extends Activity {
     private void toggleCall(){
         if(callMode){endCall();status.setText("انتهت المكالمة. يمكنك متابعة الكتابة.");return;}
         if(!connected||!dictationAllowed)return;
+        ensureVoice();
         callMode=true;waitingForReply=false;updateButtons();
         say("أهلاً، أنا جاهزة. احكي لي شو بدك أعمل على الكمبيوتر.");
     }
@@ -748,7 +783,7 @@ public final class MainActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
-        if(voice!=null && !ttsInitializing){
+        if(voiceRequested && voice!=null && !ttsInitializing){
             String engine=android.provider.Settings.Secure.getString(
                 getContentResolver(),"tts_default_synth");
             if(engine!=null && !engine.equals(activeTtsEngine))initializeVoiceEngine();
@@ -757,7 +792,10 @@ public final class MainActivity extends Activity {
         resumed = true;
         if(pendingDictationId!=null){main.removeCallbacks(dictationTimeout);main.postDelayed(dictationTimeout,90000);}
         if(recordAfterPermission&&connected&&!busy&&pendingDictationId==null){recordAfterPermission=false;dictation.start();}
-        if(allowReconnect&&api==null&&!busy)connect();
+        if(allowReconnect&&api==null&&!busy){
+            crashDiagnostics.stage("auto_connect_scheduled");
+            main.postDelayed(() -> { if(resumed&&!destroyed&&allowReconnect&&api==null&&!busy)connect(); }, 12000);
+        }
         else schedulePoll();
     }
 

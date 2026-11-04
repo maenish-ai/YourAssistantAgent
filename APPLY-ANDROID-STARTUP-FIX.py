@@ -1,58 +1,51 @@
 from pathlib import Path
-import sys
-p=Path(__file__).resolve().parent/'android/app/src/main/java/ai/maenish/yourassistant/MainActivity.java'
-if not p.is_file():
-    sys.exit('ERROR: Put this script in the YourAssistantAgent repository root, next to android folder.')
+import sys, shutil
+p=Path('android/app/src/main/java/ai/maenish/yourassistant/MainActivity.java')
+if not p.exists():
+ print('ERROR: Run from repository root (folder containing android).');sys.exit(1)
 s=p.read_text(encoding='utf-8')
+backup=p.with_suffix('.java.before-startup-fix.bak')
+if 'STARTUP_AUDIO_LAZY_FIX_V2' in s:
+ print('Already applied.');sys.exit(0)
+# Match exact code from repository main. Fail closed rather than silently corrupting code.
 old='''        bundledVoice.initialize();
-        initializeVoiceEngine();'''
-new='''        // Initialize voice engines only when the user explicitly starts a voice call.
-        // Eager native ONNX/TTS startup can crash the process on unsupported devices.
-        // Keep the rest of the application and QR pairing available independently.'''
-if old in s: s=s.replace(old,new,1)
-elif new not in s: sys.exit('ERROR: expected voice startup code differs; no changes saved.')
+        initializeVoiceEngine();
+        dictation=new PhoneDictation(this,new PhoneDictation.Listener(){'''
+new='''        // STARTUP_AUDIO_LAZY_FIX_V2: avoid starting native audio/TTS engines on app launch.
+        // Some devices crash asynchronously while these engines initialize.
+        dictation=new PhoneDictation(this,new PhoneDictation.Listener(){'''
+if s.count(old)!=1: print('ERROR: startup block changed; no changes made.');sys.exit(2)
+s=s.replace(old,new,1)
+old='''        if(voice!=null && !ttsInitializing){
+            String engine=android.provider.Settings.Secure.getString(
+                getContentResolver(),"tts_default_synth");
+            if(engine!=null && !engine.equals(activeTtsEngine))initializeVoiceEngine();
+        }
+'''
+if s.count(old)!=1:print('ERROR: resume block changed; no changes made.');sys.exit(2)
+s=s.replace(old,'''        // Audio engines are initialized only when the user starts a voice call.
+''',1)
 old='''        callMode=true;waitingForReply=false;updateButtons();
         say("أهلاً، أنا جاهزة. احكي لي شو بدك أعمل على الكمبيوتر.");'''
 new='''        callMode=true;waitingForReply=false;updateButtons();
-        // Lazy voice initialization: never block QR pairing or text chat startup.
-        if (voice == null && !ttsInitializing) {
-            try { initializeVoiceEngine(); }
-            catch (RuntimeException e) {
-                callMode=false; updateButtons();
-                status.setText("تعذر بدء الصوت على هذا الهاتف. يمكنك متابعة المحادثة النصية.");
-                return;
+        // Lazy initialization: do not create native audio resources until explicitly requested.
+        if(bundledVoice!=null) {
+            try { bundledVoice.initialize(); } catch(RuntimeException e) {
+                status.setText("تعذر تهيئة الصوت المحلي. جرّب إعدادات الصوت في الهاتف.");
+            }
+        }
+        if(voice==null && !ttsInitializing) {
+            try { initializeVoiceEngine(); } catch(RuntimeException e) {
+                status.setText("تعذر تهيئة تحويل النص إلى كلام.");
             }
         }
         say("أهلاً، أنا جاهزة. احكي لي شو بدك أعمل على الكمبيوتر.");'''
-if old in s:s=s.replace(old,new,1)
-elif new not in s:sys.exit('ERROR: expected call start code differs; no changes saved.')
-# Prevent polling event rendering exceptions from terminating Android UI thread.
-old='''                    CharSequence before=status.getText();applyEvents(response);
-                    if(android.text.TextUtils.equals(before,status.getText()))status.setText("متصل • التحديث تلقائي أثناء فتح التطبيق.");
-                    schedulePoll();'''
-new='''                    try {
-                        CharSequence before=status.getText();
-                        applyEvents(response);
-                        if(android.text.TextUtils.equals(before,status.getText()))
-                            status.setText("متصل • التحديث تلقائي أثناء فتح التطبيق.");
-                    } catch (RuntimeException e) {
-                        android.util.Log.e("YourAssistant", "Event display failed", e);
-                        status.setText("تعذر عرض تحديث من الكمبيوتر؛ سيستمر الاتصال.");
-                    }
-                    schedulePoll();'''
-if old in s:s=s.replace(old,new,1)
-elif new not in s:sys.exit('ERROR: expected polling code differs; no changes saved.')
-# TTS init can throw synchronously in onResume if the engine has changed.
-old='''            if(engine!=null && !engine.equals(activeTtsEngine))initializeVoiceEngine();'''
-new='''            if(engine!=null && !engine.equals(activeTtsEngine)) {
-                try { initializeVoiceEngine(); }
-                catch (RuntimeException e) {
-                    android.util.Log.e("YourAssistant", "TTS initialization failed", e);
-                    status.setText("محرك الصوت غير متاح؛ بقية التطبيق تعمل بشكل طبيعي.");
-                }
-            }'''
-if old in s:s=s.replace(old,new,1)
-elif new not in s:sys.exit('ERROR: expected resume code differs; no changes saved.')
+if s.count(old)!=1:print('ERROR: voice call block changed; no changes made.');sys.exit(2)
+s=s.replace(old,new,1)
+# Avoid calling voice.stop() when an engine never initialized; existing code checks for null.
+shutil.copy2(p,backup)
 p.write_text(s,encoding='utf-8')
-print('DONE: Android startup fix applied to',p)
-print('NEXT: GitHub Desktop > Commit to main > Push origin > install new APK')
+print('DONE: Android audio initialization moved out of startup.')
+print('Changed: '+str(p))
+print('Backup: '+str(backup))
+print('NEXT: Commit and push the changed MainActivity.java, rebuild APK, install NEW APK.')

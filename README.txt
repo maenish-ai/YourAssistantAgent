@@ -1,11 +1,13 @@
-YourAssistantAgent - Android startup crash mitigation
+Android Startup Crash Isolation Patch v2
 
-1. Extract this ZIP.
-2. Copy APPLY-ANDROID-STARTUP-FIX.py and APPLY-ANDROID-STARTUP-FIX.bat into the root of your local YourAssistantAgent GitHub Desktop checkout (same folder as android/).
-3. Double-click APPLY-ANDROID-STARTUP-FIX.bat (Python must be installed).
-4. Confirm DONE, then GitHub Desktop > Commit to main > Push origin.
-5. Wait for Android GitHub Actions build and install NEW APK.
+1) Open GitHub Desktop > Repository > Show in Explorer.
+2) Copy both APPLY-ANDROID-STARTUP-FIX.py and .bat into the ROOT folder of YourAssistantAgent.
+3) Double-click APPLY-ANDROID-STARTUP-FIX.bat.
+4) Confirm DONE; commit only android/app/src/main/java/ai/maenish/yourassistant/MainActivity.java.
+5) Push origin. Wait for a successful Android build and install the NEW APK.
+6) First test: open the app and leave it untouched for 20 seconds.
 
-This patch prevents automatic native voice engine startup at app launch and catches unexpected errors during periodic event rendering. It does NOT prove the cause of the crash without Android crash logs.
-
-The bundled female voice is not eagerly initialized by this mitigation. Text chat and QR remain enabled; voice may fall back to Android system TTS when a call is started. This tradeoff is deliberate to isolate startup crashes.
+The patch defers both voice engines until the user explicitly starts a voice call.
+This is a targeted hypothesis test, not a guaranteed fix. It does not modify Windows.
+If the app still closes, collect a crash log using Android's bug report feature (no Android Studio needed).
+Do not share full bug reports publicly; they may contain sensitive information.

@@ -57,6 +57,7 @@ class RemoteAssistant:
         self._notified: set[int] = set()
         self._last_failure: dict | None = None
         self._desktop_history: list[dict] = []
+        self._phone_uploads: list[dict] = []
         self.session_id = self._load_session()
         # A restart cannot retain a remotely clickable operation.
         self.db.clear_pending_action(self.session_id)
@@ -153,8 +154,7 @@ class RemoteAssistant:
         session = self.db.get_session(self.session_id)
         if not getattr(self.settings, 'learning_enabled', False) or not session or not session.get('memory_enabled', 1) or session.get('is_private', 0):
             return []
-        return [row for row in self.db.list_memory_items(limit=100)
-                if row.get('kind') == 'owner_note'][:20]
+        return self.db.list_memory_items(limit=20, kind='owner_note')
 
     def _memory_command(self, text):
         """Only explicit owner notes are retained; notes never authorize actions."""
@@ -162,7 +162,7 @@ class RemoteAssistant:
             session = self.db.get_session(self.session_id)
             enabled = bool(getattr(self.settings, 'learning_enabled', False) and session and
                            session.get('memory_enabled', 1) and not session.get('is_private', 0))
-            rows = [r for r in self.db.list_memory_items(limit=100) if r['kind'] == 'desktop_failure'][:5] if enabled else []
+            rows = self.db.list_memory_items(limit=5, kind='desktop_failure') if enabled else []
             if not rows:
                 self._reply('لا توجد أخطاء محفوظة متاحة، أو أن التعلم معطل.')
             else:
@@ -175,7 +175,7 @@ class RemoteAssistant:
             session = self.db.get_session(self.session_id)
             enabled = bool(getattr(self.settings, 'learning_enabled', False) and session and
                            session.get('memory_enabled', 1) and not session.get('is_private', 0))
-            rows = self.db.list_memory_items(limit=100) if enabled else []
+            rows = self.db.list_memory_items(limit=100, kind='desktop_failure') if enabled else []
             item = next((r for r in rows if r['kind'] == 'desktop_failure' and r['id'] == int(forget_failure.group(1))), None)
             if item:
                 self.db.delete_memory_item(item['id'])
@@ -402,6 +402,7 @@ class RemoteAssistant:
                 result = run_desktop_task(self.runtime,self.desktop,str(approval.payload),report_step,
                     files=self.files,history=list(self._desktop_history),
                     owner_notes=[row['content'] for row in self._memory_rows()],
+                    phone_uploads=list(self._phone_uploads),
                     offer_download=lambda path,name:self.publish('ملف جاهز للتنزيل: '+name,download_path=path,download_name=name))
                 self._desktop_history.append({'instruction':str(approval.payload)[:1500], 'result':str(result)[:1500]})
                 self._desktop_history = self._desktop_history[-4:]
@@ -492,6 +493,15 @@ class RemoteAssistant:
         try:
             self.check_desktop()
             result=self.files.import_file(path,folder,name)
+            try:
+                received = self.files.resolve(result['path'], file=True).stat()
+                with self._lock:
+                    self._phone_uploads.append({'path': result['path'], 'size': received.st_size, 'mtime_ns': received.st_mtime_ns})
+                    self._phone_uploads = self._phone_uploads[-20:]
+            except (KeyError, OSError, ValueError):
+                # Import succeeded; failure to retain provenance must not report
+                # the transfer itself as failed or invent a matching file.
+                pass
             self._reply('وصل الملف إلى الكمبيوتر: '+result['path'])
         except Exception as exc:self._reply('تعذر نقل الملف: '+str(exc))
         finally:Path(path).unlink(missing_ok=True)

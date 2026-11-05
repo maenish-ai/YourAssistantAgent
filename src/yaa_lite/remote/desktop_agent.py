@@ -21,7 +21,7 @@ def tools():
         ('tab_action','Select or close one tab ID returned by list_browser_tabs. For multiple tabs use only explicit requested targets, not unrelated tabs.',{'id':{'type':'string'},'action':{'type':'string','enum':['focus','close']}}),
         ('browser_action','Operate an observed browser window. Empty window_id means active browser. Closing current tab does not require page accessibility.',{'window_id':{'type':'string'},'action':{'type':'string','enum':['close_tab','new_tab','back','forward','refresh','reopen_tab']}}),
         ('list_files', 'List names/paths in the owner-shared file area, without reading content. Empty path means root, empty contains means no filter.', {'path': {'type':'string'},'contains':{'type':'string'}}),
-        ('find_recent_uploads', 'Find recently received phone files inside the owner-shared folder and its subfolders. Returns real paths, never assumes an attachment was uploaded.', {'contains':{'type':'string'}}),
+        ('find_recent_uploads', 'Find files received from the phone in this app session; verify their current metadata. Without a recorded transfer, matching files are only unverified candidates and must not be assumed to be phone uploads.', {'contains':{'type':'string'}}),
         ('open_folder', 'Open an existing folder in Windows Explorer using its exact observed path from list_files.', {'path':{'type':'string'}}),
         ('create_folder', 'Create a new folder in an observed parent folder. Refuses replacing existing data.', {'parent':{'type':'string'},'name':{'type':'string'}}),
         ('copy_file', 'Copy an existing observed file to an observed destination folder. Empty new_name retains the filename; existing targets are never overwritten.', {'source':{'type':'string'},'destination_folder':{'type':'string'},'new_name':{'type':'string'}}),
@@ -83,8 +83,25 @@ def _progress_label(name):
 
 
 
-def _find_recent_uploads(files, contains='', *, max_folders=30, max_results=20):
+def _find_recent_uploads(files, contains='', *, max_folders=30, max_results=20, phone_uploads=None):
     """Bounded metadata-only search, confined to the configured shared file area."""
+    if phone_uploads:
+        verified = []
+        for item in reversed(phone_uploads[-20:]):
+            try:
+                path = str(item['path'])
+                if contains.casefold() not in path.rsplit('/', 1)[-1].casefold():
+                    continue
+                stat = files.resolve(path, file=True).stat()
+                if (stat.st_size, stat.st_mtime_ns) != (item['size'], item['mtime_ns']):
+                    continue
+                verified.append({'name': path.rsplit('/', 1)[-1], 'path': path, 'size': stat.st_size})
+            except (KeyError, TypeError, OSError, ValueError):
+                continue
+        if verified:
+            return {'entries': verified[:max_results], 'search_incomplete': len(verified) > max_results,
+                    'source_verified': True,
+                    'note': 'These paths were received from the phone during this app session and still have matching size and modification time. This metadata is not a content hash.'}
     from collections import deque
     pending = deque([''])
     visited = 0
@@ -111,9 +128,10 @@ def _find_recent_uploads(files, contains='', *, max_folders=30, max_results=20):
     matches.sort(key=lambda item: item[0], reverse=True)
     return {'entries':[item for _, item in matches[:max_results]],
             'folders_checked':visited, 'search_incomplete':bool(pending) or len(matches)>max_results,
-            'note':'Only files already present in the configured Windows shared area are visible.'}
+            'source_verified':False,
+            'note':'Candidates in the shared area only; their phone origin is unverified. Ask the owner to identify the file before operating on it.'}
 
-def run_desktop_task(runtime, desktop, instruction, publish, *, max_steps=24, files=None, offer_download=None, history=None, owner_notes=None):
+def run_desktop_task(runtime, desktop, instruction, publish, *, max_steps=24, files=None, offer_download=None, history=None, owner_notes=None, phone_uploads=None):
     if desktop.cancel.is_set():
         return 'أُوقفت المهمة قبل بدء التحكم.'
     deadline = time.monotonic() + 180
@@ -147,7 +165,9 @@ def run_desktop_task(runtime, desktop, instruction, publish, *, max_steps=24, fi
         'Find installed applications using list_applications and launch the exact observed ID; ambiguous names require clarification. '
         'Use generic folder/copy/move/extract tools for file work rather than pretending it requires a specific repository. '
         'When the owner mentions a file sent from Android, call find_recent_uploads first (if file tools exist). '
-        'If the file is missing, explain it has not reached the Windows shared folder; never claim lack of general desktop permissions. '
+        'When source_verified is false, ask the owner which file to use rather than assuming a candidate came from the phone. '
+        'If multiple recorded files could match and the owner did not identify one, ask which file to use. '
+        'If the file is missing, explain it was not found in the Windows shared folder; never claim lack of general desktop permissions. '
         'For WhatsApp or other messages, use only the recipient and exact content the user explicitly specified; '
         'if either is missing ask and stop. For file transfers use list_files metadata and send_file_to_phone. '
         'Use exact relative paths returned by list_files. Never claim a file reached the phone: the owner must save it there. '
@@ -177,7 +197,7 @@ def run_desktop_task(runtime, desktop, instruction, publish, *, max_steps=24, fi
             json.dumps([str(note)[:300] for note in owner_notes[:20]], ensure_ascii=False)})
     # Preserve all task policies/context when trimming completed exchanges.
     base_messages=len(messages)-1
-    last_action_failure=None
+    unresolved_failures = {}
     for step in range(max_steps):
         if desktop.cancel.is_set() or time.monotonic() > deadline:
             return 'توقفت المهمة. افحص الشاشة لمعرفة آخر خطوة؛ الإجراءات التي نُفّذت لا يتم التراجع عنها تلقائياً.'
@@ -185,8 +205,9 @@ def run_desktop_task(runtime, desktop, instruction, publish, *, max_steps=24, fi
                                    timeout=min(30, max(1, int(deadline - time.monotonic()))))
         calls = turn.get('tool_calls') or []
         if not calls:
-            if last_action_failure:
-                return 'لم تكتمل المهمة؛ فشلت آخر خطوة تنفيذية: '+last_action_failure+' راقب الشاشة أو حدّد النافذة المطلوبة ثم أعد الطلب.'
+            if unresolved_failures:
+                failure = next(reversed(unresolved_failures.values()))
+                return 'لم تكتمل المهمة بصورة مؤكدة؛ فشلت خطوة تنفيذية: '+failure+' راقب الشاشة أو حدّد الخطوة المطلوبة ثم أعد الطلب.'
             return str(turn.get('content') or 'انتهت المهمة. راجع الشاشة للتأكد من النتيجة.')
         call = calls[0]
         name, args = call.get('name'), call.get('arguments') or {}
@@ -216,7 +237,7 @@ def run_desktop_task(runtime, desktop, instruction, publish, *, max_steps=24, fi
                     shown.append(entry)
                 result = {'entries':shown, 'truncated':len(matches)>len(shown), 'root_name':listing['root_name']}
             elif name == 'find_recent_uploads' and files is not None:
-                result = _find_recent_uploads(files, str(args.get('contains','')))
+                result = _find_recent_uploads(files, str(args.get('contains','')), phone_uploads=phone_uploads)
             elif name == 'send_file_to_phone' and files is not None and offer_download is not None:
                 from .files import MAX_TRANSFER
                 path = files.resolve(args.get('path',''), file=True)
@@ -242,7 +263,16 @@ def run_desktop_task(runtime, desktop, instruction, publish, *, max_steps=24, fi
             publish(f'الخطوة {step + 1} أُرسلت للكمبيوتر؛ جاري فحص النتيجة')
         read_only={'observe_desktop','list_files','find_recent_uploads','send_file_to_phone','list_windows','list_browser_tabs','list_applications'}
         if name not in read_only:
-            last_action_failure=str(result.get('error') or 'أداة الكمبيوتر لم تنفّذ الإجراء.') if result.get('ok') is False else None
+            try:
+                action_key = (name, json.dumps(args, ensure_ascii=False, sort_keys=True))
+            except (TypeError, ValueError):
+                action_key = (name, repr(args))
+            if result.get('ok') is False:
+                unresolved_failures[action_key] = str(result.get('error') or 'أداة الكمبيوتر لم تنفّذ الإجراء.')[:300]
+            else:
+                # An unrelated success does not prove that an earlier failed
+                # action succeeded. A matching successful retry resolves it.
+                unresolved_failures.pop(action_key, None)
         messages.append({'role': 'assistant', 'content': None, 'tool_calls': [{
             'id': str(call.get('id') or 'step'), 'type': 'function',
             'function': {'name': name, 'arguments': json.dumps(args, ensure_ascii=False)}}]})

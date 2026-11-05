@@ -411,10 +411,18 @@ class ChatDB:
                               (kind[:40], content[:8000], source_session_id))
             return int(cur.lastrowid)
 
-    def list_memory_items(self, limit: int = 200, enabled_only: bool = True) -> list[dict]:
+    def list_memory_items(self, limit: int = 200, enabled_only: bool = True, *, kind: str | None = None) -> list[dict]:
         with self._lock, self._connect() as con:
-            sql = "SELECT * FROM memory_items" + (" WHERE enabled=1" if enabled_only else "") + " ORDER BY updated_at DESC,id DESC LIMIT ?"
-            rows = con.execute(sql, (max(1, int(limit)),)).fetchall()
+            filters = []
+            args = []
+            if enabled_only:
+                filters.append("enabled=1")
+            if kind is not None:
+                filters.append("kind=?")
+                args.append(kind)
+            sql = "SELECT * FROM memory_items" + (" WHERE " + " AND ".join(filters) if filters else "") + " ORDER BY updated_at DESC,id DESC LIMIT ?"
+            args.append(max(1, int(limit)))
+            rows = con.execute(sql, args).fetchall()
         return [dict(r) for r in rows]
 
     def set_memory_enabled(self, memory_id: int, enabled: bool) -> None:

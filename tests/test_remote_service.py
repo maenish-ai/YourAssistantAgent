@@ -235,6 +235,15 @@ def test_memory_respects_settings_and_refuses_obvious_secrets(conversation):
     assert 'معطلة' in conversation.events[-1]['text']
 
 
+def test_failure_history_does_not_hide_owner_notes(conversation):
+    assistant = conversation.assistant
+    assistant.text('/remember أفضل اللهجة الشامية')
+    for _ in range(101):
+        assistant._record_desktop_failure('desktop_step_failed')
+    assistant.text('كيف حالك؟')
+    assert 'اللهجة الشامية' in str(conversation.controller.calls[-1][1])
+
+
 def test_desktop_rate_limit_explains_failure_without_leaking_details(conversation, monkeypatch):
     from yaa_lite.ai.runtime import LocalAIError
     def fail(*args, **kwargs):
@@ -253,6 +262,30 @@ def test_desktop_rate_limit_explains_failure_without_leaking_details(conversatio
     assert 'private-response-data' not in failure['content']
     conversation.assistant.text('/forget_failure ' + str(failure['id']))
     assert not [row for row in conversation.db.list_memory_items() if row['kind'] == 'desktop_failure']
+
+
+def test_phone_upload_is_passed_to_desktop_planner(conversation, tmp_path, monkeypatch):
+    from yaa_lite.remote.files import RemoteFiles
+    assistant = conversation.assistant
+    shared = tmp_path / 'shared'
+    shared.mkdir()
+    assistant.files = RemoteFiles(shared)
+    monkeypatch.setattr(assistant, 'check_desktop', lambda: None)
+    source = tmp_path / 'incoming'
+    source.write_bytes(b'file from phone')
+    assistant.file_import(source, '', 'incoming.zip')
+    assert not source.exists()
+    assert (shared / 'incoming.zip').exists()
+    received = []
+    def execute(*args, **kwargs):
+        received.extend(kwargs['phone_uploads'])
+        return 'تمت مراجعة الطلب'
+    monkeypatch.setattr('yaa_lite.remote.desktop_agent.run_desktop_task', execute)
+    conversation.settings.remote_desktop_enabled = True
+    conversation.settings.remote_ai_enabled = True
+    assistant.text('فكي الملف على الكمبيوتر')
+    assistant.callback('approve:' + assistant._approval.token)
+    assert [entry['path'] for entry in received] == ['incoming.zip']
 
 
 def test_zip_review_then_single_approved_real_local_push(conversation, checkout, tmp_path, monkeypatch):

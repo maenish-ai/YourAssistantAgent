@@ -89,6 +89,24 @@ def test_model_cannot_report_success_after_an_action_failure():
     assert 'نجحت العملية' not in result
 
 
+def test_unrelated_success_does_not_hide_previous_failure():
+    desktop = SimpleNamespace(cancel=threading.Event(), observe=lambda: {'elements': []},
+        click_element=lambda _: (_ for _ in ()).throw(DesktopError('تعذر الضغط')),
+        open_url=lambda _: {'ok': True, 'result': 'opened'})
+    class Runtime:
+        step = 0
+        def native_turn(self, *args, **kwargs):
+            self.step += 1
+            if self.step == 1:
+                return {'tool_calls': [{'id':'a', 'name':'click_element', 'arguments':{'id':'missing'}}]}
+            if self.step == 2:
+                return {'tool_calls': [{'id':'b', 'name':'open_url', 'arguments':{'url':'https://example.test'}}]}
+            return {'content':'اكتملت المهمة'}
+    result = run_desktop_task(Runtime(), desktop, 'اضغط ثم افتح الصفحة', lambda _: None)
+    assert 'لم تكتمل' in result and 'تعذر الضغط' in result
+    assert 'اكتملت المهمة' not in result
+
+
 def test_followup_context_is_bounded_and_not_additional_authorization(monkeypatch):
     desktop=SimpleNamespace(cancel=threading.Event(),observe=lambda:{'elements':[]})
     class Runtime:

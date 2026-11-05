@@ -642,6 +642,8 @@ public final class MainActivity extends Activity {
             if(destroyed)return;
             if(result!=TextToSpeech.SUCCESS){
                 status.setText("تعذر تشغيل محرك الصوت. تحقق من إعدادات تحويل النص إلى كلام.");
+                if(callMode)endCall();
+                voiceRequested=false;
                 return;
             }
             activeTtsEngine=voice.getDefaultEngine();
@@ -655,6 +657,7 @@ public final class MainActivity extends Activity {
                     speaking=false;if(callMode&&!waitingForReply)startCallListening();
                 });}
             });
+            if(callMode) say("أهلاً، أنا جاهزة. احكي لي شو بدك أعمل على الكمبيوتر.");
         }));
     }
 
@@ -698,7 +701,10 @@ public final class MainActivity extends Activity {
         if(!connected||!dictationAllowed)return;
         ensureVoice();
         callMode=true;waitingForReply=false;updateButtons();
-        say("أهلاً، أنا جاهزة. احكي لي شو بدك أعمل على الكمبيوتر.");
+        if(safeMode || (!ttsInitializing && voice==null)){
+            endCall();status.setText("تعذر تشغيل الصوت. راجع إعدادات محرك تحويل النص إلى كلام.");return;
+        }
+        if(!ttsInitializing)say("أهلاً، أنا جاهزة. احكي لي شو بدك أعمل على الكمبيوتر.");
     }
     private void say(String message){
         if(!callMode||voice==null)return;

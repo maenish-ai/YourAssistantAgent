@@ -192,15 +192,18 @@ def archive(tmp_path):
     return path
 
 
-def test_compound_extract_and_github_request_reaches_desktop_planner(conversation):
+@pytest.mark.parametrize('instruction', [
+    'فك الملف المضغوط على سطح المكتب ثم ارفعه على GitHub',
+    'فكيه وارفعيه على GitHub',
+])
+def test_compound_extract_and_github_request_reaches_desktop_planner(conversation, instruction):
     conversation.settings.remote_desktop_enabled = True
     conversation.settings.remote_ai_enabled = True
-    request = 'فك الملف المضغوط على سطح المكتب ثم ارفعه على GitHub'
-    conversation.assistant.text(request)
+    conversation.assistant.text(instruction)
     approval = conversation.assistant._approval
     assert approval is not None
     assert approval.kind == 'desktop_ai'
-    assert approval.payload == request
+    assert approval.payload == instruction
 
 
 def test_plain_github_upload_keeps_review_workflow(conversation):
@@ -230,6 +233,26 @@ def test_memory_respects_settings_and_refuses_obvious_secrets(conversation):
     assistant.text('/remember أفضل الاختصار')
     assert not conversation.db.list_memory_items()
     assert 'معطلة' in conversation.events[-1]['text']
+
+
+def test_desktop_rate_limit_explains_failure_without_leaking_details(conversation, monkeypatch):
+    from yaa_lite.ai.runtime import LocalAIError
+    def fail(*args, **kwargs):
+        raise LocalAIError('private-response-data', code='rate_limit')
+    monkeypatch.setattr('yaa_lite.remote.desktop_agent.run_desktop_task', fail)
+    monkeypatch.setattr(conversation.assistant, 'check_desktop', lambda: None)
+    conversation.settings.remote_desktop_enabled = True
+    conversation.settings.remote_ai_enabled = True
+    conversation.assistant.text('افتح نافذة البرنامج')
+    conversation.assistant.callback('approve:' + conversation.assistant._approval.token)
+    assert 'groq_rate_limit' in conversation.events[-1]['text']
+    assert 'private-response-data' not in str(conversation.events)
+    conversation.assistant.text('/failures')
+    assert 'groq_rate_limit' in conversation.events[-1]['text']
+    failure = next(row for row in conversation.db.list_memory_items() if row['kind'] == 'desktop_failure')
+    assert 'private-response-data' not in failure['content']
+    conversation.assistant.text('/forget_failure ' + str(failure['id']))
+    assert not [row for row in conversation.db.list_memory_items() if row['kind'] == 'desktop_failure']
 
 
 def test_zip_review_then_single_approved_real_local_push(conversation, checkout, tmp_path, monkeypatch):

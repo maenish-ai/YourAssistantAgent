@@ -158,6 +158,31 @@ class RemoteAssistant:
 
     def _memory_command(self, text):
         """Only explicit owner notes are retained; notes never authorize actions."""
+        if text.strip().lower() in {'/failures', 'الأخطاء السابقة', 'الاخطاء السابقة'}:
+            session = self.db.get_session(self.session_id)
+            enabled = bool(getattr(self.settings, 'learning_enabled', False) and session and
+                           session.get('memory_enabled', 1) and not session.get('is_private', 0))
+            rows = [r for r in self.db.list_memory_items(limit=100) if r['kind'] == 'desktop_failure'][:5] if enabled else []
+            if not rows:
+                self._reply('لا توجد أخطاء محفوظة متاحة، أو أن التعلم معطل.')
+            else:
+                self._reply('آخر أخطاء مهام الكمبيوتر المسجلة (رموز فقط، بلا تفاصيل خاصة):\n' +
+                            '\n'.join(f"{r['id']}: {r['content']} — {r['created_at']}" for r in rows) +
+                            '\nيمكن حذف سجل برقم /forget_failure متبوعاً بالرقم.')
+            return True
+        forget_failure = re.fullmatch(r'/forget_failure\s+(\d+)', text.strip(), re.I)
+        if forget_failure:
+            session = self.db.get_session(self.session_id)
+            enabled = bool(getattr(self.settings, 'learning_enabled', False) and session and
+                           session.get('memory_enabled', 1) and not session.get('is_private', 0))
+            rows = self.db.list_memory_items(limit=100) if enabled else []
+            item = next((r for r in rows if r['kind'] == 'desktop_failure' and r['id'] == int(forget_failure.group(1))), None)
+            if item:
+                self.db.delete_memory_item(item['id'])
+                self._reply('حذفت سجل الخطأ.')
+            else:
+                self._reply('لم أجد سجل خطأ بهذا الرقم.')
+            return True
         if text.strip().lower() in {'/memory', 'اعرض الذاكرة', 'اعرض الذاكره'}:
             rows = self._memory_rows()
             self._reply('الذاكرة المحفوظة:\n' + '\n'.join(f"{r['id']}: {r['content']}" for r in rows)
@@ -189,6 +214,13 @@ class RemoteAssistant:
         identifier = self.db.add_memory_item('owner_note', note, self.session_id)
         self._reply(f'حفظت الملاحظة رقم {identifier}: {note}\nلعرض الذاكرة أرسل /memory ولحذفها أرسل /forget {identifier}.')
         return True
+
+    def _record_desktop_failure(self, code):
+        # Store only a fixed diagnostic code, never instructions, paths or
+        # exception text. These records cannot authorize a future retry.
+        session = self.db.get_session(self.session_id)
+        if getattr(self.settings, 'learning_enabled', False) and session and session.get('memory_enabled', 1) and not session.get('is_private', 0):
+            self.db.add_memory_item('desktop_failure', code, self.session_id)
 
     def text(self, text: str) -> None:
         if self._closed:
@@ -236,7 +268,7 @@ class RemoteAssistant:
         # Plain GitHub uploads keep their existing reviewed workflow.
         from ..agent.intent import normalized_command
         command = normalized_command(text)
-        file_work = bool(re.search(r'\b(?:فك|استخرج|انسخ|انقل|unzip|extract|copy|move)\b', command))
+        file_work = bool(re.search(r'\b(?:فك|فكي(?:ه|ها|هم)?|استخرج|استخرجي(?:ه|ها|هم)?|انسخ|انسخي(?:ه|ها|هم)?|انقل|انقلي(?:ه|ها|هم)?|unzip|extract|copy|move)\b', command))
         desktop_intent = is_desktop_request(text) and (not is_upload_request(text) or file_work)
         from .request_router import uses_facebook_tools
         closing=bool(re.search(r'اغلق|اغلاق|سكر|اقفل|اخرج|اطلع|\bclose\b',normalized_command(text)))
@@ -374,11 +406,21 @@ class RemoteAssistant:
                 self._desktop_history.append({'instruction':str(approval.payload)[:1500], 'result':str(result)[:1500]})
                 self._desktop_history = self._desktop_history[-4:]
                 state = 'stopped' if 'أُوقف' in str(result) or 'توقفت المهمة' in str(result) else ('failed' if 'لم تكتمل' in str(result) or 'تعذر' in str(result) else 'done')
+                if state == 'failed':
+                    self._record_desktop_failure('desktop_step_failed')
                 self.publish(str(result), progress={'state':state,'step':0})
                 self._reply(result)
             except Exception as exc:
                 self.publish('توقفت مهمة الكمبيوتر', progress={'state':'failed','step':0})
-                self._reply('توقفت مهمة الكمبيوتر: ' + str(exc))
+                from ..ai.runtime import LocalAIError
+                if isinstance(exc, LocalAIError):
+                    from .diagnostics import failure_report, failure_message
+                    self._last_failure = failure_report(exc)
+                    self._record_desktop_failure(self._last_failure['code'])
+                    self.activity('remote_request_error', json.dumps(self._last_failure, ensure_ascii=False))
+                    self._reply('توقفت مهمة الكمبيوتر. ' + failure_message(self._last_failure))
+                else:
+                    self._reply('توقفت مهمة الكمبيوتر: ' + str(exc))
         else:
             try:
                 result = execute_reviewed_action(self.controller, self.session_id, approval.signature)

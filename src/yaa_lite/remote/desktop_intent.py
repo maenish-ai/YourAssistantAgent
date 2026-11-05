@@ -75,6 +75,10 @@ def is_desktop_request(text):
     # route them to planning without guessing which page/window is meant.
     if re.search(r'\b(?:اغلق|اقفل|سكر)(?:ها|ه|هم|هن)\b|\b(?:ارجع|رجعني)\s+(?:له|لها|لهم)\b', value):
         return True
+    # Spoken Arabic often addresses the assistant as a woman and refers to a
+    # file by pronoun: "فكيه وارفعيه". Keep the whole task for planning.
+    if re.search(r'\b(?:فكي(?:ه|ها|هم)?|استخرجي(?:ه|ها|هم)?|انسخي(?:ه|ها|هم)?|انقلي(?:ه|ها|هم)?)\b', value):
+        return True
     return bool(re.search(r'افتح|فوت|ادخل|شغل|روح على|\b(?:اغلق|اغلاق|سكرلي|سكر|تسكر|اقفل|اطلع|اخرج|قفل|صغر|كبر|رجع|انسخ|استخرج|انشئ|انشي)\b|(?:فك|غير اسم|اعد تسمية).*?(?:ضغط|ملف|مجلد)|(?:اعمل|سوي|جهز)(?:لي)? (?:مجلد|فولدر|ملف)|تبويب|نافذ|انقل|نقل|ملفات|نزل|واتساب|واتس|whatsapp|متصفح|براوزر|سطح المكتب|الكمبيوتر|ابحث|سيرش|بحث.*(?:نت|انترنت)|حمل.*(?:ملف|صور)|download|browser|computer|\b(?:open|search|close|minimize|maximize|switch|copy|move|rename|extract|unzip|start|launch)\b|\bcreate (?:a |the )?folder\b', value))
 
 

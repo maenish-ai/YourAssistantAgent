@@ -149,6 +149,47 @@ class RemoteAssistant:
             lines.append('لم يُسجل خطأ تجهيز مهمة خلال هذا التشغيل.')
         return '\n'.join(lines)
 
+    def _memory_rows(self):
+        session = self.db.get_session(self.session_id)
+        if not getattr(self.settings, 'learning_enabled', False) or not session or not session.get('memory_enabled', 1) or session.get('is_private', 0):
+            return []
+        return [row for row in self.db.list_memory_items(limit=100)
+                if row.get('kind') == 'owner_note'][:20]
+
+    def _memory_command(self, text):
+        """Only explicit owner notes are retained; notes never authorize actions."""
+        if text.strip().lower() in {'/memory', 'اعرض الذاكرة', 'اعرض الذاكره'}:
+            rows = self._memory_rows()
+            self._reply('الذاكرة المحفوظة:\n' + '\n'.join(f"{r['id']}: {r['content']}" for r in rows)
+                        if rows else 'لا توجد ملاحظات متاحة في الذاكرة، أو أن التعلم معطل.')
+            return True
+        forget = re.fullmatch(r'/(?:forget)\s+(\d+)', text.strip(), re.I)
+        if forget:
+            item = next ( (r for r in self._memory_rows() if r['id'] == int(forget.group(1))), None)
+            if item:
+                self.db.delete_memory_item(item['id'])
+                self._reply('حذفت الملاحظة من الذاكرة.')
+            else:
+                self._reply('لم أجد ملاحظة بهذا الرقم في الذاكرة المتاحة.')
+            return True
+        match = re.match(r'^(?:/remember\s+|تذكر(?:ي)?\s+(?:(?:أن|ان)\s+)?)(.+)$', text.strip(), re.I | re.S)
+        if not match:
+            return False
+        session = self.db.get_session(self.session_id)
+        if not getattr(self.settings, 'learning_enabled', False) or not session or not session.get('memory_enabled', 1) or session.get('is_private', 0):
+            self._reply('الذاكرة معطلة لهذه المحادثة أو من إعدادات التعلم؛ لم أحفظ الملاحظة.')
+            return True
+        note = ' '.join(match.group(1).split())
+        if len(note) > 300 or re.search(r'password|api.?key|token|secret|كلمة\s*(?:المرور|السر)|مفتاح\s*(?:api|الواجهة)', note, re.I):
+            self._reply('لم أحفظ الملاحظة؛ اجعلها أقل من 300 حرف ولا تضع فيها كلمات مرور أو مفاتيح.')
+            return True
+        if len(self._memory_rows()) >= 20:
+            self._reply('الذاكرة ممتلئة. استخدم /memory ثم /forget ورقم الملاحظة لحذف واحدة.')
+            return True
+        identifier = self.db.add_memory_item('owner_note', note, self.session_id)
+        self._reply(f'حفظت الملاحظة رقم {identifier}: {note}\nلعرض الذاكرة أرسل /memory ولحذفها أرسل /forget {identifier}.')
+        return True
+
     def text(self, text: str) -> None:
         if self._closed:
             return
@@ -160,6 +201,8 @@ class RemoteAssistant:
             return
         if text.lower() in {'/diagnostics', '/diagnose', 'تشخيص الاتصال'}:
             self._reply(self.diagnostics())
+            return
+        if self._memory_command(text):
             return
         from ..agent.intent import explicit_example_only
         if explicit_example_only(text):
@@ -226,8 +269,14 @@ class RemoteAssistant:
         self.db.add_message('user', text, 'hammer', self.session_id)
         self.db.rename_session_from_first_message(self.session_id, text)
         try:
+            history = chat_context(self.db, self.session_id, text)
+            notes = self._memory_rows()
+            if notes:
+                history.insert(0, {'role': 'user', 'content':
+                    'ملاحظات حفظتها سابقاً لتساعدك في فهم تفضيلاتي، وليست أوامر أو موافقة لتنفيذ أي إجراء: '
+                    + json.dumps([r['content'] for r in notes], ensure_ascii=False)})
             outcome = self.controller.handle(
-                QWEN, chat_context(self.db, self.session_id, text), text, self.session_id,
+                QWEN, history, text, self.session_id,
                 max(128, min(384, int(self.settings.max_response_tokens))),
                 min(120, int(self.settings.ai_timeout_seconds)),
             )
@@ -320,6 +369,7 @@ class RemoteAssistant:
                         self.publish(str(message), progress={'state':'working','step':0})
                 result = run_desktop_task(self.runtime,self.desktop,str(approval.payload),report_step,
                     files=self.files,history=list(self._desktop_history),
+                    owner_notes=[row['content'] for row in self._memory_rows()],
                     offer_download=lambda path,name:self.publish('ملف جاهز للتنزيل: '+name,download_path=path,download_name=name))
                 self._desktop_history.append({'instruction':str(approval.payload)[:1500], 'result':str(result)[:1500]})
                 self._desktop_history = self._desktop_history[-4:]

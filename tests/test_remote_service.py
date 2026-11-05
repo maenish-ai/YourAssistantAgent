@@ -209,6 +209,29 @@ def test_plain_github_upload_keeps_review_workflow(conversation):
     assert 'مراجعة ZIP' in conversation.events[-1]['text']
 
 
+def test_explicit_memory_persists_and_can_be_deleted(conversation):
+    assistant = conversation.assistant
+    assistant.text('تذكري أن اللهجة الشامية هي المفضلة')
+    rows = assistant._memory_rows()
+    assert len(rows) == 1 and rows[0]['content'] == 'اللهجة الشامية هي المفضلة'
+    assistant.text('كيف حالك؟')
+    assert 'اللهجة الشامية' in str(conversation.controller.calls[-1][1])
+    assistant.text('/memory')
+    assert str(rows[0]['id']) in conversation.events[-1]['text']
+    assistant.text('/forget ' + str(rows[0]['id']))
+    assert not assistant._memory_rows()
+
+
+def test_memory_respects_settings_and_refuses_obvious_secrets(conversation):
+    assistant = conversation.assistant
+    assistant.text('/remember API key is private')
+    assert not assistant._memory_rows()
+    conversation.settings.learning_enabled = False
+    assistant.text('/remember أفضل الاختصار')
+    assert not conversation.db.list_memory_items()
+    assert 'معطلة' in conversation.events[-1]['text']
+
+
 def test_zip_review_then_single_approved_real_local_push(conversation, checkout, tmp_path, monkeypatch):
     import yaa_lite.github_upload_v430 as uploads
     assistant = conversation.assistant

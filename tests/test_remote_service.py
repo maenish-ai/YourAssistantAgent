@@ -192,6 +192,23 @@ def archive(tmp_path):
     return path
 
 
+def test_compound_extract_and_github_request_reaches_desktop_planner(conversation):
+    conversation.settings.remote_desktop_enabled = True
+    conversation.settings.remote_ai_enabled = True
+    request = 'فك الملف المضغوط على سطح المكتب ثم ارفعه على GitHub'
+    conversation.assistant.text(request)
+    approval = conversation.assistant._approval
+    assert approval is not None
+    assert approval.kind == 'desktop_ai'
+    assert approval.payload == request
+
+
+def test_plain_github_upload_keeps_review_workflow(conversation):
+    conversation.assistant.text('ارفع الملف على GitHub')
+    assert conversation.assistant._approval is None
+    assert 'مراجعة ZIP' in conversation.events[-1]['text']
+
+
 def test_zip_review_then_single_approved_real_local_push(conversation, checkout, tmp_path, monkeypatch):
     import yaa_lite.github_upload_v430 as uploads
     assistant = conversation.assistant

@@ -158,7 +158,7 @@ public final class MainActivity extends Activity {
         tools.addView(desktopButton,weighted());tools.addView(filesButton,weighted());tools.addView(computerButton,weighted());root.addView(tools,AppUi.space(this));
         scroll=new ScrollView(this);scroll.setFillViewport(true);transcript=new LinearLayout(this);transcript.setOrientation(LinearLayout.VERTICAL);scroll.addView(transcript);
         root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
-        LinearLayout tasks=row();newChatButton=AppUi.button(this,"محادثة جديدة",this::newChat,false);attachButton=AppUi.button(this,"إرفاق ZIP",this::chooseZip,false);
+        LinearLayout tasks=row();newChatButton=AppUi.button(this,"محادثة جديدة",this::newChat,false);attachButton=AppUi.button(this,"إرسال ملف",this::chooseAttachment,false);
         tasks.addView(newChatButton,weighted());tasks.addView(attachButton,weighted());root.addView(tasks,AppUi.space(this));
         composer=AppUi.field(this,"اطلب من مساعدك…");composer.setMinLines(1);composer.setMaxLines(3);composer.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         root.addView(composer,AppUi.space(this));
@@ -523,6 +523,10 @@ public final class MainActivity extends Activity {
                 main.post(() -> {
                     if (!current(requestGeneration)) return;
                     busy = false;
+                    if (callMode && "/v1/messages".equals(path) && waitingForReply) {
+                        waitingForReply = false;
+                        main.postDelayed(this::startCallListening, 600);
+                    }
                     status.setText(e.getMessage());
                     updateButtons();
                     schedulePoll();
@@ -538,6 +542,17 @@ public final class MainActivity extends Activity {
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/zip", "application/x-zip-compressed", "application/octet-stream"});
         startActivityForResult(intent, PICK_ZIP);
+    }
+
+    private void chooseAttachment() {
+        if (!connected || busy) return;
+        new android.app.AlertDialog.Builder(this).setTitle("إرسال ملف للكمبيوتر")
+            .setItems(new String[]{"إرسال ملف للمجلد المشترك لتنفيذ مهمة", "مراجعة ZIP لرفعه إلى GitHub"}, (dialog, which) -> {
+                if (which == 0) {
+                    if (!filesAllowed) { status.setText("فعّل صلاحية الملفات في إعدادات الكمبيوتر أولاً."); return; }
+                    startActivity(new Intent(this, FilesActivity.class));
+                } else chooseZip();
+            }).setNegativeButton("إلغاء", null).show();
     }
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
@@ -765,7 +780,7 @@ public final class MainActivity extends Activity {
                 client.dictation(audio,id);
                 main.post(()->{if(!current(requestGeneration))return;busy=false;status.setText(callMode?"أحلل كلامك عبر Groq…":"وصل التسجيل. أنتظر النص من Groq؛ لن يُرسل كطلب تلقائياً.");updateButtons();schedulePoll();});
             }catch(Exception e){
-                main.post(()->{if(!current(requestGeneration))return;busy=false;pendingDictationId=null;main.removeCallbacks(dictationTimeout);status.setText(e instanceof ApiClient.ApiException?e.getMessage():"تعذر إرسال التسجيل؛ لم يُرسل أمر للمساعد.");updateButtons();});
+                main.post(()->{if(!current(requestGeneration))return;busy=false;pendingDictationId=null;main.removeCallbacks(dictationTimeout);status.setText(e instanceof ApiClient.ApiException?e.getMessage():"تعذر إرسال التسجيل؛ لم يُرسل أمر للمساعد.");updateButtons();if(callMode)main.postDelayed(this::startCallListening,600);});
             }finally{audio.delete();}
         });
     }

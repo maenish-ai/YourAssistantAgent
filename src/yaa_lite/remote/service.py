@@ -188,9 +188,14 @@ class RemoteAssistant:
                         'محادثة جديدة: /new — إلغاء المعاينة: /cancel — الحالة: /status')
             return
         from .desktop_intent import is_desktop_request
-        desktop_intent = not is_upload_request(text) and is_desktop_request(text)
-        from .request_router import uses_facebook_tools
+        # A multi-step computer request must not be swallowed by the special
+        # ZIP-to-GitHub shortcut merely because it also mentions a push.
+        # Plain GitHub uploads keep their existing reviewed workflow.
         from ..agent.intent import normalized_command
+        command = normalized_command(text)
+        file_work = bool(re.search(r'\b(?:فك|استخرج|انسخ|انقل|unzip|extract|copy|move)\b', command))
+        desktop_intent = is_desktop_request(text) and (not is_upload_request(text) or file_work)
+        from .request_router import uses_facebook_tools
         closing=bool(re.search(r'اغلق|اغلاق|سكر|اقفل|اخرج|اطلع|\bclose\b',normalized_command(text)))
         if desktop_intent and (closing or not uses_facebook_tools(text)):
             if not (getattr(self.settings,'remote_desktop_enabled',False) and getattr(self.settings,'remote_ai_enabled',False)):
@@ -213,7 +218,7 @@ class RemoteAssistant:
             self._reply('ملف ZIP جاهز في المعاينة السابقة. راجعها واضغط زر موافق؛ الرسالة وحدها لا تنفّذ الرفع.')
             return
         if is_upload_request(text):
-            self._reply('اضغط إرفاق ZIP في تطبيق Android. سأبحث عن مجلد المستودع المطابق على الكمبيوتر وأعرض الملفات والمستودع والفرع ومجلد فك الضغط قبل الموافقة على الرفع. المستودع المضبوط: ' + str(self.settings.github_repository))
+            self._reply('اضغط إرسال ملف في Android ثم اختر مراجعة ZIP لرفعه إلى GitHub. سأبحث عن مجلد المستودع المطابق على الكمبيوتر وأعرض الملفات والمستودع والفرع ومجلد فك الضغط قبل الموافقة على الرفع. المستودع المضبوط: ' + str(self.settings.github_repository))
             return
         # Any new instruction invalidates the old mobile button. A Facebook
         # draft may remain in the DB for natural edits, without authorization.

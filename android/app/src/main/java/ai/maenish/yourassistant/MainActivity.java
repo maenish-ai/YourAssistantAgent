@@ -61,6 +61,7 @@ public final class MainActivity extends Activity {
     private BundledFemaleVoice bundledVoice;
     private String activeTtsEngine="";
     private boolean ttsInitializing=false;
+    private boolean voicePickerPending=false;
     private boolean callMode=false, waitingForReply=false, speaking=false;
     private long lastSpeechMs=0, listeningSinceMs=0;
     private final Runnable silenceDetector=new Runnable(){
@@ -166,8 +167,9 @@ public final class MainActivity extends Activity {
         callButton=AppUi.button(this,"☎ بدء محادثة صوتية",this::toggleCall,false);
         root.addView(callButton,AppUi.space(this));
         root.addView(AppUi.button(this,"تقرير أعطال التطبيق",this::showCrashReport,false),AppUi.space(this));
-        root.addView(AppUi.button(this,"🔊 اختيار صوت موظفة طبيعي من الهاتف",
+        root.addView(AppUi.button(this,"🔊 إعدادات محرك صوت الهاتف",
             this::openVoiceSettings,false),AppUi.space(this));
+        root.addView(AppUi.button(this,"🔊 تجربة واختيار صوت عربي",this::chooseArabicVoice,false),AppUi.space(this));
         root.addView(AppUi.label(this,"المحادثة الذكية تستخدم Groq؛ التحكم اليدوي والملفات لهما أزرار منفصلة.",11,true));
         sendButton=button("إرسال الطلب",this::sendText);LinearLayout sendRow=row();sendRow.addView(micButton,weighted());sendRow.addView(sendButton,weighted());root.addView(sendRow,AppUi.space(this));
     }
@@ -659,9 +661,11 @@ public final class MainActivity extends Activity {
                 status.setText("تعذر تشغيل محرك الصوت. تحقق من إعدادات تحويل النص إلى كلام.");
                 if(callMode)endCall();
                 voiceRequested=false;
+                voicePickerPending=false;
                 return;
             }
-            activeTtsEngine=voice.getDefaultEngine();
+            String defaultEngine=voice.getDefaultEngine();
+            activeTtsEngine=defaultEngine==null?"":defaultEngine;
             configureArabicVoice();
             voice.setOnUtteranceProgressListener(new UtteranceProgressListener(){
                 @Override public void onStart(String id){main.post(()->speaking=true);}
@@ -673,6 +677,7 @@ public final class MainActivity extends Activity {
                 });}
             });
             if(callMode) say("أهلاً، أنا جاهزة. احكي لي شو بدك أعمل على الكمبيوتر.");
+            else if(voicePickerPending){voicePickerPending=false;showArabicVoices();}
         }));
     }
 
@@ -685,6 +690,48 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private void chooseArabicVoice(){
+        if(callMode)endCall();
+        if(safeMode){status.setText("الصوت غير متاح في الوضع الآمن. افتح إعدادات الصوت في الهاتف.");return;}
+        if(voice==null || ttsInitializing){
+            voicePickerPending=true;
+            ensureVoice();
+            if(voice==null && !ttsInitializing){voicePickerPending=false;status.setText("تعذر فتح محرك الصوت.");}
+            else status.setText("جاري تجهيز أصوات الهاتف…");
+            return;
+        }
+        showArabicVoices();
+    }
+
+    private void showArabicVoices(){
+        if(voice==null || destroyed)return;
+        List<Voice> choices=new ArrayList<>();
+        try{
+            Set<Voice> available=voice.getVoices();
+            if(available!=null)for(Voice item:available){
+                if(item.getLocale()!=null && "ar".equals(item.getLocale().getLanguage()))choices.add(item);
+            }
+        }catch(Exception ignored){}
+        if(choices.isEmpty()){
+            status.setText("لا توجد أصوات عربية متاحة في المحرك الحالي. افتح إعدادات صوت الهاتف ونزّل صوتاً عربياً.");return;
+        }
+        choices.sort((a,b)->a.getName().compareTo(b.getName()));
+        String[] labels=new String[choices.size()];
+        for(int i=0;i<choices.size();i++){
+            Voice item=choices.get(i);
+            labels[i]=item.getName()+" • "+item.getLocale().toLanguageTag()+
+                (item.isNetworkConnectionRequired()?" • يحتاج إنترنت":" • محلي");
+        }
+        new android.app.AlertDialog.Builder(this).setTitle("اختر صوتاً لتجربته")
+            .setItems(labels,(dialog,index)->{
+                Voice selected=choices.get(index);
+                if(voice==null || voice.setVoice(selected)!=TextToSpeech.SUCCESS){status.setText("تعذر اختيار هذا الصوت. جرّب صوتاً آخر.");return;}
+                getSharedPreferences("voice_choice",MODE_PRIVATE).edit().putString(activeTtsEngine,selected.getName()).apply();
+                int result=voice.speak("أهلاً، أنا مساعدتك. كيف بقدر أساعدك اليوم؟",TextToSpeech.QUEUE_FLUSH,null,"voice-sample");
+                status.setText(result==TextToSpeech.ERROR?"تم اختيار الصوت لكن تعذر تشغيل العينة.":"تم اختيار الصوت وتشغيل عينة. يمكنك تغيير الاختيار في أي وقت.");
+            }).setNegativeButton("إلغاء",null).show();
+    }
+
     private void configureArabicVoice(){
         if(voice==null)return;
         Locale preferred=new Locale("ar","JO");
@@ -695,9 +742,11 @@ public final class MainActivity extends Activity {
         int bestScore=Integer.MIN_VALUE;
         try {
             java.util.Set<Voice> voices=voice.getVoices();
+            String chosen=getSharedPreferences("voice_choice",MODE_PRIVATE).getString(activeTtsEngine,"");
             if(voices!=null)for(Voice candidate:voices){
                 Locale locale=candidate.getLocale();
                 if(locale==null || !"ar".equals(locale.getLanguage()))continue;
+                if(candidate.getName().equals(chosen)){best=candidate;break;}
                 int score=0;
                 if("JO".equalsIgnoreCase(locale.getCountry()))score+=100;
                 else if("SA".equalsIgnoreCase(locale.getCountry()))score+=20;
@@ -821,6 +870,7 @@ public final class MainActivity extends Activity {
     }
 
     @Override protected void onPause() {
+        voicePickerPending=false;
         main.removeCallbacks(dictationTimeout);
         if(callMode)endCall();
         if(dictation!=null&&dictation.active()){dictation.cancel();status.setText("أُلغي التسجيل لأن التطبيق انتقل للخلفية؛ لم يُرسل الصوت.");}

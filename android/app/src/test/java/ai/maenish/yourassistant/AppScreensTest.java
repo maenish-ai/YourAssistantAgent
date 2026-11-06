@@ -1,6 +1,10 @@
 package ai.maenish.yourassistant;
 
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.os.Looper;
+import android.speech.tts.TextToSpeech;
+import android.speech.tts.Voice;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.TextView;
@@ -10,6 +14,11 @@ import org.robolectric.Robolectric;
 import org.robolectric.RobolectricTestRunner;
 import org.robolectric.android.controller.ActivityController;
 import org.robolectric.annotation.Config;
+import org.robolectric.Shadows;
+import org.robolectric.shadows.ShadowAlertDialog;
+import org.robolectric.shadows.ShadowTextToSpeech;
+import java.util.HashSet;
+import java.util.Locale;
 import static org.junit.Assert.*;
 
 /** Starts the actual activities with packaged resources, without opening sockets. */
@@ -44,6 +53,29 @@ public class AppScreensTest {
         try(ActivityController<FilesActivity> controller=Robolectric.buildActivity(FilesActivity.class).setup()){
             FilesActivity activity=controller.get();assertNotNull(text(activity,"ملفات الكمبيوتر"));
             assertNotNull(text(activity,"رفع ملف"));assertNotNull(text(activity,"إلغاء النقل والرجوع"));
+        }
+    }
+    @Test public void arabicVoiceCanBeSelectedAndSampled(){
+        Voice option=new Voice("test-arabic",new Locale("ar","JO"),400,200,false,new HashSet<>());
+        ShadowTextToSpeech.addVoice(option);
+        try(ActivityController<MainActivity> controller=Robolectric.buildActivity(MainActivity.class).setup()){
+            MainActivity activity=controller.get();
+            assertTrue(text(activity,"🔊 تجربة واختيار صوت عربي").performClick());
+            TextToSpeech tts=ShadowTextToSpeech.getLastTextToSpeechInstance();
+            assertNotNull(tts);
+            ShadowTextToSpeech shadow=Shadows.shadowOf(tts);
+            shadow.getOnInitListener().onInit(TextToSpeech.SUCCESS);
+            Shadows.shadowOf(Looper.getMainLooper()).idle();
+            AlertDialog dialog=ShadowAlertDialog.getLatestAlertDialog();
+            assertNotNull(dialog);
+            int selected=-1;
+            for(int i=0;i<dialog.getListView().getCount();i++){
+                if(String.valueOf(dialog.getListView().getItemAtPosition(i)).contains("test-arabic")){selected=i;break;}
+            }
+            assertTrue(selected>=0);
+            dialog.getListView().performItemClick(null,selected,selected);
+            assertEquals("test-arabic",shadow.getCurrentVoice().getName());
+            assertTrue(shadow.getLastSpokenText().contains("مساعدتك"));
         }
     }
 }

@@ -107,6 +107,21 @@ def test_unrelated_success_does_not_hide_previous_failure():
     assert 'اكتملت المهمة' not in result
 
 
+def test_repeated_failed_action_stops_instead_of_looping():
+    attempts = []
+    def fail(identifier):
+        attempts.append(identifier)
+        raise DesktopError('العنصر غير موجود')
+    desktop = SimpleNamespace(cancel=threading.Event(), observe=lambda:{'elements':[]}, click_element=fail)
+    class Runtime:
+        def native_turn(self, *args, **kwargs):
+            return {'tool_calls':[{'id':'retry','name':'click_element','arguments':{'id':'missing'}}]}
+    result = run_desktop_task(Runtime(), desktop, 'اضغط العنصر المطلوب', lambda _: None)
+    assert attempts == ['missing', 'missing']
+    assert 'مرتين دون نجاح' in result and 'لم تكتمل' in result
+    assert 'العنصر غير موجود' in result
+
+
 def test_followup_context_is_bounded_and_not_additional_authorization(monkeypatch):
     desktop=SimpleNamespace(cancel=threading.Event(),observe=lambda:{'elements':[]})
     class Runtime:

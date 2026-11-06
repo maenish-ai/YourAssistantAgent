@@ -198,6 +198,9 @@ def run_desktop_task(runtime, desktop, instruction, publish, *, max_steps=24, fi
     # Preserve all task policies/context when trimming completed exchanges.
     base_messages=len(messages)-1
     unresolved_failures = {}
+    failure_streak_key = None
+    failure_streak_count = 0
+    failure_streak_error = ''
     for step in range(max_steps):
         if desktop.cancel.is_set() or time.monotonic() > deadline:
             return 'توقفت المهمة. افحص الشاشة لمعرفة آخر خطوة؛ الإجراءات التي نُفّذت لا يتم التراجع عنها تلقائياً.'
@@ -211,6 +214,13 @@ def run_desktop_task(runtime, desktop, instruction, publish, *, max_steps=24, fi
             return str(turn.get('content') or 'انتهت المهمة. راجع الشاشة للتأكد من النتيجة.')
         call = calls[0]
         name, args = call.get('name'), call.get('arguments') or {}
+        try:
+            action_key = (name, json.dumps(args, ensure_ascii=False, sort_keys=True))
+        except (TypeError, ValueError):
+            action_key = (name, repr(args))
+        if action_key == failure_streak_key and failure_streak_count >= 2:
+            return ('لم تكتمل المهمة؛ حاولت الخطوة نفسها مرتين دون نجاح، فتوقفت لتجنب التكرار. '
+                    'آخر خطأ: ' + failure_streak_error + '. حدّد خطوة أخرى أو أعد الطلب بعد معالجة المشكلة.')
         if desktop.cancel.is_set() or time.monotonic() > deadline:
             return 'أُوقفت المهمة قبل الخطوة التالية.'
         publish(f'خطوة {step + 1}: {_progress_label(name)}')
@@ -258,15 +268,18 @@ def run_desktop_task(runtime, desktop, instruction, publish, *, max_steps=24, fi
         except Exception as exc:
             result = {'ok': False, 'error': str(exc)}
         if result.get('ok') is False:
+            failure_streak_error = str(result.get('error') or 'لم تقبل الأداة الإجراء')[:300]
+            if action_key == failure_streak_key:
+                failure_streak_count += 1
+            else:
+                failure_streak_key, failure_streak_count = action_key, 1
             publish(f'الخطوة {step + 1} تعذرت: '+str(result.get('error') or 'خطأ غير معروف')[:160])
-        elif name not in {'observe_desktop','list_files','find_recent_uploads','list_windows','list_browser_tabs','list_applications'}:
-            publish(f'الخطوة {step + 1} أُرسلت للكمبيوتر؛ جاري فحص النتيجة')
+        else:
+            failure_streak_key, failure_streak_count = None, 0
+            if name not in {'observe_desktop','list_files','find_recent_uploads','list_windows','list_browser_tabs','list_applications'}:
+                publish(f'الخطوة {step + 1} أُرسلت للكمبيوتر؛ جاري فحص النتيجة')
         read_only={'observe_desktop','list_files','find_recent_uploads','send_file_to_phone','list_windows','list_browser_tabs','list_applications'}
         if name not in read_only:
-            try:
-                action_key = (name, json.dumps(args, ensure_ascii=False, sort_keys=True))
-            except (TypeError, ValueError):
-                action_key = (name, repr(args))
             if result.get('ok') is False:
                 unresolved_failures[action_key] = str(result.get('error') or 'أداة الكمبيوتر لم تنفّذ الإجراء.')[:300]
             else:

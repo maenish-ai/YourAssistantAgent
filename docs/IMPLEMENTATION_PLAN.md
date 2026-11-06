@@ -1,0 +1,13 @@
+# Implementation plan and checkpoints
+
+Base: `origin/main` `fce07d0`. Preserve the prior working-tree changes when moving to the development branch; do not include generated voice models, private keys, caches or built APKs in Git.
+
+1. **A — Stability and audit.** Establish reproducible local Python and Android results; inventory compatibility patches and version sources; split Android CI into an independent workflow without deleting Windows checks. Preserve current version values until a coordinated release migration. Block the release on actual failures; record local versus hosted evidence separately.
+2. **B — Remote.** Verify authentication, timeout/replay and reconnection using real local broker integration, then test on separate networks and an explicitly configured personal HTTPS relay. Add bounded backoff and session-state recovery only with idempotency tests. Offline action queues remain disabled until scoped, time-limited semantics are designed.
+3. **C — Agent.** Carry real evidence through file selection, task steps and failure reporting; no claim of full success after an unresolved error. Add typed task states/checkpoints and action verification incrementally, retaining whole-task approval and adding explicit final approval before external effects.
+4. **D — Voice.** Fix lifecycle and invalid transcript handling, then measure Arabic STT/TTS on physical devices. Verify voice model origin, immutable revision, hashes and license before redistribution. Full duplex is a separate feature, not implied by a call button.
+5. **E — Mobile.** Improve progress, errors, explicit stop and state restoration with lifecycle tests. Test network switching, stream stop and RAM on a real device.
+6. **F — Memory and automation.** Explicitly consent to cloud context, separate non-sensitive notes from audit, add deletion and retention controls. General durable scheduling and recovery require idempotent action design and restart tests.
+7. **G/H — Security, performance and release.** Address findings in `SECURITY_AUDIT.md`; perform scoped threat testing and resource measurements on real hardware. Build/sign Windows and Android only with authorized matching secrets. Document actual results and untested limitations.
+
+Each checkpoint must include implementation, regression tests and recorded evidence; no prior result is promoted to an end-to-end or production claim. Current status: A in progress; Windows and Android CI have been split in this branch, and the bridge has a partial origin/body-limit mitigation. Hosted CI and real-browser verification remain pending. B has bounded jittered relay reconnect with local restart tests, but cross-network verification and the rest of B–H remain incomplete.

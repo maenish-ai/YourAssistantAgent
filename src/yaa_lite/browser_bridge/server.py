@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 import uuid
@@ -84,11 +85,29 @@ class BrowserBridge:
         bridge = self
 
         class Handler(BaseHTTPRequestHandler):
+            def setup(self):
+                super().setup()
+                self.connection.settimeout(10)
+
+            # The marker cannot be sent by an ordinary web page without a
+            # successful CORS preflight. It is not a local-client credential.
+            def _allowed(self):
+                origin = self.headers.get('Origin', '')
+                if origin and not re.fullmatch(r'(?:chrome-extension|moz-extension)://[a-zA-Z0-9-]+', origin):
+                    return False
+                return self.headers.get('X-YAA-Bridge') == '1'
+
+            def _cors(self):
+                origin = self.headers.get('Origin', '')
+                if re.fullmatch(r'(?:chrome-extension|moz-extension)://[a-zA-Z0-9-]+', origin):
+                    self.send_header('Access-Control-Allow-Origin', origin)
+                    self.send_header('Vary', 'Origin')
+
             def _send(self, code: int, payload: dict):
                 raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
                 self.send_response(code)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
-                self.send_header("Access-Control-Allow-Origin", "*")
+                self._cors()
                 self.send_header("Content-Length", str(len(raw)))
                 self.end_headers()
                 self.wfile.write(raw)
@@ -96,18 +115,25 @@ class BrowserBridge:
             def _json_body(self):
                 try:
                     size = int(self.headers.get("content-length") or 0)
+                    if size < 0 or size > 1024 * 1024:
+                        raise ValueError('Invalid body length')
                     return json.loads(self.rfile.read(size) or b"{}")
                 except Exception:
                     return {}
 
             def do_OPTIONS(self):  # noqa: N802
+                origin = self.headers.get('Origin', '')
+                if not re.fullmatch(r'(?:chrome-extension|moz-extension)://[a-zA-Z0-9-]+', origin):
+                    return self._send(403, {'ok': False})
                 self.send_response(204)
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self.send_header("Access-Control-Allow-Headers", "content-type")
+                self._cors()
+                self.send_header("Access-Control-Allow-Headers", "content-type,x-yaa-bridge")
                 self.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
                 self.end_headers()
 
             def do_GET(self):  # noqa: N802
+                if not self._allowed():
+                    return self._send(403, {'ok': False})
                 if self.path.startswith("/ping"):
                     return self._send(200, {"ok": True, "app": "Your Assistant Agent", "connected": bridge.connected})
                 if self.path.startswith("/next-command"):
@@ -121,7 +147,16 @@ class BrowserBridge:
                 return self._send(404, {"ok": False})
 
             def do_POST(self):  # noqa: N802
+                if not self._allowed():
+                    return self._send(403, {'ok': False})
+                try:
+                    if not 0 <= int(self.headers.get('Content-Length') or 0) <= 1024 * 1024:
+                        return self._send(413, {'ok': False})
+                except ValueError:
+                    return self._send(400, {'ok': False})
                 body = self._json_body()
+                if not isinstance(body, dict):
+                    return self._send(400, {'ok': False})
                 if self.path.startswith("/hello"):
                     was_connected = bridge.connected
                     with bridge._lock:

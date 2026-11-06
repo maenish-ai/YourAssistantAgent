@@ -4,6 +4,7 @@ import json
 import threading
 import time
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError
 
 import pytest
 
@@ -13,7 +14,7 @@ from yaa_lite.browser_bridge.server import BrowserBridge
 def request(bridge, path, data=None):
     raw = json.dumps(data).encode() if data is not None else None
     with urlopen(Request(f"http://127.0.0.1:{bridge.port}{path}", data=raw,
-                         headers={"Content-Type": "application/json"}), timeout=2) as response:
+                         headers={"Content-Type": "application/json", "X-YAA-Bridge": "1"}), timeout=2) as response:
         return json.load(response)
 
 
@@ -73,3 +74,35 @@ def test_session_probe_result_round_trip(bridge):
 def test_non_allowlisted_command_is_rejected(bridge):
     with pytest.raises(ValueError):
         bridge.execute("eval", script="alert('no')")
+
+
+def test_web_origin_cannot_drain_commands_or_spoof_extension(bridge):
+    url = f'http://127.0.0.1:{bridge.port}/next-command'
+    bridge.queue_command('open_url', url='https://example.com')
+    with pytest.raises(HTTPError) as denied:
+        urlopen(Request(url, headers={'Origin':'https://attacker.example', 'X-YAA-Bridge':'1'}), timeout=2)
+    assert denied.value.code == 403
+    with pytest.raises(HTTPError) as denied_no_marker:
+        urlopen(Request(url), timeout=2)
+    assert denied_no_marker.value.code == 403
+    assert request(bridge, '/next-command')['command']['action'] == 'open_url'
+
+
+def test_extension_preflight_is_scoped_and_untrusted_origin_is_denied(bridge):
+    url = f'http://127.0.0.1:{bridge.port}/hello'
+    with pytest.raises(HTTPError) as denied:
+        urlopen(Request(url, method='OPTIONS', headers={'Origin':'https://attacker.example'}), timeout=2)
+    assert denied.value.code == 403
+    with urlopen(Request(url, method='OPTIONS', headers={'Origin':'chrome-extension://abc123'}), timeout=2) as response:
+        assert response.status == 204
+        assert response.headers['Access-Control-Allow-Origin'] == 'chrome-extension://abc123'
+
+
+def test_oversized_post_is_rejected_before_reading_body(bridge):
+    url = f'http://127.0.0.1:{bridge.port}/hello'
+    request = Request(url, data=b'{}', headers={
+        'Content-Length': str(1024 * 1024 + 1), 'X-YAA-Bridge': '1',
+        'Content-Type': 'application/json'})
+    with pytest.raises(HTTPError) as denied:
+        urlopen(request, timeout=2)
+    assert denied.value.code == 413

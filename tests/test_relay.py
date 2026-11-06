@@ -16,7 +16,7 @@ import requests
 from relay_server.server import Broker,RelayServer
 from relay_server.setup import configure
 from yaa_lite.remote.relay_protocol import RelayKeys,origin,b64
-from yaa_lite.remote.relay_bridge import RelayBridge,CHUNK
+from yaa_lite.remote.relay_bridge import RelayBridge,CHUNK,_retry_delay
 from yaa_lite.remote.mobile import MobileServer
 from yaa_lite.remote.files import RemoteFiles
 from yaa_lite.remote.settings import pairing_payload,save_relay_enrollment,load_relay_enrollment
@@ -42,6 +42,12 @@ def test_python_android_crypto_vector_and_direction_binding():
 @pytest.mark.parametrize('url',['http://public.example','https://name:password@server.example','https://server.example/path','https://server.example?secret=key','https://server.example#fragment'])
 def test_no_insecure_or_credentialed_relay_origins(url):
     with pytest.raises(ValueError):origin(url)
+
+
+def test_reconnect_delay_increases_and_is_capped():
+    assert [_retry_delay(i, jitter=1) for i in range(1, 8)] == [1, 2, 4, 8, 16, 30, 30]
+    assert .8 <= _retry_delay(1) <= 1.2
+    assert _retry_delay(1000000, jitter=1.2) == 30
 
 
 def test_enrollment_file_is_encrypted_and_not_in_pairing_qr(tmp_path):

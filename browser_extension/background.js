@@ -1,7 +1,7 @@
 const base = "http://127.0.0.1:8765";
 
 async function post(path, data) {
-  return fetch(base + path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(data)});
+  return fetch(base + path, {method: "POST", headers: {"Content-Type": "application/json", "X-YAA-Bridge": "1"}, body: JSON.stringify(data)});
 }
 
 async function hello() {
@@ -200,7 +200,7 @@ async function poll() {
       if (!ack.ok) return;
       pendingResult = null;
     }
-    const r = await fetch(base + "/next-command");
+    const r = await fetch(base + "/next-command", {headers: {"X-YAA-Bridge": "1"}});
     if (!r.ok) return;
     const data = await r.json();
     if (data.command) {

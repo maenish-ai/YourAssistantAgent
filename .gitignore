@@ -13,3 +13,5 @@ android-signing-private/
 *.keystore
 github-secrets.json
 android/local.properties
+# Build-generated voice data; the preparation task downloads these assets.
+android/app/src/main/assets/voice/

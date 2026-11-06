@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 import os
+import random
 from pathlib import Path
 import secrets
 import sqlite3
@@ -17,6 +18,13 @@ from .relay_protocol import RelayKeys,origin,b64,unb64
 from .files import MAX_TRANSFER
 
 CHUNK=512*1024
+
+
+def _retry_delay(failures, *, jitter=None):
+    """Capped exponential reconnect delay; caller can interrupt the wait."""
+    base = min(30.0, 2.0 ** min(max(0, int(failures) - 1), 5))
+    factor = random.uniform(.8, 1.2) if jitter is None else float(jitter)
+    return min(30.0, max(.1, base * factor))
 
 
 class RelayBridge:
@@ -47,6 +55,7 @@ class RelayBridge:
     def channel_url(self):return self.url+'/relay/v1/'+self.keys.channel
 
     def _loop(self):
+        failures=0
         while not self.stop_event.is_set():
             try:
                 registration=self.remote.post(self.url+'/relay/v1/register',headers={'Authorization':'Bearer '+self.enrollment},
@@ -54,11 +63,13 @@ class RelayBridge:
                 status=registration.status_code;registration.close()
                 if status!=200:
                     self._state='denied' if status in (401,403) else 'retry'
-                    self.stop_event.wait(5);continue
+                    self.connected=False;failures+=1
+                    self.stop_event.wait(_retry_delay(failures));continue
                 self.connected=True;self._state='connected'
                 while not self.stop_event.is_set():
                     with self.remote.get(self.channel_url+'/next',headers=self._headers('desktop'),timeout=(10,23),allow_redirects=False) as response:
                         response.raise_for_status();envelope=response.json().get('request')
+                    failures=0
                     self._cleanup()
                     if not envelope:continue
                     if self.stop_event.is_set():break
@@ -68,7 +79,8 @@ class RelayBridge:
                         if posted.status_code not in (200,404):raise ValueError('Unexpected relay response')
             except Exception:
                 self._state='retry';self.connected=False
-                self.stop_event.wait(3)
+                failures+=1
+                self.stop_event.wait(_retry_delay(failures))
         self.connected=False;self._state='stopped'
         self._cleanup(all_transfers=True)
         self.remote.close();self.local.close()

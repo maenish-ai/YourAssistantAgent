@@ -2,7 +2,9 @@
 
 This optional extension connects **the normal browser you already use** to Your Assistant Agent through `127.0.0.1:8765` only. Keep the desktop app running on the same computer.
 
-For Chrome/Edge: open the extensions page (`chrome://extensions` or `edge://extensions`), enable Developer Mode, choose **Load unpacked**, and select this `browser_extension` folder. After updating these files, click **Reload** on the extension card; if the browser asks for the new alarms permission, accept it to enable reconnection. Click the extension icon to request an immediate connection check.
+For Chrome/Edge: open the extensions page (`chrome://extensions` or `edge://extensions`), enable Developer Mode, choose **Load unpacked**, and select this `browser_extension` folder. After updating these files, click **Reload** on the extension card; if the browser asks for the new alarms permission, accept it to enable reconnection. Click the extension icon to request an immediate connection check. The current bridge requires this updated extension; older workers will receive HTTP 403 until reloaded.
+
+The bridge rejects ordinary web origins and requires a custom request header. This mitigates web-page access but is **not authentication** against another browser extension or a local process; avoid using the bridge on an untrusted computer. A paired credential is still needed for stronger isolation.
 
 The worker uses browser alarms to reconnect after suspension. Commands run one at a time, and expired commands do not start later. A Facebook connection check inspects a temporary Facebook tab for signed-in UI, login prompts, or security checkpoints, then closes it. A successful HTTP response alone is not proof of a signed-in account.
 

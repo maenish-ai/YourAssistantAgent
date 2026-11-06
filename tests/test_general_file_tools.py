@@ -58,6 +58,19 @@ def test_symbolic_link_sources_and_destinations_cannot_redirect_mutations(files,
     assert (outside/'secret.txt').read_text()=='untouched'
 
 
+def test_recovery_move_rejects_recovery_folder_symlink(files, tmp_path):
+    outside = tmp_path / 'outside-recovery'; outside.mkdir()
+    try:
+        (files.root / '.yaa-recovery').symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip('Symlink unavailable')
+    preview = files.preview_recovery_move('report.txt')
+    with pytest.raises(FileError, match='رابط رمزي'):
+        files.move_file_to_recovery(preview)
+    assert (files.root / 'report.txt').exists()
+    assert not list(outside.iterdir())
+
+
 def make_zip(files,names):
     path=files.root/'bundle.zip'
     with zipfile.ZipFile(path,'w') as output:

@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import re
+import secrets
 import shutil
 import stat
 import tempfile
@@ -141,6 +142,70 @@ class RemoteFiles:
                 raise FileError('المسار يحتوي رابطاً رمزياً؛ اختر الملف أو المجلد الأصلي.')
             current = current.parent
         return self.resolve(relative, file=file)
+
+    def preview_recovery_move(self, relative):
+        """Capture the specific regular file to be reviewed, not a folder."""
+        with self._mutation_lock:
+            path = self._mutation_path(relative, file=True)
+            stat_result = path.stat()
+            if not stat.S_ISREG(stat_result.st_mode):
+                raise FileError('يمكن نقل الملفات العادية فقط إلى مجلد الاسترداد.')
+            return {'path': relative, 'size': stat_result.st_size,
+                    'mtime_ns': stat_result.st_mtime_ns,
+                    'device': stat_result.st_dev, 'inode': stat_result.st_ino}
+
+    def move_file_to_recovery(self, reviewed):
+        """Move a reviewed file to a unique recovery folder on the same volume."""
+        if not isinstance(reviewed, dict) or set(reviewed) != {'path','size','mtime_ns','device','inode'}:
+            raise FileError('معاينة الملف غير صالحة. أعد تجهيز الطلب.')
+        with self._mutation_lock:
+            current = self.preview_recovery_move(reviewed['path'])
+            if current != reviewed:
+                raise FileError('تغيّر الملف بعد المعاينة؛ لم أنقله. أعد عرض الطلب.')
+            path = self._mutation_path(reviewed['path'], file=True)
+            relative = reviewed['path']
+            parent = relative.rpartition('/')[0]
+            recovery_parent = self._relative_child(parent, '.yaa-recovery')
+            recovery = path.parent / '.yaa-recovery'
+            if recovery.is_symlink():
+                raise FileError('مجلد الاسترداد رابط رمزي؛ لم أنقل الملف.')
+            recovery.mkdir(exist_ok=True)
+            if not recovery.is_dir():
+                raise FileError('تعذر إنشاء مجلد الاسترداد.')
+            self._mutation_path(recovery_parent)
+            identifier = secrets.token_hex(16)
+            target_folder = recovery / identifier
+            target_folder.mkdir()
+            target = target_folder / path.name
+            try:
+                os.rename(path, target)
+            except Exception:
+                target_folder.rmdir()
+                raise
+            recovery_path = self._relative_child(self._relative_child(recovery_parent, identifier), path.name)
+            return {'ok': True, 'path': relative, 'recovery_path': recovery_path,
+                    'result': 'نقلت الملف إلى مجلد الاسترداد، وليس سلة Windows. لاسترجاعه انقله من: ' + recovery_path}
+
+    def preview_restore(self, relative):
+        with self._mutation_lock:
+            parts = relative.split('/') if isinstance(relative, str) else []
+            if (len(parts) < 3 or parts[-3] != '.yaa-recovery' or
+                    not re.fullmatch(r'[0-9a-f]{32}', parts[-2])):
+                raise FileError('حدد مسار ملف داخل مجلد الاسترداد كما ظهر في النتيجة.')
+            source = self.preview_recovery_move(relative)
+            parent = '/'.join(parts[:-3])
+            _, destination = self._destination(parent, parts[-1])
+            return {'source': source, 'parent': parent, 'name': parts[-1], 'destination': destination}
+
+    def restore_file(self, reviewed):
+        if not isinstance(reviewed, dict) or set(reviewed) != {'source','parent','name','destination'}:
+            raise FileError('معاينة الاسترجاع غير صالحة.')
+        with self._mutation_lock:
+            current = self.preview_restore(reviewed['source'].get('path', ''))
+            if current != reviewed:
+                raise FileError('تغيّر الملف بعد المعاينة؛ لم أسترجعه.')
+            result = self.move_file(reviewed['source']['path'], reviewed['parent'], reviewed['name'])
+            return {'ok': True, 'path': result['path'], 'result': 'استرجعت الملف إلى: ' + result['path']}
 
     @staticmethod
     def _relative_child(parent, name):

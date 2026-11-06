@@ -241,6 +241,42 @@ class RemoteAssistant:
             self._invalidate();self.db.clear_pending_action(self.session_id)
             self._reply('فهمت أنه مثال فقط؛ لم أفتح أو أغلق نافذة ولم أجهّز عملية.')
             return
+        restore = re.fullmatch(r'(?:/restore(?:\s+(.*))?|(?:استرجع|استرجعي)\s+الملف(?:\s+(.*))?)', text, re.I | re.S)
+        if restore:
+            self._invalidate()
+            self.db.clear_pending_action(self.session_id)
+            requested = (restore.group(1) or restore.group(2) or '').strip().strip('"\'')
+            if not requested:
+                self._reply('أرسل /restore متبوعاً بمسار الاسترداد الذي ظهر بعد نقل الملف.')
+                return
+            try:
+                self.check_desktop()
+                preview = self.files.preview_restore(requested)
+                self._offer('restore_file', preview, requested,
+                    f'مراجعة استرجاع ملف:\nمن: {requested}\nإلى: {preview["destination"]}\n'
+                    'لن أستبدل ملفاً موجوداً. هل توافق؟')
+            except (OSError, ValueError, RuntimeError) as exc:
+                self._reply('تعذر تجهيز الاسترجاع: ' + str(exc))
+            return
+        recycle = re.fullmatch(r'(?:/trash(?:\s+(.*))?|(?:احذف|امسح|احذفي|امسحي)\s+الملف(?:\s+(.*))?)', text, re.I | re.S)
+        if recycle:
+            self._invalidate()
+            self.db.clear_pending_action(self.session_id)
+            requested = (recycle.group(1) or recycle.group(2) or '').strip().strip('"\'')
+            if not requested:
+                self._reply('حدد مسار الملف داخل المجلد المشترك، مثلاً /trash reports/file.txt. أستطيع نقل ملف واحد إلى مجلد استرداد بعد عرض الموافقة.')
+                return
+            try:
+                self.check_desktop()
+                preview = self.files.preview_recovery_move(requested)
+                actual = self.files.resolve(requested, file=True)
+                summary = (f'مراجعة نقل ملف إلى مجلد الاسترداد بجانب الملف:\nالملف: {actual}\nالحجم: {preview["size"]} بايت\n'
+                           'لن يُنقل الملف إلا بعد الضغط على موافق. سأعيد فحص هوية الملف وحجمه ووقت تعديله قبل النقل. '
+                           'سيبقى الملف في مجلد .yaa-recovery ويمكن استرجاعه؛ هذا ليس سلة Windows. هل توافق؟')
+                self._offer('recycle_file', preview, requested, summary)
+            except (OSError, ValueError, RuntimeError) as exc:
+                self._reply('تعذر تجهيز الملف: ' + str(exc) + '\nحدد مسار ملف موجود داخل منطقة الملفات المسموح بها.')
+            return
         if text.lower() in {'/new', '/newchat'}:
             self._invalidate()
             self.db.clear_pending_action(self.session_id)
@@ -426,6 +462,21 @@ class RemoteAssistant:
                 self._reply('تعذر إكمال الرفع. افحص حالة المستودع على الكمبيوتر قبل إعادة الطلب.')
             finally:
                 Path(approval.payload.archive).unlink(missing_ok=True)
+        elif approval.kind == 'recycle_file':
+            try:
+                self.check_desktop()
+                result = self.files.move_file_to_recovery(approval.payload)
+                self._reply(result['result'] + '\nللاسترجاع أرسل /restore ' + result['recovery_path'])
+            except Exception as exc:
+                self.activity('remote_recycle_error', type(exc).__name__)
+                self._reply('تعذر نقل الملف إلى مجلد الاسترداد: ' + str(exc))
+        elif approval.kind == 'restore_file':
+            try:
+                self.check_desktop()
+                self._reply(self.files.restore_file(approval.payload)['result'])
+            except Exception as exc:
+                self.activity('remote_restore_error', type(exc).__name__)
+                self._reply('تعذر استرجاع الملف: ' + str(exc))
         elif approval.kind == 'desktop_ai':
             try:
                 from .desktop_agent import run_desktop_task

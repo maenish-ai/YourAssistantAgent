@@ -107,6 +107,94 @@ def test_stop_facebook_requests_only_current_run(conversation):
     assert 'قد تكتمل خطوة' in conversation.events[-1]['text']
 
 
+def test_owner_can_review_and_recover_deleted_file(conversation, tmp_path):
+    from yaa_lite.remote.files import RemoteFiles
+    root = tmp_path / 'shared'; root.mkdir()
+    original = root / 'report.txt'; original.write_text('important', encoding='utf-8')
+    assistant = conversation.assistant
+    assistant.files = RemoteFiles(root)
+    conversation.settings.remote_desktop_enabled = True
+    assistant.text('احذف الملف report.txt')
+    assert original.exists() and assistant._approval.kind == 'recycle_file'
+    assert 'report.txt' in conversation.events[-1]['text']
+    token = assistant._approval.token
+    assistant.callback('approve:' + token)
+    assert not original.exists()
+    recovered = list((root / '.yaa-recovery').glob('*/report.txt'))
+    assert len(recovered) == 1 and recovered[0].read_text(encoding='utf-8') == 'important'
+    assert '.yaa-recovery' in conversation.events[-1]['text']
+    assistant.callback('approve:' + token)
+    assert len(list((root / '.yaa-recovery').glob('*/report.txt'))) == 1
+    assistant.text('/restore ' + recovered[0].relative_to(root).as_posix())
+    assert not original.exists() and assistant._approval.kind == 'restore_file'
+    assistant.callback('approve:' + assistant._approval.token)
+    assert original.read_text(encoding='utf-8') == 'important'
+
+
+def test_restore_never_overwrites_an_existing_file(conversation, tmp_path):
+    from yaa_lite.remote.files import RemoteFiles
+    root = tmp_path / 'shared'; root.mkdir()
+    original = root / 'report.txt'; original.write_text('old')
+    assistant = conversation.assistant
+    assistant.files = RemoteFiles(root)
+    conversation.settings.remote_desktop_enabled = True
+    assistant.text('/trash report.txt')
+    assistant.callback('approve:' + assistant._approval.token)
+    recovered = next((root / '.yaa-recovery').glob('*/report.txt'))
+    assistant.text('/restore ' + recovered.relative_to(root).as_posix())
+    token = assistant._approval.token
+    original.write_text('new')
+    assistant.callback('approve:' + token)
+    assert original.read_text() == 'new'
+    assert recovered.read_text() == 'old'
+    assert 'تعذر استرجاع' in conversation.events[-1]['text']
+
+
+def test_changed_file_after_review_is_not_moved(conversation, tmp_path):
+    from yaa_lite.remote.files import RemoteFiles
+    root = tmp_path / 'shared'; root.mkdir()
+    original = root / 'report.txt'; original.write_text('old')
+    assistant = conversation.assistant
+    assistant.files = RemoteFiles(root)
+    conversation.settings.remote_desktop_enabled = True
+    assistant.text('/trash report.txt')
+    token = assistant._approval.token
+    original.write_text('new, longer contents')
+    assistant.callback('approve:' + token)
+    assert original.read_text() == 'new, longer contents'
+    assert not (root / '.yaa-recovery').exists()
+    assert 'تغيّر الملف' in conversation.events[-1]['text']
+
+
+def test_recovery_move_refuses_files_outside_scope_and_directories(conversation, tmp_path):
+    from yaa_lite.remote.files import RemoteFiles
+    root = tmp_path / 'shared'; root.mkdir()
+    outside = tmp_path / 'outside.txt'; outside.write_text('private')
+    (root / 'folder').mkdir()
+    assistant = conversation.assistant
+    assistant.files = RemoteFiles(root)
+    conversation.settings.remote_desktop_enabled = True
+    for requested in ('/trash ../outside.txt', '/trash folder'):
+        assistant.text(requested)
+        assert assistant._approval is None
+    assert outside.read_text() == 'private'
+
+
+def test_cancelled_or_unpermitted_recovery_request_does_not_move_file(conversation, tmp_path):
+    from yaa_lite.remote.files import RemoteFiles
+    root = tmp_path / 'shared'; root.mkdir()
+    original = root / 'report.txt'; original.write_text('keep')
+    assistant = conversation.assistant
+    assistant.files = RemoteFiles(root)
+    conversation.settings.remote_desktop_enabled = False
+    assistant.text('/trash report.txt')
+    assert assistant._approval is None and original.exists()
+    conversation.settings.remote_desktop_enabled = True
+    assistant.text('/trash report.txt')
+    assistant.callback('cancel:' + assistant._approval.token)
+    assert original.exists() and not (root / '.yaa-recovery').exists()
+
+
 def test_programming_error_does_not_blame_groq_or_login(conversation, monkeypatch):
     import yaa_lite.ai.runtime as runtime
     def fail(*args, **kwargs):

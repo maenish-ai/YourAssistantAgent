@@ -167,6 +167,46 @@ def test_new_draft_contains_full_actual_targets_and_defaults_to_one_off(setup):
     assert browser.shares == []
 
 
+def test_explicit_publish_now_overrides_stale_model_schedule(setup):
+    db, settings, service, browser = setup
+    session = db.create_session('hammer')
+    controller = SimpleNamespace(db=db, settings=settings, facebook=service,
+                                 t=lambda ar, en: ar, _activity=lambda *args: None)
+    reply = _campaign_preview(controller, 'انشر الآن', {
+        'source_page_url': 'https://www.facebook.com/page',
+        'run_immediately': False, 'run_time': '20:00', 'weekdays': [1],
+    }, session)
+    pending = db.get_pending_action(session)
+    assert pending['arguments']['run_immediately'] is True
+    assert pending['arguments']['plan']['weekdays'] == []
+    assert pending['arguments']['plan']['run_once_at'] == ''
+    assert 'مرة واحدة الآن بعد الموافقة' in reply.text
+    assert db.list_rules() == [] and browser.shares == []
+
+
+def test_now_with_new_future_schedule_asks_before_any_preview(setup):
+    db, settings, service, browser = setup
+    session = db.create_session('hammer')
+    controller = SimpleNamespace(db=db, settings=settings, facebook=service,
+                                 t=lambda ar, en: ar, _activity=lambda *args: None)
+    reply = _campaign_preview(controller, 'انشر الآن وحدد موعد غدا', {
+        'source_page_url': 'https://www.facebook.com/page', 'run_time': '20:00',
+    }, session)
+    assert 'هل تريد' in reply.text
+    assert db.get_pending_action(session) is None and browser.shares == []
+
+
+def test_publish_now_does_not_silently_use_old_default_page(setup):
+    db, settings, service, browser = setup
+    settings.default_source_page = 'https://www.facebook.com/old'
+    session = db.create_session('hammer')
+    controller = SimpleNamespace(db=db, settings=settings, facebook=service,
+                                 t=lambda ar, en: ar, _activity=lambda *args: None)
+    reply = _campaign_preview(controller, 'انشر الآن', {'run_immediately':True}, session)
+    assert 'رابط صفحة' in reply.text
+    assert db.get_pending_action(session) is None and browser.shares == []
+
+
 def test_busy_service_does_not_claim_a_task_started(setup):
     db, settings, service, browser = setup
     rule = snapshot_rule(db, service, post_count=1)

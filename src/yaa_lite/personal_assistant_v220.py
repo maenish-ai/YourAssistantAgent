@@ -16,6 +16,7 @@ compatibility with existing databases and imports.
 from __future__ import annotations
 
 import json
+import re
 import time
 from datetime import datetime
 from typing import Any
@@ -415,14 +416,27 @@ def _save_selection(db, session_id: int, args: dict) -> None:
 def _campaign_preview(controller, user_text: str, args: dict, session_id: int, status=None):
     from .agent.orchestrator import AgentResponse
     from .stability_v260 import _check_cancel
+    from .agent.intent import immediate_publish_request, normalized_command
     _check_cancel()
+
+    if immediate_publish_request(user_text):
+        import re
+        current = normalized_command(user_text)
+        if re.search(r'\b(?:غدا|بكره|بكرا|الساعة|الساعه|يوميا|اسبوعيا|tomorrow|daily|weekly)\b|\b(?:at|الساعة|الساعه)\s*\d', current):
+            return AgentResponse(controller.t(
+                'طلبت النشر الآن وذكرت موعداً آخر أيضاً. هل تريد النشر الآن فقط أم إنشاء جدول منفصل؟ لم أجهز نشراً بعد.',
+                'You requested publishing now and also mentioned another schedule. Do you want only an immediate publication or a separate schedule? Nothing was prepared.'), used_model=True)
+        # Current explicit intent wins over old times or model-supplied defaults.
+        args = {**args, 'run_immediately': True, 'weekdays': [], 'run_once_at': '', 'run_time': ''}
 
     include = _clean_list(args.get("include_keywords"))
     exclude_kw = _clean_list(args.get("exclude_keywords"))
     exclude_names = _clean_list(args.get("exclude_names"))
     match_mode = "all" if str(args.get("match_mode")).lower() == "all" else "any"
     encoded = encode_group_filter(include, exclude_kw, exclude_names, match_mode)
-    source = str(args.get("source_page_url") or controller.settings.default_source_page or "").strip()
+    # A generic immediate request must not silently fall back to a configured
+    # page from an old task. The model must resolve the current source or ask.
+    source = str(args.get("source_page_url") or ('' if immediate_publish_request(user_text) else controller.settings.default_source_page) or "").strip()
     if not source:
         return AgentResponse(controller.t(
             "أعطني رابط صفحة Facebook التي تريد أخذ المنشورات منها.",
@@ -554,14 +568,14 @@ def _install_personal_controller() -> None:
         text = (user_text or "").strip()
         if not text:
             return AgentResponse("")
-        from .agent.intent import explicit_example_only
+        from .agent.intent import explicit_example_only, cancel_preview_request, immediate_publish_request, normalized_command
         if explicit_example_only(text):
             self.db.clear_pending_action(session_id)
             return AgentResponse(self.t("فهمت أنه مثال فقط؛ لم أفتح صفحات أو أجهّز نشراً. أعطني الطلب الفعلي عندما تريد التنفيذ.","Understood as an example only. No page was opened or publishing plan created. Give the actual request when ready."))
 
         pending = self.db.get_pending_action(session_id)
         normalized = " ".join(text.split())
-        if pending and _CANCEL_RE.match(normalized):
+        if pending and (_CANCEL_RE.match(normalized) or cancel_preview_request(text)):
             self.db.clear_pending_action(session_id)
             self._activity("agent_action_cancelled", pending.get("summary", ""), status,
                            self.t("تم إلغاء العملية", "Action cancelled"))
@@ -595,6 +609,7 @@ def _install_personal_controller() -> None:
             pending_note = ""
 
         selection = _selection_context(self.db, session_id)
+        selection_from_current_turn = False
         now = datetime.now().astimezone().isoformat(timespec="seconds")
         system_context = (
             "/no_think\n"
@@ -609,8 +624,8 @@ def _install_personal_controller() -> None:
             f"Current local datetime: {now}. Configured default Facebook source page: {self.settings.default_source_page or '(none)'}. "
             f"Saved Facebook groups: {self.db.count_groups()}."
         )
-        if selection:
-            system_context += f" Current group selection in this chat: {selection}. Reuse it when the user says 'these groups', 'اعتمدهم', or an equivalent reference."
+        if selection and re.search(r'هالمجموعات|هالجروبات|المجموعات (?:هاي|هذه|هذي)|الجروبات (?:هاي|هذه|هذي)|اعتمدهم|these groups|same groups', normalized_command(text)):
+            system_context += f" Current group selection in this chat (explicitly referenced by the owner): {selection}. Verify it still matches the current request."
         if pending_note:
             system_context += "\n" + pending_note
 
@@ -647,7 +662,10 @@ def _install_personal_controller() -> None:
             if name == "draft_facebook_campaign":
                 # If the user refers to a previously selected group set and Qwen
                 # omitted filters, carry that selection forward deterministically.
-                if not any(args.get(k) for k in ("include_keywords", "exclude_keywords", "exclude_names")) and selection:
+                current = normalized_command(text)
+                refers_to_selection = bool(re.search(
+                    r'هالمجموعات|هالجروبات|المجموعات (?:هاي|هذه|هذي)|الجروبات (?:هاي|هذه|هذي)|اعتمدهم|these groups|same groups', current))
+                if not any(args.get(k) for k in ("include_keywords", "exclude_keywords", "exclude_names")) and selection and (selection_from_current_turn or refers_to_selection):
                     try:
                         saved = json.loads(selection)
                         for key in ("include_keywords", "exclude_keywords", "exclude_names", "match_mode"):
@@ -655,6 +673,17 @@ def _install_personal_controller() -> None:
                                 args[key] = saved[key]
                     except Exception:
                         pass
+                if (not any(args.get(k) for k in ('include_keywords', 'exclude_keywords', 'exclude_names'))
+                        and re.search(r'تحتوي|تحتوى|اللي فيها|التي فيها|اسمها|كلمه|كلمة|containing|contains', current)):
+                    return AgentResponse(self.t(
+                        'لم أتمكن من تحديد كلمة تصفية المجموعات في طلبك. اذكر الكلمة المطلوبة مجدداً؛ لم أجهّز نشراً لكل المجموعات.',
+                        'I could not determine the group filter. Please provide the keyword again; no all-groups publication was prepared.'), used_model=True)
+                if (immediate_publish_request(text)
+                        and not any(args.get(k) for k in ('include_keywords', 'exclude_keywords', 'exclude_names'))
+                        and not re.search(r'(?:كل|جميع|كافه)\s+(?:ال)?(?:مجموعات|جروبات|قروبات)|all\s+(?:the\s+)?groups', current)):
+                    return AgentResponse(self.t(
+                        'حدد المجموعات أو قل صراحةً كل المجموعات قبل تجهيز النشر. لم أستخدم جدولاً أو تحديداً قديماً تلقائياً.',
+                        'Specify the target groups or explicitly request all groups before preparing publication. No old schedule or selection was used automatically.'), used_model=True)
                 self.db.clear_pending_action(session_id)
                 return _campaign_preview(self, text, args, session_id, status=status)
 
@@ -667,6 +696,16 @@ def _install_personal_controller() -> None:
                     messages.extend([
                         _tool_call_message(call_id, name, args, turn.get("content") or ""),
                         {"role": "tool", "tool_call_id": call_id, "name": name, "content": "Invalid task ID."},
+                    ])
+                    continue
+                # The model may infer an old task ID from history. Only the
+                # owner's explicit matching ID can select a stored rule.
+                specified = re.search(r'(?:المهمه|المهمة|task|rule)\s*(?:رقم|#)?\s*(\d+)', text, re.I)
+                if not specified or int(specified.group(1)) != rule_id:
+                    messages.extend([
+                        _tool_call_message(call_id, name, args, turn.get('content') or ''),
+                        {'role':'tool', 'tool_call_id':call_id, 'name':name,
+                         'content':'The owner did not explicitly identify this saved task ID. Do not reuse a saved rule. Draft a fresh campaign using the current request and resolved current context, or ask which task ID is intended.'},
                     ])
                     continue
                 rule = self.db.get_rule(rule_id)
@@ -693,6 +732,7 @@ def _install_personal_controller() -> None:
                                self.t("تمت قراءة نتيجة الأداة", "Tool result received"))
                 if name == "search_facebook_groups" and result.ok:
                     _save_selection(self.db, session_id, args)
+                    selection_from_current_turn = True
                     selection = json.dumps({
                         "include_keywords": _clean_list(args.get("include_keywords")),
                         "exclude_keywords": _clean_list(args.get("exclude_keywords")),

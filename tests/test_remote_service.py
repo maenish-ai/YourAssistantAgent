@@ -64,6 +64,49 @@ def test_diagnostics_does_not_call_ai_or_invalidate_review(conversation, monkeyp
     assert 'private-groq-key' not in text
 
 
+def test_natural_cancellation_clears_preview_without_claiming_schedule_stopped(conversation):
+    assistant = conversation.assistant
+    assistant.text('draft')
+    token = assistant._approval.token
+    assistant.text('لا، أنا ما بدي هيك، الغي')
+    assert assistant._approval is None
+    assert conversation.db.get_pending_action(assistant.session_id) is None
+    assert 'المعاينة' in conversation.events[-1]['text']
+    assert 'لم أوقف مهمة جارية' in conversation.events[-1]['text']
+    assistant.callback('approve:' + token)
+    assert not conversation.controller.executed
+
+
+def test_schedule_can_be_listed_and_disabled_by_exact_id(conversation):
+    from yaa_lite.agent.legacy_smart import SmartPlan
+    db = conversation.db
+    rule_id = db.add_rule(SmartPlan(name='scheduled example', command_text='example', source_page_url='https://www.facebook.com/example'))
+    assistant = conversation.assistant
+    assistant.text('/tasks')
+    assert f'#{rule_id}' in conversation.events[-1]['text']
+    assistant.text(f'/pause_task {rule_id}')
+    assert db.get_rule(rule_id)['enabled'] == 0
+    assert 'لم أحذفها' in conversation.events[-1]['text']
+
+
+def test_cancel_preview_does_not_silently_disable_saved_task(conversation):
+    from yaa_lite.agent.legacy_smart import SmartPlan
+    db = conversation.db
+    rule_id = db.add_rule(SmartPlan(name='example', command_text='example', source_page_url='https://www.facebook.com/example'))
+    conversation.assistant.text('draft')
+    conversation.assistant.text('لا، ما بدي، الغي')
+    assert db.get_rule(rule_id)['enabled'] == 1
+    assert 'لم أوقف مهمة جارية' in conversation.events[-1]['text']
+
+
+def test_stop_facebook_requests_only_current_run(conversation):
+    calls = []
+    conversation.facebook.stop_current = lambda: calls.append('stop') or True
+    conversation.assistant.text('/stop_facebook')
+    assert calls == ['stop']
+    assert 'قد تكتمل خطوة' in conversation.events[-1]['text']
+
+
 def test_programming_error_does_not_blame_groq_or_login(conversation, monkeypatch):
     import yaa_lite.ai.runtime as runtime
     def fail(*args, **kwargs):

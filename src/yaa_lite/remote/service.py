@@ -248,10 +248,50 @@ class RemoteAssistant:
             self._desktop_history.clear()
             self._reply('بدأت محادثة جديدة. أرسل طلبك أو أرفق ZIP لعرض خطة رفعه.')
             return
-        if text.lower() in {'/cancel', 'إلغاء', 'الغاء', 'cancel'}:
+        # Saved schedules, active runs, and unapproved previews are distinct.
+        # Never silently disable a saved task without its explicit ID.
+        from ..agent.intent import cancel_preview_request, normalized_command
+        task_control = re.fullmatch(r'(?:/pause_task\s+|(?:الغ|الغي|اوقف|عطل)\s+(?:المهمه|الجدوله)(?:\s+رقم)?\s*#?\s*)(\d+)', normalized_command(text))
+        if task_control:
+            rule_id = int(task_control.group(1))
+            rule = self.db.get_rule(rule_id)
+            if not rule:
+                self._reply('لم أجد مهمة محفوظة بهذا الرقم. أرسل /tasks لعرض المهام.')
+                return
+            self.db.set_rule_enabled(rule_id, False)
+            updated = self.db.get_rule(rule_id)
+            if not updated or updated.get('enabled'):
+                self._reply('تعذر التأكد من تعطيل الجدولة. راجع قائمة المهام قبل الاعتماد على الإلغاء.')
+                return
+            self.db.add_task_event(rule_id, 'paused', 'Disabled from paired phone')
+            self._reply(f'عطّلت جدولة المهمة رقم {rule_id}: {rule.get("name", "")}. لم أحذفها. '
+                        'إذا كانت قد بدأت أو دخلت قائمة التنفيذ، قد تستمر؛ أرسل /stop_facebook لإيقاف المهمة الجارية وراجع حالتها.')
+            return
+        if text.lower() == '/tasks' or normalized_command(text) in {'اعرض المهام', 'المهام المجدوله', 'المهام المحفوظه'}:
+            rules = self.db.list_rules(50)
+            if not rules:
+                self._reply('لا توجد مهام محفوظة.')
+            else:
+                lines = [f"#{r['id']} {str(r.get('name') or '')[:100]} | {'مفعلة' if r.get('enabled') else 'معطلة'} | القادم: {(r.get('next_run_at') or '-') if r.get('enabled') else '-'}" for r in rules]
+                self._reply('المهام المحفوظة (حتى 50):\n' + '\n'.join(lines) + '\nلتعطيل جدول مهمة أرسل /pause_task ورقمها. لتعطيل التنفيذ الجاري أرسل /stop_facebook.')
+            return
+        if text.lower() == '/stop_facebook' or normalized_command(text) in {'اوقف النشر الحالي', 'اوقف مهمة فيسبوك الحاليه'}:
+            stop = getattr(self.facebook, 'stop_current', None)
+            if callable(stop) and stop():
+                self._reply('طلبت إيقاف مهمة Facebook الجارية. قد تكتمل خطوة كانت قيد التنفيذ؛ راجع النتيجة. لم تتغير جداول المهام المحفوظة.')
+            else:
+                self._reply('لا توجد مهمة Facebook جارية أمكن طلب إيقافها. لم تتغير جداول المهام المحفوظة.')
+            return
+        if text.lower() in {'/cancel', 'إلغاء', 'الغاء', 'cancel'} or cancel_preview_request(text):
+            with self._lock:
+                had_preview = bool(self._approval)
+            had_pending = bool(self.db.get_pending_action(self.session_id))
             self._invalidate()
             self.db.clear_pending_action(self.session_id)
-            self._reply('تم إلغاء المعاينة المعلّقة. العمليات التي بدأت بالفعل تظهر في الحالة.')
+            if had_preview or had_pending:
+                self._reply('ألغيت المعاينة المعلّقة فقط. لم أوقف مهمة جارية أو أعطّل جدولاً محفوظاً. أرسل /tasks لعرض الجداول أو /stop_facebook لطلب إيقاف النشر الجاري.')
+            else:
+                self._reply('لا توجد معاينة معلّقة لألغيها. لم أغيّر المهام المحفوظة أو الجارية. أرسل /tasks لعرض الجداول أو /stop_facebook لطلب إيقاف النشر الجاري.')
             return
         if text.lower() in {'/status', '/start', '/help'}:
             status = self.facebook.current_status()

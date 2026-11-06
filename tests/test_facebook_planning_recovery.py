@@ -88,6 +88,57 @@ def test_planning_can_finish_multi_step_reads_without_stopping_after_five(planni
     assert db.list_rules() == []
 
 
+def test_publish_now_does_not_select_old_task_without_explicit_id(planning_stack):
+    from yaa_lite.agent.legacy_smart import SmartPlan
+    db = planning_stack
+    old_id = db.add_rule(SmartPlan(name='old', command_text='old schedule',
+                                    source_page_url='https://www.facebook.com/old'))
+    calls = []
+    def native_turn(profile, messages, **kwargs):
+        calls.append(messages)
+        if len(calls) == 1:
+            return {'tool_calls': [{'id':'old', 'name':'run_facebook_rule_now', 'arguments':{'rule_id':old_id}}]}
+        assert 'Do not reuse a saved rule' in messages[-1]['content']
+        return {'tool_calls': [{'id':'new', 'name':'draft_facebook_campaign', 'arguments':{
+            'source_page_url':'https://www.facebook.com/new', 'include_keywords':['test'], 'run_time':'20:00', 'run_immediately':False}}]}
+    sources = []
+    def preview(source, *args):
+        sources.append(source)
+        return {'post_urls':['https://www.facebook.com/new/posts/1'],
+                'selected_groups':[{'name':'test group','url':'https://www.facebook.com/groups/1'}]}
+    controller = SmartAgentController(db, Settings(),
+        SimpleNamespace(runtime=SimpleNamespace(native_turn=native_turn)),
+        SimpleNamespace(preview_campaign=preview))
+    session = db.create_session('hammer')
+    result = controller.handle(None, [], 'انشر الآن', session, 256, 10)
+    pending = db.get_pending_action(session)
+    assert sources == ['https://www.facebook.com/new']
+    assert pending['arguments']['run_immediately'] is True
+    assert 'الموافقة' in result.text and len(db.list_rules()) == 1
+
+
+def test_new_filtered_request_does_not_inherit_old_group_selection(planning_stack):
+    from yaa_lite.personal_assistant_v220 import _save_selection
+    db = planning_stack
+    session = db.create_session('hammer')
+    _save_selection(db, session, {'include_keywords':['old_keyword']})
+    def turn(profile, messages, **kwargs):
+        assert not any('old_keyword' in str(row) for row in messages)
+        return {'tool_calls':[{'id':'draft','name':'draft_facebook_campaign',
+                               'arguments':{'source_page_url':'https://www.facebook.com/new'}}]}
+    controller = SmartAgentController(db, Settings(), SimpleNamespace(runtime=SimpleNamespace(native_turn=turn)),
+                                      SimpleNamespace(preview_campaign=lambda *a: pytest.fail('Must ask for missing filter')))
+    result = controller.handle(None, [], 'انشر الآن في المجموعات التي تحتوي على كلمة جديدة', session, 256, 10)
+    assert 'كلمة' in result.text
+    assert db.get_pending_action(session) is None
+
+
+@pytest.mark.parametrize('text', ['لا تنشر الآن', 'ما بدي تنشر الآن', 'إذا قلت انشر الآن'])
+def test_negated_or_conditional_now_is_not_positive_intent(text):
+    from yaa_lite.agent.intent import immediate_publish_request
+    assert not immediate_publish_request(text)
+
+
 ARABIC_FACEBOOK_FLOW = r'''
 import json
 from pathlib import Path

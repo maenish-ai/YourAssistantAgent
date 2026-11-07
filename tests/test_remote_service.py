@@ -77,6 +77,65 @@ def test_natural_cancellation_clears_preview_without_claiming_schedule_stopped(c
     assert not conversation.controller.executed
 
 
+def test_discussing_cancellation_preserves_pending_preview(conversation):
+    assistant = conversation.assistant
+    assistant.text('draft')
+    old_approval = assistant._approval
+    assistant.text('شو رأيك ألغي المهمة؟')
+    assert assistant._approval is old_approval
+    assert conversation.db.get_pending_action(assistant.session_id) is not None
+    assert conversation.controller.calls[-1][0] == 'شو رأيك ألغي المهمة؟'
+    assert not conversation.controller.executed
+
+
+def test_advice_about_computer_is_not_a_desktop_execution_request(conversation):
+    conversation.assistant.text('شو رأيك نفتح المتصفح على الكمبيوتر؟')
+    assert conversation.assistant._approval is None
+    assert conversation.controller.calls[-1][0] == 'شو رأيك نفتح المتصفح على الكمبيوتر؟'
+    assert 'فعّل التحكم' not in conversation.events[-1]['text']
+
+
+def test_failed_advice_does_not_discard_pending_review(conversation, monkeypatch):
+    from yaa_lite.ai.runtime import LocalAIError
+    assistant = conversation.assistant
+    assistant.text('draft')
+    approval = assistant._approval
+    def fail(*args, **kwargs):
+        raise LocalAIError('temporary failure', code='network')
+    monkeypatch.setattr(conversation.controller, 'handle', fail)
+    assistant.text('شو رأيك نعمل إعلان؟')
+    assert assistant._approval is approval
+    assert conversation.db.get_pending_action(assistant.session_id) is not None
+    assert 'groq_network' in conversation.events[-1]['text']
+    assert not conversation.events[-1]['clear_approval']
+
+
+def test_no_action_result_does_not_report_task_completed(conversation, monkeypatch):
+    assistant = conversation.assistant
+    conversation.settings.remote_desktop_enabled = True
+    conversation.settings.remote_ai_enabled = True
+    monkeypatch.setattr(assistant, 'check_desktop', lambda: None)
+    monkeypatch.setattr('yaa_lite.remote.desktop_agent.run_desktop_task',
+                        lambda *a, **kw: 'لم أنفذ أي خطوة على الكمبيوتر في هذه المهمة.')
+    assistant.text('افتح برنامجاً على الكمبيوتر')
+    assistant.callback('approve:' + assistant._approval.token)
+    progress = [event['progress']['state'] for event in conversation.events if event.get('progress')]
+    assert progress[-1] == 'failed'
+
+
+def test_unverified_external_result_is_reported_separately(conversation, monkeypatch):
+    assistant = conversation.assistant
+    conversation.settings.remote_desktop_enabled = True
+    conversation.settings.remote_ai_enabled = True
+    monkeypatch.setattr(assistant, 'check_desktop', lambda: None)
+    monkeypatch.setattr('yaa_lite.remote.desktop_agent.run_desktop_task',
+                        lambda *a, **kw: 'لا أستطيع تأكيد النشر من النتائج.')
+    assistant.text('افتح برنامجاً على الكمبيوتر')
+    assistant.callback('approve:' + assistant._approval.token)
+    progress = [event['progress']['state'] for event in conversation.events if event.get('progress')]
+    assert progress[-1] == 'unverified'
+
+
 def test_schedule_can_be_listed_and_disabled_by_exact_id(conversation):
     from yaa_lite.agent.legacy_smart import SmartPlan
     db = conversation.db

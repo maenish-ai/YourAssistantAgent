@@ -13,7 +13,7 @@ import webbrowser
 from tkinter import ttk
 
 from .voice.cloud_service import CloudVoiceService, VoiceCancelled
-from .agent.intent import normalized_command,explicit_example_only
+from .agent.intent import normalized_command,explicit_example_only,is_discussion_request
 
 _INSTALLED = False
 _STREAM_PREFIX = "__YAA_STREAM_V250__:"
@@ -25,7 +25,7 @@ _FB_CHECK = re.compile(r"(?:افحص|فحص|تحقق|شيك|تأكد|check|verif
 
 def fast_facebook_intent(text: str) -> str | None:
     text = normalized_command(text)
-    if explicit_example_only(text):return None
+    if explicit_example_only(text) or is_discussion_request(text):return None
     # The dedicated publishing profile must not be checked/opened through the
     # normal extension connection by the generic Facebook fast path.
     if re.search(r'publishing|managed|النشر|المُدار|المدار', text, re.I):

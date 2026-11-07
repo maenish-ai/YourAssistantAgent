@@ -568,18 +568,27 @@ def _install_personal_controller() -> None:
         text = (user_text or "").strip()
         if not text:
             return AgentResponse("")
-        from .agent.intent import explicit_example_only, cancel_preview_request, immediate_publish_request, normalized_command
+        from .agent.intent import explicit_example_only, cancel_preview_request, immediate_publish_request, normalized_command, is_discussion_request
         if explicit_example_only(text):
             self.db.clear_pending_action(session_id)
             return AgentResponse(self.t("فهمت أنه مثال فقط؛ لم أفتح صفحات أو أجهّز نشراً. أعطني الطلب الفعلي عندما تريد التنفيذ.","Understood as an example only. No page was opened or publishing plan created. Give the actual request when ready."))
 
         pending = self.db.get_pending_action(session_id)
         normalized = " ".join(text.split())
-        if pending and (_CANCEL_RE.match(normalized) or cancel_preview_request(text)):
+        if pending and not is_discussion_request(text) and (_CANCEL_RE.match(normalized) or cancel_preview_request(text)):
             self.db.clear_pending_action(session_id)
             self._activity("agent_action_cancelled", pending.get("summary", ""), status,
                            self.t("تم إلغاء العملية", "Action cancelled"))
             return AgentResponse(self.t("تمام، ألغيت العملية المعلّقة.", "Cancelled the pending action."), used_tools=True)
+
+        if is_discussion_request(text):
+            # Advice is not an instruction to invoke application tools. Keep
+            # any existing preview pending until an explicit edit or decision.
+            discussion = self.t(
+                'المستخدم يسأل عن رأيك أو اقتراحك. ناقشه مباشرة، ولا تدّع تنفيذ أي إجراء. إذا كان هناك قرار عملي فاشرح الخيارات باختصار.\n',
+                'The user is asking for advice. Discuss the options directly and do not claim any action was performed.\n') + text
+            reply = self.chat_engine.reply(QWEN, [self._preference_context()] + list(history), discussion, max_tokens, timeout, status=status)
+            return AgentResponse(reply.text, used_model=True)
 
         if pending and _CONFIRM_RE.match(normalized):
             self._activity("agent_action_confirmed", pending.get("tool_name", ""), status,

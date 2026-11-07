@@ -14,6 +14,16 @@ def explicit_example_only(text):
     return bool(re.match(r'^(?:(?:هذا|هاد|هاذ|هاظ)\s+مثال\s+فقط|(?:لا|ما)\s+تنفذ\b|this is (?:only |just )?an example\b|do not execute\b)',value))
 
 
+def is_discussion_request(text):
+    """Identify a request for advice rather than authority to act."""
+    value = normalized_command(text)
+    value = re.sub(r'^(?:طيب|طب|تمام|يعني)[\s،,]+', '', value)
+    return bool(re.match(
+        r'^(?:(?:شو|ايش|وش|ما|ماذا)\s+(?:رايك|رايكم|بتقترح|تقترح|بتنصح|تعتقد)|'
+        r'(?:برايك|برايكم|بتنصح|هل\s+تنصح)|'
+        r'(?:what\s+do\s+you\s+think|what\s+would\s+you\s+suggest|should\s+we))\b', value))
+
+
 def cancel_preview_request(text):
     """Recognize an explicit request to cancel a preview, never a condition."""
     value = normalized_command(text)

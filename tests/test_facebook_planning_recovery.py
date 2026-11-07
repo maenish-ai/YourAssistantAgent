@@ -139,6 +139,25 @@ def test_negated_or_conditional_now_is_not_positive_intent(text):
     assert not immediate_publish_request(text)
 
 
+@pytest.mark.parametrize('text', [
+    'شو رأيك ننشر على المجموعات؟', 'برأيك هل نستخدم واتساب؟',
+    'شو بتنصح نعمل على الكمبيوتر؟', 'طيب، شو رأيك نعمل إعلان؟', 'What do you think about posting?',
+])
+def test_advice_questions_do_not_execute_tools(planning_stack, text):
+    db = planning_stack
+    session = db.create_session('hammer')
+    db.set_pending_action(session, 'approve_facebook_campaign', {'plan':{}}, 'review')
+    seen = []
+    def reply(profile, history, prompt, *args, **kwargs):
+        seen.append(prompt)
+        return SimpleNamespace(text='يمكننا مقارنة الخيارات أولاً.')
+    engine = SimpleNamespace(reply=reply, runtime=SimpleNamespace(native_turn=lambda *a, **k: pytest.fail('No tool calls for advice')))
+    controller = SmartAgentController(db, Settings(), engine, SimpleNamespace())
+    response = controller.handle(None, [], text, session, 256, 10)
+    assert 'الخيارات' in response.text and len(seen) == 1
+    assert db.get_pending_action(session) is not None
+
+
 ARABIC_FACEBOOK_FLOW = r'''
 import json
 from pathlib import Path

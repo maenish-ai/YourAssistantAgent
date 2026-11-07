@@ -23,6 +23,9 @@ _FB_STATUS_RE = re.compile(
 
 
 def _is_facebook_status_request(text: str) -> bool:
+    from .agent.intent import is_discussion_request
+    if is_discussion_request(text):
+        return False
     return bool(_FB_STATUS_RE.search(" ".join(str(text or "").split())))
 
 

@@ -384,7 +384,8 @@ public final class MainActivity extends Activity {
             if("progress".equals(event.optString("type"))) {
                 JSONObject progress = event.optJSONObject("progress");
                 String state = progress == null ? "working" : progress.optString("state", "working");
-                String label = "done".equals(state) ? "✓ اكتملت المهمة" :
+                String label = "done".equals(state) ? "✓ انتهت الخطوات • راجع النتيجة" :
+                        "unverified".equals(state) ? "؟ لم يُتحقق من النتيجة" :
                         "failed".equals(state) ? "⚠ تعذرت المهمة" :
                         "stopped".equals(state) ? "■ توقفت المهمة" :
                         "started".equals(state) ? "▶ بدأت المهمة" : "◷ جاري التنفيذ";

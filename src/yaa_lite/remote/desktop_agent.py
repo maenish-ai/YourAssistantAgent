@@ -1,6 +1,7 @@
 """Bounded UI Automation tool loop using the app's existing text model."""
 from __future__ import annotations
 import json
+import re
 import time
 from ..ai.profiles import QWEN
 
@@ -201,6 +202,7 @@ def run_desktop_task(runtime, desktop, instruction, publish, *, max_steps=24, fi
     failure_streak_key = None
     failure_streak_count = 0
     failure_streak_error = ''
+    performed_tools = 0
     for step in range(max_steps):
         if desktop.cancel.is_set() or time.monotonic() > deadline:
             return 'توقفت المهمة. افحص الشاشة لمعرفة آخر خطوة؛ الإجراءات التي نُفّذت لا يتم التراجع عنها تلقائياً.'
@@ -211,7 +213,17 @@ def run_desktop_task(runtime, desktop, instruction, publish, *, max_steps=24, fi
             if unresolved_failures:
                 failure = next(reversed(unresolved_failures.values()))
                 return 'لم تكتمل المهمة بصورة مؤكدة؛ فشلت خطوة تنفيذية: '+failure+' راقب الشاشة أو حدّد الخطوة المطلوبة ثم أعد الطلب.'
-            return str(turn.get('content') or 'انتهت المهمة. راجع الشاشة للتأكد من النتيجة.')
+            answer = str(turn.get('content') or '').strip()
+            if not performed_tools:
+                # A generated answer is not evidence that an action occurred.
+                if re.search(r'\b(?:تم|انجزت|أنجزت|نفذت|نفّذت|نجحت|done|completed|published|sent|deleted)\b', answer, re.I):
+                    answer = 'أحتاج تحديد الخطوة أو الهدف قبل أن أستطيع تنفيذ المهمة.'
+                return 'لم أنفذ أي خطوة على الكمبيوتر في هذه المهمة. ' + (answer or 'حدد المطلوب ثم أعد المحاولة.')
+            if re.search(r'\b(?:نشرت|ارسل(?:ت|نا)|أرسلت|حذفت|رفعت|published|sent|deleted|uploaded)\b|تم\s+(?:النشر|الارسال|الإرسال|الحذف|الرفع)', answer, re.I):
+                # Generic clicks and page observations have no independent
+                # contract proving a third-party publish/send/delete/upload.
+                return 'لا أستطيع تأكيد النشر أو الإرسال أو الحذف أو الرفع من نتائج الأدوات المتاحة. راجع الوجهة وحالة العملية قبل إعادة المحاولة.'
+            return answer or 'انتهت الخطوات. راجع الشاشة للتأكد من النتيجة.'
         call = calls[0]
         name, args = call.get('name'), call.get('arguments') or {}
         try:
@@ -262,6 +274,7 @@ def run_desktop_task(runtime, desktop, instruction, publish, *, max_steps=24, fi
                 operation=getattr(files,name)
                 result=operation(**args)
             else: raise ValueError('Unknown desktop tool')
+            performed_tools += 1
             if name not in {'observe_desktop','list_files','find_recent_uploads','send_file_to_phone','list_windows','list_browser_tabs','list_applications'}:
                 time.sleep(.35)
                 result['observation'] = _view(_observe(desktop))

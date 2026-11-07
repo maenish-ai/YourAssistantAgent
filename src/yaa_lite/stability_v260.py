@@ -151,6 +151,11 @@ def _install_controller_safety():
     def handle(self, profile, history, user_text, session_id, max_tokens, timeout, status=None):
         _check_cancel()
         s = str(user_text or '').strip()
+        from .agent.intent import is_discussion_request
+        if is_discussion_request(s):
+            answer = original_handle(self, profile, history, user_text, session_id, max_tokens, timeout, status=status)
+            _check_cancel()
+            return answer
         if explicit_git_status_intent(s):
             return AgentResponse(local_github_status(), used_model=False, used_tools=True, detail='local_git_status')
         if explicit_github_intent(s):

@@ -286,7 +286,8 @@ class RemoteAssistant:
             return
         # Saved schedules, active runs, and unapproved previews are distinct.
         # Never silently disable a saved task without its explicit ID.
-        from ..agent.intent import cancel_preview_request, normalized_command
+        from ..agent.intent import cancel_preview_request, normalized_command, is_discussion_request
+        discussion = is_discussion_request(text)
         task_control = re.fullmatch(r'(?:/pause_task\s+|(?:الغ|الغي|اوقف|عطل)\s+(?:المهمه|الجدوله)(?:\s+رقم)?\s*#?\s*)(\d+)', normalized_command(text))
         if task_control:
             rule_id = int(task_control.group(1))
@@ -318,7 +319,7 @@ class RemoteAssistant:
             else:
                 self._reply('لا توجد مهمة Facebook جارية أمكن طلب إيقافها. لم تتغير جداول المهام المحفوظة.')
             return
-        if text.lower() in {'/cancel', 'إلغاء', 'الغاء', 'cancel'} or cancel_preview_request(text):
+        if not discussion and (text.lower() in {'/cancel', 'إلغاء', 'الغاء', 'cancel'} or cancel_preview_request(text)):
             with self._lock:
                 had_preview = bool(self._approval)
             had_pending = bool(self.db.get_pending_action(self.session_id))
@@ -345,7 +346,7 @@ class RemoteAssistant:
         from ..agent.intent import normalized_command
         command = normalized_command(text)
         file_work = bool(re.search(r'\b(?:فك|فكي(?:ه|ها|هم)?|استخرج|استخرجي(?:ه|ها|هم)?|انسخ|انسخي(?:ه|ها|هم)?|انقل|انقلي(?:ه|ها|هم)?|unzip|extract|copy|move)\b', command))
-        desktop_intent = is_desktop_request(text) and (not is_upload_request(text) or file_work)
+        desktop_intent = not discussion and is_desktop_request(text) and (not is_upload_request(text) or file_work)
         from .request_router import uses_facebook_tools
         closing=bool(re.search(r'اغلق|اغلاق|سكر|اقفل|اخرج|اطلع|\bclose\b',normalized_command(text)))
         if desktop_intent and (closing or not uses_facebook_tools(text)):
@@ -365,15 +366,16 @@ class RemoteAssistant:
             return
         with self._lock:
             zip_pending = bool(self._approval and self._approval.kind == 'github')
-        if zip_pending and (is_upload_request(text) or text.lower() in {'نعم', 'موافق', 'yes', 'approve'}):
+        if not discussion and zip_pending and (is_upload_request(text) or text.lower() in {'نعم', 'موافق', 'yes', 'approve'}):
             self._reply('ملف ZIP جاهز في المعاينة السابقة. راجعها واضغط زر موافق؛ الرسالة وحدها لا تنفّذ الرفع.')
             return
-        if is_upload_request(text):
+        if is_upload_request(text) and not discussion:
             self._reply('اضغط إرسال ملف في Android ثم اختر مراجعة ZIP لرفعه إلى GitHub. سأبحث عن مجلد المستودع المطابق على الكمبيوتر وأعرض الملفات والمستودع والفرع ومجلد فك الضغط قبل الموافقة على الرفع. المستودع المضبوط: ' + str(self.settings.github_repository))
             return
         # Any new instruction invalidates the old mobile button. A Facebook
         # draft may remain in the DB for natural edits, without authorization.
-        self._invalidate()
+        if not discussion:
+            self._invalidate()
         self.db.add_message('user', text, 'hammer', self.session_id)
         self.db.rename_session_from_first_message(self.session_id, text)
         try:
@@ -389,18 +391,19 @@ class RemoteAssistant:
                 min(120, int(self.settings.ai_timeout_seconds)),
             )
             pending = self.db.get_pending_action(self.session_id)
-            if pending_is_fresh(pending):
+            if pending_is_fresh(pending) and not discussion:
                 summary = str(pending.get('summary') or '')
                 self._offer('facebook', None, pending_signature(pending), summary)
             else:
                 self._reply(outcome.text)
         except Exception as exc:
             from .diagnostics import failure_report, failure_message
-            self._invalidate()
-            self.db.clear_pending_action(self.session_id)
+            if not discussion:
+                self._invalidate()
+                self.db.clear_pending_action(self.session_id)
             self._last_failure = failure_report(exc)
             self.activity('remote_request_error', json.dumps(self._last_failure, ensure_ascii=False))
-            self._reply(failure_message(self._last_failure), clear_approval=True)
+            self._reply(failure_message(self._last_failure), clear_approval=not discussion)
 
     def document(self, path: Path, caption: str = '') -> None:
         path = Path(path)
@@ -497,7 +500,10 @@ class RemoteAssistant:
                     offer_download=lambda path,name:self.publish('ملف جاهز للتنزيل: '+name,download_path=path,download_name=name))
                 self._desktop_history.append({'instruction':str(approval.payload)[:1500], 'result':str(result)[:1500]})
                 self._desktop_history = self._desktop_history[-4:]
-                state = 'stopped' if 'أُوقف' in str(result) or 'توقفت المهمة' in str(result) else ('failed' if 'لم تكتمل' in str(result) or 'تعذر' in str(result) else 'done')
+                result_text = str(result)
+                state = 'stopped' if 'أُوقف' in result_text or 'توقفت المهمة' in result_text else (
+                    'unverified' if 'لا أستطيع تأكيد' in result_text else (
+                    'failed' if any(term in result_text for term in ('لم تكتمل', 'تعذر', 'لم أنفذ', 'لم ينفذ', 'لم أستطع')) else 'done'))
                 if state == 'failed':
                     self._record_desktop_failure('desktop_step_failed')
                 self.publish(str(result), progress={'state':state,'step':0})

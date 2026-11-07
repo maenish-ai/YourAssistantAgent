@@ -89,6 +89,31 @@ def test_model_cannot_report_success_after_an_action_failure():
     assert 'نجحت العملية' not in result
 
 
+def test_model_cannot_claim_completion_without_executing_tools():
+    desktop = SimpleNamespace(cancel=threading.Event(), observe=lambda:{'elements':[]})
+    class Runtime:
+        def native_turn(self, *args, **kwargs):
+            return {'content':'تم النشر بنجاح', 'tool_calls':[]}
+    result = run_desktop_task(Runtime(), desktop, 'انشر المحتوى المطلوب', lambda _: None)
+    assert 'لم أنفذ أي خطوة' in result
+    assert 'تم النشر بنجاح' not in result
+
+
+def test_opening_page_does_not_prove_external_publication():
+    desktop = SimpleNamespace(cancel=threading.Event(), observe=lambda:{'elements':[]},
+                              open_url=lambda _: {'ok':True, 'result':'open requested'})
+    class Runtime:
+        step=0
+        def native_turn(self, *args, **kwargs):
+            self.step+=1
+            if self.step==1:
+                return {'tool_calls':[{'id':'open','name':'open_url','arguments':{'url':'https://example.test'}}]}
+            return {'content':'نشرت الإعلان بنجاح'}
+    result=run_desktop_task(Runtime(),desktop,'انشر الإعلان في الموقع',lambda _:None)
+    assert 'لا أستطيع تأكيد' in result
+    assert 'نشرت الإعلان بنجاح' not in result
+
+
 def test_unrelated_success_does_not_hide_previous_failure():
     desktop = SimpleNamespace(cancel=threading.Event(), observe=lambda: {'elements': []},
         click_element=lambda _: (_ for _ in ()).throw(DesktopError('تعذر الضغط')),

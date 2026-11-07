@@ -85,7 +85,7 @@ class MobileServer:
                 if not isinstance(progress, dict):
                     raise MobileServerError('Invalid task progress')
                 state = progress.get('state')
-                if state not in ('started', 'working', 'done', 'failed', 'stopped'):
+                if state not in ('started', 'working', 'done', 'failed', 'stopped', 'unverified'):
                     raise MobileServerError('Invalid task progress state')
                 event['type'] = 'progress'
                 event['progress'] = {'state': state, 'step': max(0, min(100, int(progress.get('step', 0))))}

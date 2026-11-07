@@ -92,4 +92,111 @@ public class AppScreensTest {
             assertNull(text(activity,"تقدم المهمة\n✓ اكتملت المهمة\nراجع الوجهة"));
         }
     }
+    @Test public void reconnect_keeps_transcript_and_applies_only_new_events() throws Exception {
+        try(ActivityController<MainActivity> controller=Robolectric.buildActivity(MainActivity.class).setup()){
+            MainActivity activity=controller.get();
+            java.lang.reflect.Method apply=MainActivity.class.getDeclaredMethod("applyConnectedEvents",JSONObject.class,boolean.class);
+            apply.setAccessible(true);
+            JSONObject first=new JSONObject().put("events",new JSONArray().put(new JSONObject().put("id",1).put("type","message").put("text","الرد الأول"))).put("cursor",1);
+            JSONObject second=new JSONObject().put("events",new JSONArray().put(new JSONObject().put("id",2).put("type","message").put("text","الرد الثاني"))).put("cursor",2);
+            apply.invoke(activity,first,false);apply.invoke(activity,second,true);
+            assertNotNull(text(activity,"المساعد\nالرد الأول"));
+            assertNotNull(text(activity,"المساعد\nالرد الثاني"));
+            JSONObject restarted=new JSONObject().put("reset",true).put("events",new JSONArray().put(new JSONObject().put("id",1).put("type","message").put("text","جلسة جديدة"))).put("cursor",1);
+            apply.invoke(activity,restarted,true);
+            assertNull(text(activity,"المساعد\nالرد الأول"));
+            assertNotNull(text(activity,"المساعد\nجلسة جديدة"));
+        }
+    }
+    @Test public void reconnect_retains_approval_until_server_invalidates_it() throws Exception {
+        try(ActivityController<MainActivity> controller=Robolectric.buildActivity(MainActivity.class).setup()){
+            MainActivity activity=controller.get();
+            java.lang.reflect.Method apply=MainActivity.class.getDeclaredMethod("applyConnectedEvents",JSONObject.class,boolean.class);apply.setAccessible(true);
+            JSONObject approval=new JSONObject().put("id",1).put("type","approval").put("text","راجع الخطة")
+                .put("token","valid-review-token").put("expires_at",System.currentTimeMillis()/1000.0+600);
+            apply.invoke(activity,new JSONObject().put("events",new JSONArray().put(approval)).put("cursor",1),false);
+            View button=text(activity,"موافق — نفّذ");assertNotNull(button);assertTrue(button.isEnabled());
+            java.lang.reflect.Method disconnect=MainActivity.class.getDeclaredMethod("disconnect",boolean.class,boolean.class);disconnect.setAccessible(true);
+            disconnect.invoke(activity,false,true);
+            assertTrue(button.isEnabled());
+            JSONObject cleared=new JSONObject().put("id",2).put("type","message").put("text","انتهت المراجعة").put("clear_approval",true);
+            apply.invoke(activity,new JSONObject().put("events",new JSONArray().put(cleared)).put("cursor",2),true);
+            assertFalse(button.isEnabled());
+        }
+    }
+    @Test public void stalledVoiceReplyEndsCallWithoutRetryingRequest() throws Exception {
+        try(ActivityController<MainActivity> controller=Robolectric.buildActivity(MainActivity.class).setup()){
+            MainActivity activity=controller.get();
+            java.lang.reflect.Field call=MainActivity.class.getDeclaredField("callMode");call.setAccessible(true);call.setBoolean(activity,true);
+            java.lang.reflect.Field waiting=MainActivity.class.getDeclaredField("waitingForReply");waiting.setAccessible(true);waiting.setBoolean(activity,true);
+            java.lang.reflect.Field timeout=MainActivity.class.getDeclaredField("voiceReplyTimeout");timeout.setAccessible(true);
+            ((Runnable)timeout.get(activity)).run();
+            assertFalse(call.getBoolean(activity));assertFalse(waiting.getBoolean(activity));
+            assertNotNull(text(activity,"تأخر الرد الصوتي. قد يكون طلبك ما زال قيد التنفيذ؛ راجع المحادثة قبل إعادة الطلب."));
+        }
+    }
+    @Test public void timelyVoiceReplyDoesNotTriggerTimeout() throws Exception {
+        try(ActivityController<MainActivity> controller=Robolectric.buildActivity(MainActivity.class).setup()){
+            MainActivity activity=controller.get();
+            java.lang.reflect.Field call=MainActivity.class.getDeclaredField("callMode");call.setAccessible(true);call.setBoolean(activity,true);
+            java.lang.reflect.Field waiting=MainActivity.class.getDeclaredField("waitingForReply");waiting.setAccessible(true);waiting.setBoolean(activity,true);
+            JSONObject event=new JSONObject().put("id",1).put("type","message").put("text","وصل الرد");
+            java.lang.reflect.Method apply=MainActivity.class.getDeclaredMethod("applyEvents",JSONObject.class);apply.setAccessible(true);
+            apply.invoke(activity,new JSONObject().put("events",new JSONArray().put(event)).put("cursor",1));
+            java.lang.reflect.Field timeout=MainActivity.class.getDeclaredField("voiceReplyTimeout");timeout.setAccessible(true);
+            ((Runnable)timeout.get(activity)).run();
+            assertTrue(call.getBoolean(activity));assertFalse(waiting.getBoolean(activity));
+        }
+    }
+    @Test public void voiceReadsAllAssistantMessagesFromOnePoll() throws Exception {
+        try(ActivityController<MainActivity> controller=Robolectric.buildActivity(MainActivity.class).setup()){
+            MainActivity activity=controller.get();
+            TextToSpeech tts=new TextToSpeech(activity,status->{});
+            java.lang.reflect.Field voice=MainActivity.class.getDeclaredField("voice");voice.setAccessible(true);voice.set(activity,tts);
+            java.lang.reflect.Field call=MainActivity.class.getDeclaredField("callMode");call.setAccessible(true);call.setBoolean(activity,true);
+            JSONArray events=new JSONArray()
+                .put(new JSONObject().put("id",1).put("type","message").put("text","الجزء الأول"))
+                .put(new JSONObject().put("id",2).put("type","message").put("text","الجزء الثاني"));
+            java.lang.reflect.Method apply=MainActivity.class.getDeclaredMethod("applyEvents",JSONObject.class);apply.setAccessible(true);
+            apply.invoke(activity,new JSONObject().put("events",events).put("cursor",2));
+            String spoken=Shadows.shadowOf(tts).getLastSpokenText();
+            assertTrue(spoken.contains("الجزء الأول") && spoken.contains("الجزء الثاني"));
+        }
+    }
+    @Test public void extraMessageDoesNotResumeListeningWhileApprovalIsPending() throws Exception {
+        try(ActivityController<MainActivity> controller=Robolectric.buildActivity(MainActivity.class).setup()){
+            MainActivity activity=controller.get();
+            TextToSpeech tts=new TextToSpeech(activity,status->{});
+            java.lang.reflect.Field voice=MainActivity.class.getDeclaredField("voice");voice.setAccessible(true);voice.set(activity,tts);
+            java.lang.reflect.Field call=MainActivity.class.getDeclaredField("callMode");call.setAccessible(true);call.setBoolean(activity,true);
+            java.lang.reflect.Field waiting=MainActivity.class.getDeclaredField("waitingForReply");waiting.setAccessible(true);
+            JSONArray events=new JSONArray()
+                .put(new JSONObject().put("id",1).put("type","approval").put("text","راجع المعاينة").put("token","pending-token").put("expires_at",System.currentTimeMillis()/1000.0+600))
+                .put(new JSONObject().put("id",2).put("type","message").put("text","تفاصيل إضافية"));
+            java.lang.reflect.Method apply=MainActivity.class.getDeclaredMethod("applyEvents",JSONObject.class);apply.setAccessible(true);
+            apply.invoke(activity,new JSONObject().put("events",events).put("cursor",2));
+            assertTrue(waiting.getBoolean(activity));
+            String spoken=Shadows.shadowOf(tts).getLastSpokenText();
+            assertTrue(spoken.contains("طلب موافقة") && spoken.contains("تفاصيل إضافية"));
+        }
+    }
+    @Test public void reconnectDelayGrowsAndRemainsBounded(){
+        assertEquals(3000,MainActivity.reconnectDelayMs(0,1));
+        assertEquals(6000,MainActivity.reconnectDelayMs(1,1));
+        assertEquals(12000,MainActivity.reconnectDelayMs(2,1));
+        assertEquals(30000,MainActivity.reconnectDelayMs(100,1.2));
+    }
+    @Test public void oldConversationIsResumedOnlyForSamePairing(){
+        assertTrue(MainActivity.samePairing("home+same","token","home+same","token"));
+        assertFalse(MainActivity.samePairing("home+new","token","home+same","token"));
+        assertFalse(MainActivity.samePairing("home+same","new-token","home+same","token"));
+        assertFalse(MainActivity.samePairing(null,"token",null,"token"));
+    }
+    @Test public void reconnectsOnTransientNetworkFailuresWithoutRetryingEveryHttpError(){
+        assertTrue(MainActivity.reconnectAfterPollFailure(-1,true));
+        assertTrue(MainActivity.reconnectAfterPollFailure(503,true));
+        assertTrue(MainActivity.reconnectAfterPollFailure(401,false));
+        assertFalse(MainActivity.reconnectAfterPollFailure(400,true));
+        assertFalse(MainActivity.reconnectAfterPollFailure(-1,false));
+    }
 }

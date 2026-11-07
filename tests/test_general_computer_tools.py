@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from yaa_lite.remote.desktop_agent import run_desktop_task, tools
+from yaa_lite.remote.desktop_agent import run_desktop_task, tools, _wait_for_ui
 from yaa_lite.remote.files import RemoteFiles
 from yaa_lite.remote.request_router import uses_facebook_tools
 
@@ -57,6 +57,65 @@ def test_application_task_uses_observed_id_and_rechecks_desktop():
     assert calls==['observe','observed-app','observe']
 
 
+def test_multistep_task_keeps_observed_progress_after_context_trimming(tmp_path):
+    files = RemoteFiles(tmp_path)
+    desktop = SimpleNamespace(cancel=threading.Event(), observe=lambda:{'elements':[]})
+    class Runtime:
+        step = 0
+        def native_turn(self, profile, messages, **kwargs):
+            self.step += 1
+            if self.step == 1:
+                return {'tool_calls':[{'id':'create', 'name':'create_folder', 'arguments':{'parent':'','name':'actual'}}]}
+            if self.step <= 5:
+                return {'tool_calls':[{'id':str(self.step), 'name':'list_files', 'arguments':{'path':'','contains':''}}]}
+            result = json.loads(messages[-1]['content'])
+            first = result['task_progress'][0]
+            assert first == {'step':1, 'tool':'create_folder', 'status':'returned', 'path':'actual'}
+            assert any('Owner-approved task' in str(row.get('content')) for row in messages)
+            return {'content':'تم تجهيز المجلد المطلوب'}
+    answer = run_desktop_task(Runtime(), desktop, 'أنشئ مجلداً وتحقق من محتواه', lambda _:None, files=files)
+    assert (tmp_path / 'actual').is_dir() and 'المجلد' in answer
+
+
 def test_general_tools_are_available_independent_of_example_sites():
     names={row['function']['name'] for row in tools()}
     assert {'list_applications','launch_application','create_folder','copy_file','move_file','extract_zip','open_folder'} <= names
+
+
+def test_wait_for_ui_observes_delayed_label_and_returns_fresh_id():
+    calls=[]
+    def observe():
+        calls.append(len(calls)+1)
+        return {'window':'example', 'elements':[] if len(calls)==1 else [{'id':'fresh-id','name':'Ready','type':'Button'}]}
+    desktop=SimpleNamespace(cancel=threading.Event(), observe=observe)
+    result=_wait_for_ui(desktop,'ready',1)
+    assert result['ok'] and result['found']
+    assert result['observation']['elements'][0]['id']=='fresh-id'
+    assert len(calls)==2
+
+
+def test_wait_for_ui_stops_on_cancellation():
+    cancelled=threading.Event();cancelled.set()
+    desktop=SimpleNamespace(cancel=cancelled,observe=lambda:pytest.fail('Must not observe after cancellation'))
+    result=_wait_for_ui(desktop,'ready',1)
+    assert not result['ok'] and not result['found']
+
+
+def test_wait_tool_retains_current_id_until_next_action():
+    calls=[]
+    def observe():
+        calls.append('observe')
+        return {'window':'example','elements':[{'id':f'id-{len(calls)}','name':'Ready','type':'Button'}]}
+    desktop=SimpleNamespace(cancel=threading.Event(),observe=observe,
+                            click_element=lambda identifier:calls.append(identifier) or {'ok':True})
+    class Runtime:
+        step=0
+        def native_turn(self, profile, messages, **kwargs):
+            self.step+=1
+            if self.step==1:return {'tool_calls':[{'id':'wait','name':'wait_for_ui','arguments':{'text':'Ready','timeout_seconds':1}}]}
+            if self.step==2:
+                observed=json.loads(messages[-1]['content'])['observation']['elements'][0]['id']
+                return {'tool_calls':[{'id':'click','name':'click_element','arguments':{'id':observed}}]}
+            return {'content':'طلبت النقر على العنصر'}
+    run_desktop_task(Runtime(),desktop,'انتظر ظهور العنصر ثم اضغطه',lambda _:None)
+    assert calls[:3]==['observe','observe','id-2']

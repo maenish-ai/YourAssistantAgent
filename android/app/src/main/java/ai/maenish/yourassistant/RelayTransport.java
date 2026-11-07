@@ -8,7 +8,9 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.Callable;
 import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.SSLException;
 
 /** End-to-end encrypted RPC and chunked file transport over an opaque HTTPS relay. */
 final class RelayTransport {
@@ -29,6 +31,17 @@ final class RelayTransport {
     private String base(){return url+"/relay/v1/"+crypto.channel;}
     void close(){closed=true;HttpsURLConnection connection=active.getAndSet(null);if(connection!=null)connection.disconnect();}
     private static final class Response {int status;JSONObject value;Response(int s,JSONObject v){status=s;value=v;}}
+    interface Sleeper {void sleep(long millis) throws InterruptedException;}
+    static <T> T retryTransient(Callable<T> operation, Sleeper sleeper) throws Exception {
+        for(int attempt=0;;attempt++){
+            try{return operation.call();}
+            catch(SSLException e){throw e;}
+            catch(IOException e){
+                if(attempt>=2)throw e;
+                sleeper.sleep(250L << attempt);
+            }
+        }
+    }
     private Response web(String method,String address,JSONObject body)throws Exception {
         if(closed)throw new IOException("closed");
         HttpsURLConnection connection=(HttpsURLConnection)new URL(address).openConnection();active.set(connection);
@@ -52,8 +65,11 @@ final class RelayTransport {
             JSONObject envelope=new JSONObject().put("v",1).put("id",id).put("nonce",RelayCrypto.encode(nonce)).put("ciphertext",RelayCrypto.encode(encrypted));
             long deadline=System.nanoTime()+70_000_000_000L;boolean submit=true;
             while(!closed&&System.nanoTime()<deadline){
-                if(submit){Response sent=web("POST",base()+"/requests",envelope);if(sent.status!=202)throw serverError(sent.status,sent.value);submit=false;}
-                Response response=web("GET",base()+"/requests/"+id,null);
+                // Retry only a transient transport failure, with the exact
+                // same encrypted envelope and request ID; never mint a second
+                // operation after an ambiguous network response.
+                if(submit){Response sent=retryTransient(()->web("POST",base()+"/requests",envelope),Thread::sleep);if(sent.status!=202)throw serverError(sent.status,sent.value);submit=false;}
+                Response response=retryTransient(()->web("GET",base()+"/requests/"+id,null),Thread::sleep);
                 if(response.status==202){submit=true;continue;}
                 if(response.status!=200)throw serverError(response.status,response.value);
                 JSONObject value=response.value;

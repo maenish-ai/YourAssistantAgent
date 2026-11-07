@@ -151,6 +151,25 @@ def test_replayed_rpc_has_no_duplicate_effect_even_after_connector_restart(relay
     assert first['status']==202
 
 
+def test_retransmitting_same_envelope_after_lost_response_runs_once(relay):
+    identifier=secrets.token_urlsafe(16)
+    envelope=relay.bridge.keys.seal('request',identifier,{
+        'time':time.time(),'op':'http','args':http_args('POST','/v1/messages',{'text':'one operation'})})
+    headers={'Authorization':'Bearer '+relay.bridge.keys.phone_auth}
+    for _ in range(2):
+        response=relay.client.post(relay.bridge.channel_url+'/requests',headers=headers,json=envelope,timeout=4)
+        assert response.status_code==202
+    reply=relay.client.get(relay.bridge.channel_url+'/requests/'+identifier,headers=headers,timeout=23)
+    assert reply.status_code==200
+    assert relay.bridge.keys.open('response',reply.json())['status']==202
+    wait_for(lambda:len(relay.handler.messages)==1)
+    # A further retransmission of the exact envelope retrieves the same result;
+    # it does not enqueue another text command.
+    assert relay.client.post(relay.bridge.channel_url+'/requests',headers=headers,json=envelope,timeout=4).status_code==202
+    assert relay.client.get(relay.bridge.channel_url+'/requests/'+identifier,headers=headers,timeout=23).status_code==200
+    assert relay.handler.messages==['one operation']
+
+
 def test_expired_envelope_and_role_separation(relay):
     keys=relay.bridge.keys;identifier=secrets.token_urlsafe(12)
     expired=keys.seal('request',identifier,{'time':time.time()-1000,'op':'http','args':http_args('POST','/v1/messages',{'text':'no'})})

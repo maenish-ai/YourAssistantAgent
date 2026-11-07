@@ -15,7 +15,9 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import javax.net.ssl.HttpsURLConnection;
 
-/** HTTPS only, platform TLS verification, no redirects and no automatic POST retries. */
+/** HTTPS only, scoped TLS verification and no redirects. Relay transport may
+ * retry a transient failure with the same encrypted request ID; direct POSTs
+ * are not automatically retried. */
 final class ApiClient {
     static final long MAX_UPLOAD_BYTES = 20L * 1024 * 1024;
     private static final int MAX_RESPONSE_BYTES = 2 * 1024 * 1024;

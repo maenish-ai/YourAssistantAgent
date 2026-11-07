@@ -1,6 +1,7 @@
 package ai.maenish.yourassistant;
 import org.junit.Test;
 import java.nio.charset.StandardCharsets;
+import java.io.IOException;
 import static org.junit.Assert.*;
 
 public class RelayCryptoTest {
@@ -23,5 +24,20 @@ public class RelayCryptoTest {
         RelayCrypto keys=new RelayCrypto("C".repeat(43));
         assertNotEquals(keys.phoneAuth,keys.desktopAuth);
         assertNotEquals(keys.phoneAuth,RelayCrypto.encode(RelayCrypto.derive("encryption","C".repeat(43))));
+    }
+    @Test public void transientRetryIsBoundedAndUsesTheSameOperation()throws Exception{
+        int[] calls={0};java.util.List<Long> delays=new java.util.ArrayList<>();
+        String result=RelayTransport.retryTransient(()->{
+            calls[0]++;if(calls[0]<3)throw new IOException("connection lost");return "original request";
+        },delays::add);
+        assertEquals("original request",result);assertEquals(3,calls[0]);
+        assertEquals(java.util.Arrays.asList(250L,500L),delays);
+    }
+    @Test public void tlsFailureIsNeverRetriedOrIgnored()throws Exception{
+        int[] calls={0};
+        try{
+            RelayTransport.retryTransient(()->{calls[0]++;throw new javax.net.ssl.SSLHandshakeException("identity failure");},millis->{});
+            fail("TLS failure was swallowed");
+        }catch(javax.net.ssl.SSLHandshakeException expected){assertEquals(1,calls[0]);}
     }
 }

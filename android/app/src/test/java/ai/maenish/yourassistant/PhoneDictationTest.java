@@ -60,7 +60,7 @@ public class PhoneDictationTest {
             assertEquals("من فضلك اغلق النافذة",composer.getText().toString());assertNull(ReflectionHelpers.getField(a,"pendingDictationId"));
             event.put("id",3);
             ReflectionHelpers.callInstanceMethod(a,"applyEvents",ReflectionHelpers.ClassParameter.from(JSONObject.class,new JSONObject().put("events",new JSONArray().put(event)).put("cursor",3)));
-            assertEquals("من فضلك اغلق النافذة",composer.getText().toString());assertFalse(text(a,"إرسال الطلب").isEnabled());
+            assertEquals("من فضلك اغلق النافذة",composer.getText().toString());assertFalse(text(a,"إرسال").isEnabled());
         }
     }
     @Test public void pendingTextSurvivesBackgroundAndReconnectPreparation()throws Exception{

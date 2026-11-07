@@ -20,6 +20,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -85,6 +86,9 @@ public final class MainActivity extends Activity {
         }
     };
     private LinearLayout connectionFields, transcript;
+    private View chatPage, computerPage, settingsPage;
+    private Button chatTab, computerTab, settingsTab;
+    private int selectedPage;
     private ScrollView scroll;
     private boolean resumed, destroyed, connected, busy, polling;
     private int generation;
@@ -106,6 +110,7 @@ public final class MainActivity extends Activity {
         credentials = new SecureStore(this);
         crashDiagnostics.stage("build_views");
         buildViews();
+        if(savedInstanceState!=null)showPage(savedInstanceState.getInt("selected_page",0));
         // Native offline voice is deliberately lazy: do not load ONNX during app startup.
         crashDiagnostics.stage("create_dictation");
         dictation=new PhoneDictation(this,new PhoneDictation.Listener(){
@@ -131,6 +136,7 @@ public final class MainActivity extends Activity {
 
     @Override protected void onSaveInstanceState(Bundle state) {
         state.putBoolean("was_connected", connected);
+        state.putInt("selected_page",selectedPage);
         state.putString("dictation_id",pendingDictationId);
         super.onSaveInstanceState(state);
     }
@@ -139,17 +145,56 @@ public final class MainActivity extends Activity {
 
     private void buildViews() {
         LinearLayout root=AppUi.root(this);
-        AppUi.header(this,root,"Your Assistant","كمبيوترك معك • Android "+BuildConfig.VERSION_NAME,false);
+        TextView title=label("Your Assistant",18);
+        title.setTypeface(null,android.graphics.Typeface.BOLD);
+        root.addView(title);
+        status=label("غير مقترن • افتح الإعدادات لربط الكمبيوتر.",12);
+        status.setTextColor(AppUi.GREEN);status.setMaxLines(2);root.addView(status);
+
+        FrameLayout pages=new FrameLayout(this);
+        root.addView(pages,new LinearLayout.LayoutParams(-1,0,1));
+        LinearLayout chat=new LinearLayout(this);chat.setOrientation(LinearLayout.VERTICAL);
+        chatPage=chat;pages.addView(chat,new FrameLayout.LayoutParams(-1,-1));
+        scroll=new ScrollView(this);scroll.setFillViewport(true);
+        transcript=new LinearLayout(this);transcript.setOrientation(LinearLayout.VERTICAL);scroll.addView(transcript);
+        chat.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
+        LinearLayout actions=row();
+        newChatButton=AppUi.button(this,"محادثة جديدة",this::newChat,false);
+        attachButton=AppUi.button(this,"إرسال ملف",this::chooseAttachment,false);
+        callButton=AppUi.button(this,"☎ مكالمة",this::toggleCall,false);
+        actions.addView(newChatButton,weighted());actions.addView(attachButton,weighted());actions.addView(callButton,weighted());
+        chat.addView(actions);
+        composer=AppUi.field(this,"اكتب رسالتك…");composer.setMinLines(1);composer.setMaxLines(3);
+        composer.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        chat.addView(composer);
+        LinearLayout sendRow=row();
+        micButton=AppUi.button(this,"🎙 إملاء صوتي",this::toggleDictation,false);
+        sendButton=button("إرسال",this::sendText);
+        sendRow.addView(micButton,weighted());sendRow.addView(sendButton,weighted());chat.addView(sendRow);
+
+        ScrollView computerScroll=new ScrollView(this);computerScroll.setFillViewport(true);
+        LinearLayout computer=new LinearLayout(this);computer.setOrientation(LinearLayout.VERTICAL);
+        computer.addView(label("الكمبيوتر والملفات",18));
+        computer.addView(AppUi.label(this,"تحكم بالكمبيوتر أو افتح ملفاتك بعد الاتصال ومنح الصلاحيات.",13,true));
+        desktopButton=AppUi.button(this,"سطح المكتب",()->startActivity(new Intent(this,DesktopActivity.class)),false);
+        filesButton=AppUi.button(this,"الملفات",()->startActivity(new Intent(this,FilesActivity.class)),false);
+        computerButton=AppUi.button(this,"طلب مهمة على الكمبيوتر",()->{showPage(0);composer.setText("/computer ");composer.setSelection(composer.length());composer.requestFocus();},false);
+        computer.addView(desktopButton,AppUi.space(this));computer.addView(filesButton,AppUi.space(this));computer.addView(computerButton,AppUi.space(this));
+        computerScroll.addView(computer);computerPage=computerScroll;pages.addView(computerScroll,new FrameLayout.LayoutParams(-1,-1));
+
+        ScrollView settingsScroll=new ScrollView(this);settingsScroll.setFillViewport(true);
+        LinearLayout settings=new LinearLayout(this);settings.setOrientation(LinearLayout.VERTICAL);
+        settings.addView(label("الإعدادات والاتصال",18));
         LinearLayout pairing=AppUi.card(this);
         pairing.addView(label("ربط هاتفك بكمبيوتر البيت",16));
         pairing.addView(button("مسح QR وإقران الكمبيوتر",this::scanPairing));
-        LinearLayout actions=row();
-        actions.addView(button("اتصال",()->{
+        LinearLayout pairingActions=row();
+        pairingActions.addView(button("اتصال",()->{
             if(serverField.getText().toString().isEmpty())showPairingHelp();else connect();
         }),weighted());
-        actions.addView(AppUi.button(this,"إعدادات الربط",()->connectionFields.setVisibility(connectionFields.getVisibility()==View.VISIBLE?View.GONE:View.VISIBLE),false),weighted());
-        disconnectButton=AppUi.button(this,"قطع الاتصال",this::disconnect,false);actions.addView(disconnectButton,weighted());
-        pairing.addView(actions,AppUi.space(this));
+        pairingActions.addView(AppUi.button(this,"إعدادات الربط",()->connectionFields.setVisibility(connectionFields.getVisibility()==View.VISIBLE?View.GONE:View.VISIBLE),false),weighted());
+        disconnectButton=AppUi.button(this,"قطع الاتصال",this::disconnect,false);pairingActions.addView(disconnectButton,weighted());
+        pairing.addView(pairingActions,AppUi.space(this));
         connectionFields=new LinearLayout(this);connectionFields.setOrientation(LinearLayout.VERTICAL);
         serverField=field("عنوان HTTPS — إعداد متقدم",false);serverField.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_URI);
         tokenField=field("مفتاح الاقتران — إعداد متقدم",true);tokenField.setSaveEnabled(false);tokenField.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
@@ -157,28 +202,32 @@ public final class MainActivity extends Activity {
         connectButton=button("حفظ واتصال",this::connect);connectionFields.addView(connectButton,AppUi.space(this));
         diagnosticsButton=AppUi.button(this,"تشخيص الاتصال",this::diagnostics,false);connectionFields.addView(diagnosticsButton,AppUi.space(this));
         connectionFields.addView(AppUi.button(this,"كيف أربط الجهازين؟",this::showPairingHelp,false));pairing.addView(connectionFields);
-        root.addView(pairing,AppUi.space(this));
-        status=label("غير مقترن • اعرض QR من برنامج Windows ثم امسحه هنا.",12);status.setTextColor(AppUi.GREEN);root.addView(status);
-        LinearLayout tools=row();
-        desktopButton=AppUi.button(this,"سطح المكتب",()->startActivity(new Intent(this,DesktopActivity.class)),false);
-        filesButton=AppUi.button(this,"الملفات",()->startActivity(new Intent(this,FilesActivity.class)),false);
-        computerButton=AppUi.button(this,"المساعد الذكي",()->{composer.setText("/computer ");composer.setSelection(composer.length());composer.requestFocus();},false);
-        tools.addView(desktopButton,weighted());tools.addView(filesButton,weighted());tools.addView(computerButton,weighted());root.addView(tools,AppUi.space(this));
-        scroll=new ScrollView(this);scroll.setFillViewport(true);transcript=new LinearLayout(this);transcript.setOrientation(LinearLayout.VERTICAL);scroll.addView(transcript);
-        root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
-        LinearLayout tasks=row();newChatButton=AppUi.button(this,"محادثة جديدة",this::newChat,false);attachButton=AppUi.button(this,"إرسال ملف",this::chooseAttachment,false);
-        tasks.addView(newChatButton,weighted());tasks.addView(attachButton,weighted());root.addView(tasks,AppUi.space(this));
-        composer=AppUi.field(this,"اطلب من مساعدك…");composer.setMinLines(1);composer.setMaxLines(3);composer.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_FLAG_MULTI_LINE);
-        root.addView(composer,AppUi.space(this));
-        micButton=AppUi.button(this,"🎙 إملاء صوتي",this::toggleDictation,false);
-        callButton=AppUi.button(this,"☎ بدء محادثة صوتية",this::toggleCall,false);
-        root.addView(callButton,AppUi.space(this));
-        root.addView(AppUi.button(this,"تقرير أعطال التطبيق",this::showCrashReport,false),AppUi.space(this));
-        root.addView(AppUi.button(this,"🔊 إعدادات محرك صوت الهاتف",
-            this::openVoiceSettings,false),AppUi.space(this));
-        root.addView(AppUi.button(this,"🔊 تجربة واختيار صوت عربي",this::chooseArabicVoice,false),AppUi.space(this));
-        root.addView(AppUi.label(this,"المحادثة الذكية تستخدم Groq؛ التحكم اليدوي والملفات لهما أزرار منفصلة.",11,true));
-        sendButton=button("إرسال الطلب",this::sendText);LinearLayout sendRow=row();sendRow.addView(micButton,weighted());sendRow.addView(sendButton,weighted());root.addView(sendRow,AppUi.space(this));
+        settings.addView(pairing,AppUi.space(this));
+        settings.addView(AppUi.button(this,"تقرير أعطال التطبيق",this::showCrashReport,false),AppUi.space(this));
+        settings.addView(AppUi.button(this,"🔊 إعدادات محرك صوت الهاتف",this::openVoiceSettings,false),AppUi.space(this));
+        settings.addView(AppUi.button(this,"🔊 تجربة واختيار صوت عربي",this::chooseArabicVoice,false),AppUi.space(this));
+        settingsScroll.addView(settings);settingsPage=settingsScroll;pages.addView(settingsScroll,new FrameLayout.LayoutParams(-1,-1));
+
+        LinearLayout navigation=row();
+        chatTab=AppUi.button(this,"المحادثة",()->showPage(0),false);
+        computerTab=AppUi.button(this,"الكمبيوتر",()->showPage(1),false);
+        settingsTab=AppUi.button(this,"الإعدادات",()->showPage(2),false);
+        navigation.addView(chatTab,weighted());navigation.addView(computerTab,weighted());navigation.addView(settingsTab,weighted());
+        root.addView(navigation);
+        showPage(0);
+    }
+
+    private void showPage(int page){
+        selectedPage=page>=0&&page<=2?page:0;
+        chatPage.setVisibility(selectedPage==0?View.VISIBLE:View.GONE);
+        computerPage.setVisibility(selectedPage==1?View.VISIBLE:View.GONE);
+        settingsPage.setVisibility(selectedPage==2?View.VISIBLE:View.GONE);
+        Button[] tabs={chatTab,computerTab,settingsTab};
+        for(int i=0;i<tabs.length;i++){
+            tabs[i].setSelected(i==selectedPage);
+            tabs[i].setTextColor(i==selectedPage?AppUi.GREEN:AppUi.TEXT);
+            tabs[i].setContentDescription(tabs[i].getText()+(i==selectedPage?"، الصفحة الحالية":""));
+        }
     }
 
     private void showCrashReport(){

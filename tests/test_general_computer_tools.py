@@ -133,3 +133,18 @@ def test_observation_alone_cannot_claim_window_was_opened():
     result=run_desktop_task(Runtime(),desktop,'افتح البرنامج المطلوب',lambda _:None)
     assert 'لم أنفذ إجراءً' in result
     assert 'فتحت البرنامج' not in result
+
+
+def test_uncertain_ui_action_stops_before_any_retry():
+    from yaa_lite.remote.desktop import AmbiguousDesktopAction
+    calls=[]
+    def click(identifier):
+        calls.append(identifier)
+        raise AmbiguousDesktopAction('result unknown')
+    desktop=SimpleNamespace(cancel=threading.Event(),observe=lambda:{'elements':[{'id':'real','name':'submit'}]},click_element=click)
+    class Runtime:
+        def native_turn(self, *args, **kwargs):
+            return {'tool_calls':[{'id':'click','name':'click_element','arguments':{'id':'real'}}]}
+    result=run_desktop_task(Runtime(),desktop,'اضغط الزر المحدد',lambda _:None)
+    assert calls==['real']
+    assert 'غير مؤكدة' in result and 'تكراره' in result

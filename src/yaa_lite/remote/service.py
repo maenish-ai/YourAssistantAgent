@@ -510,7 +510,7 @@ class RemoteAssistant:
                 self._desktop_history = self._desktop_history[-4:]
                 result_text = str(result)
                 state = 'stopped' if 'أُوقف' in result_text or 'توقفت المهمة' in result_text else (
-                    'unverified' if 'لا أستطيع تأكيد' in result_text else (
+                    'unverified' if 'لا أستطيع تأكيد' in result_text or 'غير مؤكدة' in result_text else (
                     'failed' if any(term in result_text for term in ('لم تكتمل', 'تعذر', 'لم أنفذ', 'لم ينفذ', 'لم أستطع')) else 'done'))
                 if state == 'failed':
                     self._record_desktop_failure('desktop_step_failed')

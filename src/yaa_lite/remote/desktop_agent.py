@@ -5,6 +5,7 @@ import math
 import re
 import time
 from ..ai.profiles import QWEN
+from .desktop import AmbiguousDesktopAction
 
 
 def tools():
@@ -309,6 +310,8 @@ def run_desktop_task(runtime, desktop, instruction, publish, *, max_steps=24, fi
             if name not in {'observe_desktop','wait_for_ui','list_files','find_recent_uploads','send_file_to_phone','list_windows','list_browser_tabs','list_applications'}:
                 time.sleep(.35)
                 result['observation'] = _view(_observe(desktop))
+        except AmbiguousDesktopAction:
+            return 'توقفت المهمة لأن نتيجة الإجراء غير مؤكدة وقد يكون نُفّذ. افحص الشاشة قبل إعادة الطلب لتجنب تكراره.'
         except Exception as exc:
             result = {'ok': False, 'error': str(exc)}
         if result.get('ok') is False:

@@ -240,3 +240,63 @@ def test_delayed_manual_keyboard_is_rejected_before_input(desktop):
     control._frames['frame']=(1920,1080,time.monotonic()-60)
     with pytest.raises(DesktopError):control.input({'action':'text','text':'private typing','frame_id':'frame'})
     assert not events
+
+
+def test_ui_automation_invokes_control_without_sending_mouse_click(desktop, monkeypatch):
+    import sys
+    from types import ModuleType
+    control,events=desktop
+    definitions=ModuleType('pywinauto.uia_defines')
+    definitions.NoPatternInterfaceError=type('NoPatternInterfaceError',(Exception,),{})
+    monkeypatch.setitem(sys.modules,'pywinauto',ModuleType('pywinauto'))
+    monkeypatch.setitem(sys.modules,'pywinauto.uia_defines',definitions)
+    called=[]
+    item=SimpleNamespace(is_visible=lambda:True,is_enabled=lambda:True,
+                         iface_invoke=SimpleNamespace(Invoke=lambda:called.append('invoke')))
+    control._window=42;control._elements['id']=(item,time.monotonic())
+    @contextmanager
+    def session():yield SimpleNamespace(GetForegroundWindow=lambda:42,SetCursorPos=lambda *args:pytest.fail('mouse used'))
+    monkeypatch.setattr(control,'_session',session)
+    assert control.click_element('id')['ok']
+    assert called==['invoke'] and events==[]
+
+
+def test_ui_automation_failed_invoke_is_not_retried_with_mouse(desktop, monkeypatch):
+    import sys
+    from types import ModuleType
+    control,events=desktop
+    definitions=ModuleType('pywinauto.uia_defines')
+    definitions.NoPatternInterfaceError=type('NoPatternInterfaceError',(Exception,),{})
+    monkeypatch.setitem(sys.modules,'pywinauto',ModuleType('pywinauto'))
+    monkeypatch.setitem(sys.modules,'pywinauto.uia_defines',definitions)
+    def fail():raise RuntimeError('ambiguous result')
+    item=SimpleNamespace(is_visible=lambda:True,is_enabled=lambda:True,iface_invoke=SimpleNamespace(Invoke=fail))
+    control._window=42;control._elements['id']=(item,time.monotonic())
+    @contextmanager
+    def session():yield SimpleNamespace(GetForegroundWindow=lambda:42,SetCursorPos=lambda *args:pytest.fail('duplicate mouse click'))
+    monkeypatch.setattr(control,'_session',session)
+    with pytest.raises(DesktopError,match='افحص الواجهة'):
+        control.click_element('id')
+    assert events==[]
+
+
+def test_ui_automation_without_invoke_uses_observed_element_position(desktop, monkeypatch):
+    import sys
+    from types import ModuleType
+    control,events=desktop
+    definitions=ModuleType('pywinauto.uia_defines')
+    definitions.NoPatternInterfaceError=type('NoPatternInterfaceError',(Exception,),{})
+    monkeypatch.setitem(sys.modules,'pywinauto',ModuleType('pywinauto'))
+    monkeypatch.setitem(sys.modules,'pywinauto.uia_defines',definitions)
+    class Item:
+        def is_visible(self):return True
+        def is_enabled(self):return True
+        @property
+        def iface_invoke(self):raise definitions.NoPatternInterfaceError()
+        def rectangle(self):return SimpleNamespace(left=10,top=20,right=30,bottom=40)
+    control._window=42;control._elements['id']=(Item(),time.monotonic())
+    @contextmanager
+    def session():yield SimpleNamespace(GetForegroundWindow=lambda:42,SetCursorPos=lambda x,y:events.append(('position',x,y)) or True)
+    monkeypatch.setattr(control,'_session',session)
+    assert control.click_element('id')['ok']
+    assert events==[('position',20,30),{'flags':2},{'flags':4}]

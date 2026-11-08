@@ -22,6 +22,10 @@ class DesktopError(RuntimeError):
     pass
 
 
+class AmbiguousDesktopAction(DesktopError):
+    """The target may have acted; retrying could duplicate the operation."""
+
+
 class WindowsDesktop(WindowControl, AppControl):
     def __init__(self, enabled):
         self.enabled = enabled
@@ -260,6 +264,20 @@ class WindowsDesktop(WindowControl, AppControl):
             item = entry[0]
             if not item.is_visible() or not item.is_enabled():
                 raise DesktopError('العنصر غير متاح للنقر.')
+            # Prefer the accessibility Invoke pattern when the control offers
+            # it. A failed Invoke may have taken effect already, so never send
+            # a second mouse click after attempting it.
+            from pywinauto.uia_defines import NoPatternInterfaceError
+            try:
+                invoke = item.iface_invoke
+            except NoPatternInterfaceError:
+                invoke = None
+            if invoke is not None:
+                try:
+                    invoke.Invoke()
+                except Exception as exc:
+                    raise AmbiguousDesktopAction('تعذر التأكد من تنفيذ العنصر. افحص الواجهة قبل إعادة المحاولة.') from exc
+                return {'ok': True, 'result': 'أُرسل إجراء للعنصر عبر واجهة Windows؛ افحص الواجهة لمعرفة النتيجة.'}
             rect = item.rectangle()
             if not user.SetCursorPos((rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2):
                 raise DesktopError('تعذر الوصول إلى العنصر.')

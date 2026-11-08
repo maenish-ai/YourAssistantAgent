@@ -229,6 +229,7 @@ def run_desktop_task(runtime, desktop, instruction, publish, *, max_steps=24, fi
     failure_streak_count = 0
     failure_streak_error = ''
     performed_tools = 0
+    successful_actions = 0
     progress_ledger = []
     for step in range(max_steps):
         if desktop.cancel.is_set() or time.monotonic() > deadline:
@@ -246,6 +247,8 @@ def run_desktop_task(runtime, desktop, instruction, publish, *, max_steps=24, fi
                 if re.search(r'\b(?:تم|انجزت|أنجزت|نفذت|نفّذت|نجحت|done|completed|published|sent|deleted)\b', answer, re.I):
                     answer = 'أحتاج تحديد الخطوة أو الهدف قبل أن أستطيع تنفيذ المهمة.'
                 return 'لم أنفذ أي خطوة على الكمبيوتر في هذه المهمة. ' + (answer or 'حدد المطلوب ثم أعد المحاولة.')
+            if not successful_actions and re.search(r'\b(?:فتحت|اغلقت|أغلقت|نسخت|نقلت|انشأت|أنشأت|استخرجت|فككت|opened|closed|copied|moved|created|extracted)\b|تم\s+(?:الفتح|الاغلاق|الإغلاق|النسخ|النقل|الانشاء|الإنشاء|الاستخراج)', answer, re.I):
+                return 'لم أنفذ إجراءً على الكمبيوتر؛ فحصت المعلومات المتاحة فقط. راجع المطلوب قبل الاعتماد على النتيجة.'
             if re.search(r'\b(?:نشرت|ارسل(?:ت|نا)|أرسلت|حذفت|رفعت|published|sent|deleted|uploaded)\b|تم\s+(?:النشر|الارسال|الإرسال|الحذف|الرفع)', answer, re.I):
                 # Generic clicks and page observations have no independent
                 # contract proving a third-party publish/send/delete/upload.
@@ -321,6 +324,8 @@ def run_desktop_task(runtime, desktop, instruction, publish, *, max_steps=24, fi
                 publish(f'الخطوة {step + 1} أُرسلت للكمبيوتر؛ جاري فحص النتيجة')
         read_only={'observe_desktop','wait_for_ui','list_files','find_recent_uploads','send_file_to_phone','list_windows','list_browser_tabs','list_applications'}
         if name not in read_only:
+            if result.get('ok') is not False:
+                successful_actions += 1
             if result.get('ok') is False:
                 unresolved_failures[action_key] = str(result.get('error') or 'أداة الكمبيوتر لم تنفّذ الإجراء.')[:300]
             else:

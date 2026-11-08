@@ -177,3 +177,10 @@ def test_direct_task_reports_failure_without_claiming_success():
     answer = run_desktop_task(None, desktop, 'افتح فيسبوك', events.append)
     assert 'تعذر' in answer
     assert 'المتصفح غير متاح' in answer
+
+
+def test_search_with_followup_action_uses_planner():
+    assert direct_task('ابحث عن الملف وارفعيه') is None
+    assert direct_task('ابحث عن التقرير وانسخيه للمجلد') is None
+    action, args = direct_task('ابحث عن طريقة رفع ملف')
+    assert action == 'open_url' and args['search']

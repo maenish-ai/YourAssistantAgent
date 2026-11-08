@@ -108,7 +108,7 @@ def direct_task(text):
     # A requested search is general, not a table of supported site names. Keep
     # the owner's query intact; further executable clauses stay with planning.
     search = re.fullmatch(r'(?:ابحث(?:لي)?(?: في (?:النت|الانترنت))?(?: عن)?|اعمل(?:لي)? (?:بحث|سيرش)(?: عن)?|search(?: the web)?(?: for)?|web search(?: for)?|look up)\s+(.+)', value)
-    if search and not re.search(r'\b(?:ثم|وبعدين|بعدين|and then|then)\b', search[1]):
+    if search and not re.search(r'\b(?:ثم|وبعدين|بعدين|and then|then|و(?:افتح|افتحي|ارفع|ارفعي|انشر|انشري|احذف|احذفي|انسخ|انسخي|انقل|انقلي|اضغط|اضغطي|حمل|حملي|نزّل|نزل|فك|فكي|استخرج|استخرجي)\w*)\b', search[1]):
         original_search = re.fullmatch(r'(?:[اأإآ]بحث(?:لي)?(?: في (?:النت|الانترنت))?(?: عن)?|[اأإآ]عمل(?:لي)? (?:بحث|سيرش)(?: عن)?|search(?: the web)?(?: for)?|web search(?: for)?|look up)\s+(.+)', raw, re.I)
         query = original_search[1] if original_search else search[1]
         return ('open_url', {'url': 'https://www.google.com/search?q=' + quote(query), 'search': True})

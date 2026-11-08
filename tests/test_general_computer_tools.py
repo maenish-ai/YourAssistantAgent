@@ -119,3 +119,17 @@ def test_wait_tool_retains_current_id_until_next_action():
             return {'content':'طلبت النقر على العنصر'}
     run_desktop_task(Runtime(),desktop,'انتظر ظهور العنصر ثم اضغطه',lambda _:None)
     assert calls[:3]==['observe','observe','id-2']
+
+
+def test_observation_alone_cannot_claim_window_was_opened():
+    desktop=SimpleNamespace(cancel=threading.Event(), observe=lambda:{'window':'Browser','elements':[]})
+    class Runtime:
+        step=0
+        def native_turn(self, profile, messages, **kwargs):
+            self.step+=1
+            if self.step==1:
+                return {'tool_calls':[{'id':'look','name':'observe_desktop','arguments':{'offset':0}}]}
+            return {'content':'فتحت البرنامج المطلوب'}
+    result=run_desktop_task(Runtime(),desktop,'افتح البرنامج المطلوب',lambda _:None)
+    assert 'لم أنفذ إجراءً' in result
+    assert 'فتحت البرنامج' not in result

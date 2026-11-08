@@ -695,3 +695,27 @@ def test_full_preview_is_chunked_with_approval_only_after_every_part(conversatio
     assert events[-1]['approval_token']
     assert ''.join(item['text'].split('\n', 1)[1] for item in events) == summary.strip()
     assert all(len(item['text']) < 31000 for item in events)
+
+
+def test_approval_is_available_when_button_is_published(conversation):
+    assistant = conversation.assistant
+    original_publish = assistant.publish
+    def publish(text, **kwargs):
+        token = kwargs.get('approval_token')
+        if token:
+            assert assistant._approval is not None
+            assert assistant._approval.token == token
+        original_publish(text, **kwargs)
+    assistant.publish = publish
+    assistant._offer('facebook', None, 'signature', 'معاينة للمراجعة')
+    assert assistant._approval is not None
+
+
+def test_failed_approval_publication_does_not_leave_executable_token(conversation):
+    assistant = conversation.assistant
+    def fail(text, **kwargs):
+        raise RuntimeError('event delivery failed')
+    assistant.publish = fail
+    with pytest.raises(RuntimeError):
+        assistant._offer('facebook', None, 'signature', 'معاينة للمراجعة')
+    assert assistant._approval is None

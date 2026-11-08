@@ -114,11 +114,19 @@ class RemoteAssistant:
         self._invalidate()
         ttl = min(15 * 60, max(60, int(self.settings.approval_timeout_minutes) * 60))
         approval = Approval(secrets.token_urlsafe(24), kind, payload, signature, time.time() + ttl)
-        # Publish successfully before exposing any executable approval locally.
-        self._reply(summary, token=approval.token, expires_at=approval.expires_at)
+        # Publish and install the approval under the same lock: a fast phone
+        # must not observe a button before callback() can recognize its token.
+        # If publication fails, no approval remains executable.
         with self._lock:
-            if not self._closed:
-                self._approval = approval
+            if self._closed:
+                return
+            self._approval = approval
+            try:
+                self._reply(summary, token=approval.token, expires_at=approval.expires_at)
+            except Exception:
+                if self._approval is approval:
+                    self._approval = None
+                raise
 
     def diagnostics(self) -> str:
         """Local snapshot, intentionally independent of model/browser calls."""

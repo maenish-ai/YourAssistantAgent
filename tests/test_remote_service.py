@@ -719,3 +719,56 @@ def test_failed_approval_publication_does_not_leave_executable_token(conversatio
     with pytest.raises(RuntimeError):
         assistant._offer('facebook', None, 'signature', 'معاينة للمراجعة')
     assert assistant._approval is None
+
+
+def test_desktop_clarification_continues_only_after_review(conversation, monkeypatch):
+    assistant=conversation.assistant
+    conversation.settings.remote_desktop_enabled=True
+    conversation.settings.remote_ai_enabled=True
+    monkeypatch.setattr(assistant,'check_desktop',lambda:None)
+    instructions=[]
+    def task(runtime, desktop, instruction, report, **kwargs):
+        instructions.append(instruction)
+        return 'أي صفحة من الصفحتين تقصد؟' if len(instructions)==1 else 'طلبت فتح الصفحة المحددة، افحص الشاشة.'
+    monkeypatch.setattr('yaa_lite.remote.desktop_agent.run_desktop_task',task)
+    assistant.text('افتح صفحتي على الكمبيوتر')
+    assistant.callback('approve:'+assistant._approval.token)
+    assert len(instructions)==1
+    assistant.text('الأولى')
+    assert len(instructions)==1 and assistant._approval.kind=='desktop_ai'
+    assert 'الأولى' in conversation.events[-1]['text']
+    assistant.callback('approve:'+assistant._approval.token)
+    assert len(instructions)==2 and 'اختياري الآن: الأولى' in instructions[1]
+
+
+def test_expired_desktop_clarification_never_reuses_old_task(conversation):
+    assistant=conversation.assistant
+    assistant._desktop_clarification={'instruction':'افتح الصفحة القديمة','question':'أي صفحة؟',
+        'session_id':assistant.session_id,'expires':0}
+    assistant.text('الأولى')
+    assert assistant._approval is None
+    assert assistant._desktop_clarification is None
+
+
+def test_simple_facebook_page_open_routes_to_desktop_review(conversation):
+    assistant=conversation.assistant
+    conversation.settings.remote_desktop_enabled=True
+    conversation.settings.remote_ai_enabled=True
+    assistant.text('افتح صفحة مثال على الفيسبوك')
+    assert assistant._approval is not None
+    assert assistant._approval.kind=='desktop_ai'
+    assert 'افتح صفحة مثال' in conversation.events[-1]['text']
+
+
+def test_new_unrelated_command_clears_desktop_choice(conversation):
+    assistant=conversation.assistant
+    assistant._desktop_clarification={'instruction':'old','question':'أي صفحة؟',
+        'session_id':assistant.session_id,'expires':float('inf')}
+    assistant.text('/memory')
+    assert assistant._desktop_clarification is None
+
+
+def test_common_spoken_choices_are_recognized():
+    assert remote._desktop_choice('الصفحة الأولى')
+    assert remote._desktop_choice('الثانية')
+    assert not remote._desktop_choice('افتح الصفحة الأولى واحذفها')

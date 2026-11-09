@@ -26,6 +26,12 @@ from ..review_voice_v270 import (execute_reviewed_action, pending_is_fresh,
 from ..text_first_v300 import chat_context
 
 
+def _desktop_choice(text):
+    from ..agent.intent import normalized_command
+    value = normalized_command(text).strip(' .،!؟?')
+    return bool(re.fullmatch(r'(?:(?:الصفحه|الصفحة|النافذه|النافذة|التبويب|الخيار|رقم)\s+)?(?:الاول|الاولي|الاولى|الثاني|الثانيه|الثانية|الثالث|الثالثه|الثالثة|الرابع|الرابعه|الرابعة|[1-9١-٩])', value))
+
+
 @dataclass
 class Approval:
     token: str
@@ -57,6 +63,7 @@ class RemoteAssistant:
         self._notified: set[int] = set()
         self._last_failure: dict | None = None
         self._desktop_history: list[dict] = []
+        self._desktop_clarification = None
         self._phone_uploads: list[dict] = []
         self.session_id = self._load_session()
         # A restart cannot retain a remotely clickable operation.
@@ -239,6 +246,10 @@ class RemoteAssistant:
         if len(text) > 5000:
             self._reply('الرسالة طويلة. أرسل طلباً لا يتجاوز 5000 حرف.')
             return
+        # Any unrelated new message invalidates a pending choice, including
+        # commands handled by early-return branches below.
+        if not _desktop_choice(text):
+            self._desktop_clarification = None
         if text.lower() in {'/diagnostics', '/diagnose', 'تشخيص الاتصال'}:
             self._reply(self.diagnostics())
             return
@@ -290,6 +301,7 @@ class RemoteAssistant:
             self.db.clear_pending_action(self.session_id)
             self.session_id = self._new_session()
             self._desktop_history.clear()
+            self._desktop_clarification = None
             self._reply('بدأت محادثة جديدة. أرسل طلبك أو أرفق ZIP لعرض خطة رفعه.')
             return
         # Saved schedules, active runs, and unapproved previews are distinct.
@@ -328,6 +340,7 @@ class RemoteAssistant:
                 self._reply('لا توجد مهمة Facebook جارية أمكن طلب إيقافها. لم تتغير جداول المهام المحفوظة.')
             return
         if not discussion and (text.lower() in {'/cancel', 'إلغاء', 'الغاء', 'cancel'} or cancel_preview_request(text)):
+            self._desktop_clarification = None
             with self._lock:
                 had_preview = bool(self._approval)
             had_pending = bool(self.db.get_pending_action(self.session_id))
@@ -348,6 +361,24 @@ class RemoteAssistant:
                         'محادثة جديدة: /new — إلغاء المعاينة: /cancel — الحالة: /status')
             return
         from .desktop_intent import is_desktop_request
+        # A short ordinal reply can answer the immediately preceding computer
+        # question. Re-review the exact task and selection; old tasks never
+        # become permission to execute a new action silently.
+        pending = self._desktop_clarification
+        is_choice = _desktop_choice(text)
+        self._desktop_clarification = None
+        if pending and is_choice and pending['session_id'] == self.session_id and time.monotonic() < pending['expires']:
+            instruction = (pending['instruction'] + '\nسؤالك السابق: ' + pending['question'] +
+                           '\nاختياري الآن: ' + text + '\nاختر الهدف من الواجهة الحالية فقط وتحقق قبل المتابعة.')
+            if not (getattr(self.settings,'remote_desktop_enabled',False) and getattr(self.settings,'remote_ai_enabled',False)):
+                self._reply('فعّل التحكم بالكمبيوتر ومساعد الكمبيوتر من إعدادات Windows أولاً.')
+                return
+            self.db.add_message('user', text, 'hammer', self.session_id)
+            self.desktop.cancel.clear()
+            self._offer('desktop_ai', instruction, instruction,
+                        'متابعة المهمة السابقة بعد اختيارك: ' + text + '\n' + pending['instruction'] +
+                        '\nسأعيد فحص النافذة قبل اختيار الهدف. هل توافق على المتابعة؟')
+            return
         # A multi-step computer request must not be swallowed by the special
         # ZIP-to-GitHub shortcut merely because it also mentions a push.
         # Plain GitHub uploads keep their existing reviewed workflow.
@@ -357,7 +388,10 @@ class RemoteAssistant:
         desktop_intent = not discussion and is_desktop_request(text) and (not is_upload_request(text) or file_work)
         from .request_router import uses_facebook_tools
         closing=bool(re.search(r'اغلق|اغلاق|سكر|اقفل|اخرج|اطلع|\bclose\b',normalized_command(text)))
-        if desktop_intent and (closing or not uses_facebook_tools(text)):
+        from .desktop_intent import direct_task
+        navigation = direct_task(text) if desktop_intent else None
+        simple_navigation = bool(navigation and navigation[0] == 'open_url' and navigation[1].get('search'))
+        if desktop_intent and (closing or simple_navigation or not uses_facebook_tools(text)):
             if not (getattr(self.settings,'remote_desktop_enabled',False) and getattr(self.settings,'remote_ai_enabled',False)):
                 self._reply('فعّل التحكم بالكمبيوتر ومساعد الكمبيوتر من إعدادات نسخة Windows أولاً. للتحكم اليدوي استخدم زر سطح المكتب على الهاتف.')
                 return
@@ -506,6 +540,16 @@ class RemoteAssistant:
                     owner_notes=[row['content'] for row in self._memory_rows()],
                     phone_uploads=list(self._phone_uploads),
                     offer_download=lambda path,name:self.publish('ملف جاهز للتنزيل: '+name,download_path=path,download_name=name))
+                # Only retain an explicit selection question briefly. A new
+                # unrelated request, cancellation or new chat clears it.
+                question = str(result).strip()
+                if (('؟' in question or '?' in question) and
+                        re.search(r'اختر|اختار|حدد|اي\s|أي\s|which|choose', question, re.I)):
+                    self._desktop_clarification = {'instruction':str(approval.payload)[:1500],
+                        'question':question[:1000], 'session_id':self.session_id,
+                        'expires':time.monotonic()+300}
+                else:
+                    self._desktop_clarification = None
                 self._desktop_history.append({'instruction':str(approval.payload)[:1500], 'result':str(result)[:1500]})
                 self._desktop_history = self._desktop_history[-4:]
                 result_text = str(result)

@@ -300,3 +300,27 @@ def test_ui_automation_without_invoke_uses_observed_element_position(desktop, mo
     monkeypatch.setattr(control,'_session',session)
     assert control.click_element('id')['ok']
     assert events==[('position',20,30),{'flags':2},{'flags':4}]
+
+
+def test_open_url_reuses_active_browser_and_current_tab(desktop, monkeypatch):
+    control, events=desktop
+    window=SimpleNamespace(handle=42)
+    user=SimpleNamespace(GetForegroundWindow=lambda:42)
+    @contextmanager
+    def session():yield user
+    monkeypatch.setattr(control,'_session',session)
+    monkeypatch.setattr(control,'list_windows',lambda:{'windows':[{'id':'browser','process':'chrome.exe','active':True}]})
+    monkeypatch.setattr(control,'_browser_window',lambda identifier, user:(window,55))
+    monkeypatch.setattr(control,'_focus_window',lambda window,user:None)
+    monkeypatch.setattr(control,'input',lambda data:events.append(data))
+    result=control.open_url('https://example.test/Case')
+    assert result['ok'] and 'تبويب المتصفح الحالي' in result['result']
+    assert events==[{'action':'keys','keys':['CTRL','L']},{'action':'text','text':'https://example.test/Case'},{'action':'keys','keys':['ENTER']}]
+
+
+def test_open_url_does_not_guess_between_browser_windows(desktop, monkeypatch):
+    control,events=desktop
+    monkeypatch.setattr(control,'list_windows',lambda:{'windows':[{'id':'a','process':'chrome.exe','active':False},{'id':'b','process':'msedge.exe','active':False}]})
+    with pytest.raises(DesktopError,match='عدة نوافذ'):
+        control.open_url('https://example.test')
+    assert events==[]

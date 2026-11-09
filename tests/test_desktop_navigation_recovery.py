@@ -184,3 +184,9 @@ def test_search_with_followup_action_uses_planner():
     assert direct_task('ابحث عن التقرير وانسخيه للمجلد') is None
     action, args = direct_task('ابحث عن طريقة رفع ملف')
     assert action == 'open_url' and args['search']
+
+
+def test_direct_search_requests_selection_instead_of_claiming_page_opened():
+    desktop=SimpleNamespace(cancel=threading.Event(),open_url=lambda url:{'ok':True,'result':'طلب فتح البحث'})
+    answer=run_desktop_task(None,desktop,'افتح صفحة مثال على الفيسبوك',lambda _:None)
+    assert 'أي نتيجة' in answer and '؟' in answer

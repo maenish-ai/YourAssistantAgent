@@ -212,11 +212,34 @@ class WindowsDesktop(WindowControl, AppControl):
         parsed = urlsplit(str(url))
         if parsed.scheme not in {'https', 'http'} or not parsed.hostname or parsed.username or parsed.password:
             raise DesktopError('استخدم رابط http أو https صالحاً.')
-        with self._session():
+        # Reuse an observed browser window and its current tab/profile. This
+        # keeps the owner's signed-in session instead of starting a new one.
+        with self._lock, self._session() as user:
+            rows = self.list_windows()['windows']
+            browsers = [r for r in rows if r.get('process') in
+                        {'msedge.exe', 'chrome.exe', 'firefox.exe', 'brave.exe', 'vivaldi.exe', 'opera.exe'}]
+            active = next((r for r in browsers if r.get('active')), None)
+            selected = active or (browsers[0] if len(browsers) == 1 else None)
+            if selected:
+                window, _ = self._browser_window(selected['id'], user)
+                self._focus_window(window, user)
+                # Never send the address or Enter after focus switches away.
+                for event in ({'action':'keys', 'keys':['CTRL','L']},
+                              {'action':'text', 'text':str(url)},
+                              {'action':'keys', 'keys':['ENTER']}):
+                    if user.GetForegroundWindow() != window.handle:
+                        raise DesktopError('تغيّرت النافذة؛ توقفت قبل إرسال الإدخال إلى نافذة أخرى.')
+                    try:
+                        self.input(event)
+                    except Exception as exc:
+                        raise AmbiguousDesktopAction('قد يكون جزء من الرابط قد أُرسل؛ افحص المتصفح قبل إعادة المحاولة.') from exc
+                return {'ok': True, 'url': str(url), 'result': 'أُرسل الرابط إلى تبويب المتصفح الحالي؛ افحص الصفحة للتأكد من تحميلها.'}
+            if browsers:
+                raise DesktopError('هناك عدة نوافذ متصفح. اختر النافذة المطلوبة أولاً حتى أستخدم الجلسة الصحيحة.')
             import webbrowser
-            if not webbrowser.open(str(url), new=2):
+            if not webbrowser.open(str(url), new=0):
                 raise DesktopError('تعذر فتح المتصفح الافتراضي.')
-        return {'ok': True, 'url': str(url), 'result': 'طلب فتح الرابط أُرسل للمتصفح؛ راقب الشاشة للتأكد من التحميل.'}
+        return {'ok': True, 'url': str(url), 'result': 'طلب فتح الرابط أُرسل للمتصفح الافتراضي؛ افحص الصفحة للتأكد من تحميلها.'}
 
     def observe(self):
         """Text-grounded UI Automation; screenshots are never sent to the model."""

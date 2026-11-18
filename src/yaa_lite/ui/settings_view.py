@@ -198,7 +198,14 @@ class SettingsView(ttk.Frame):
         ttk.Button(g,text=self.t("اختيار المجلد", "Choose folder"),command=self._choose_github_checkout).grid(row=3,column=1,sticky="w",pady=5)
 
     def _page_pairing(self):
+        if self.settings.remote_connection_mode == "relay" and self.settings.remote_relay_url:
+            self._page_relay_pairing()
+        else:
+            self._page_home_pairing()
+
+    def _page_home_pairing(self):
         self._pairing_page_mode="home"
+        ttk.Button(self.content,text=self.t("اتصال من خارج البيت بدون فتح منفذ — خادم وسيط","Away from home without port forwarding — relay"),command=self._show_relay_settings).pack(anchor="w",pady=8)
         b=self._section(self.t("استضافة خاصة على هذا الكمبيوتر","Private hosting on this computer"),self.t(
             "اتصال HTTPS مباشر بين هاتفك والكمبيوتر. لا يلزم حساب استضافة أو تطبيق آخر. ابدأ داخل شبكة البيت، ثم جهّز الراوتر للوصول من الخارج.",
             "Direct HTTPS between your phone and computer. No hosting account or additional app. Start on home Wi-Fi, then configure your router for access from outside."))
@@ -229,12 +236,14 @@ class SettingsView(ttk.Frame):
             "Allow the app in Windows Firewall, then tap Scan QR on Android while on home Wi-Fi. The QR pins the computer certificate; the phone tries LAN and public addresses. Keep the computer awake and assistant unlocked. Screen and file data use no external relay; Groq AI uses its separate cloud connection."))
         ttk.Button(helpbox,text=self.t("إيقاف اتصال الهاتف","Disable phone access"),command=self._disable_phone).grid(row=1,column=0,sticky='w',pady=6)
         ttk.Button(helpbox,text=self.t("إلغاء اقتران الهواتف وتغيير المفتاح","Revoke paired phones and rotate key"),command=self._regenerate_pairing_token).grid(row=2,column=0,sticky='w',pady=6)
-        ttk.Button(helpbox,text=self.t("إعداد الخادم الوسيط القديم — اختياري","Legacy relay configuration — optional"),command=self._show_relay_settings).grid(row=3,column=0,sticky='w',pady=6)
         self._refresh_remote_status();self._poll_pairing_status()
         if self.settings.remote_connection_mode=='home' and self.settings.remote_enabled:self._show_pairing_qr()
 
     def _show_relay_settings(self):
         self._clear();self._page_relay_pairing();self._fit_settings_width(self._canvas.winfo_width());self._canvas.yview_moveto(0)
+
+    def _show_home_pairing(self):
+        self._clear();self._page_home_pairing();self._fit_settings_width(self._canvas.winfo_width());self._canvas.yview_moveto(0)
 
     def _full_access_pairing(self):
         for name in ('remote_desktop_enabled','remote_ai_enabled','remote_files_all_drives','remote_keep_awake'):
@@ -264,7 +273,7 @@ class SettingsView(ttk.Frame):
 
     def _page_relay_pairing(self):
         self._pairing_page_mode="relay"
-        ttk.Button(self.content,text=self.t("العودة للاستضافة على هذا الكمبيوتر","Back to hosting on this computer"),command=lambda:self.show_category("pairing")).pack(anchor="w",pady=8)
+        ttk.Button(self.content,text=self.t("العودة للاستضافة على هذا الكمبيوتر","Back to hosting on this computer"),command=self._show_home_pairing).pack(anchor="w",pady=8)
         b=self._section(self.t("هاتفك. كمبيوترك. اتصال واحد.","Your phone. Your computer. Connected."),self.t(
             "الشاشة والملفات والمساعد في تطبيق واحد. جهّز الربط مرة واحدة، ثم امسح الرمز بهاتفك.",
             "Screen, files and assistant in one app. Set up the connection once, then scan with your phone."))
@@ -300,7 +309,7 @@ class SettingsView(ttk.Frame):
         ttk.Button(helpbox,text=self.t("إلغاء اقتران الهواتف وتغيير المفتاح","Revoke paired phones and rotate key"),command=self._regenerate_pairing_token).grid(row=1,column=0,sticky='w',pady=5)
         ttk.Button(helpbox,text=self.t("إيقاف اتصال الهاتف على هذا الكمبيوتر","Disable phone access on this computer"),command=self._disable_phone).grid(row=2,column=0,sticky='w',pady=5)
         self._refresh_remote_status();self._poll_pairing_status()
-        if self.settings.remote_connection_mode=='relay' and self.settings.remote_relay_url:self._show_pairing_qr()
+        if self.settings.remote_connection_mode=='relay' and self.settings.remote_enabled and self.settings.remote_relay_url:self._show_pairing_qr()
 
     def _poll_pairing_status(self):
         self._status_after=None
@@ -357,6 +366,7 @@ class SettingsView(ttk.Frame):
                 payload=home_payload(self.security,load_remote_token(self.security),self.settings.remote_home_port,self.settings.remote_home_public_url,self.settings.remote_home_lan_url)
             else:
                 if self.settings.remote_connection_mode!='relay' or not self.settings.remote_relay_url:raise ValueError(self.t('الخادم غير مجهّز بعد. استورد ملف إعداد الخادم في الخطوة ١؛ بعدها سيظهر الرمز هنا.','Relay is not configured yet. Import the server setup in step 1, then your QR will appear here.'))
+                if not self.settings.remote_enabled:raise ValueError(self.t('فعّل ربط الهاتف أولاً لعرض QR.','Enable phone access first to display the QR.'))
                 payload=pairing_payload(self.settings.remote_relay_url,load_remote_token(self.security))
             from PIL import ImageTk
             # Keep integer module sizes so scanners see sharp edges at any DPI.

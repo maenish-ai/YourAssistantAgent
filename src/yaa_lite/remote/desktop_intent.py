@@ -79,7 +79,7 @@ def is_desktop_request(text):
     # file by pronoun: "فكيه وارفعيه". Keep the whole task for planning.
     if re.search(r'\b(?:فكي(?:ه|ها|هم)?|استخرجي(?:ه|ها|هم)?|انسخي(?:ه|ها|هم)?|انقلي(?:ه|ها|هم)?)\b', value):
         return True
-    return bool(re.search(r'افتح|فوت|ادخل|شغل|روح على|\b(?:اغلق|اغلاق|سكرلي|سكر|تسكر|اقفل|اطلع|اخرج|قفل|صغر|كبر|رجع|انسخ|استخرج|انشئ|انشي)\b|(?:فك|غير اسم|اعد تسمية).*?(?:ضغط|ملف|مجلد)|(?:اعمل|سوي|جهز)(?:لي)? (?:مجلد|فولدر|ملف)|تبويب|نافذ|انقل|نقل|ملفات|نزل|واتساب|واتس|whatsapp|متصفح|براوزر|سطح المكتب|الكمبيوتر|ابحث|سيرش|بحث.*(?:نت|انترنت)|حمل.*(?:ملف|صور)|download|browser|computer|\b(?:open|search|close|minimize|maximize|switch|copy|move|rename|extract|unzip|start|launch)\b|\bcreate (?:a |the )?folder\b', value))
+    return bool(re.search(r'افتح|فوت|ادخل|دخلي|شغل|روح(?:ي)? على|\b(?:اغلق|اغلاق|سكرلي|سكر|تسكر|اقفل|اطلع|اخرج|قفل|صغر|كبر|رجع|انسخ|استخرج|انشئ|انشي)\b|(?:فك|غير اسم|اعد تسمية).*?(?:ضغط|ملف|مجلد)|(?:اعمل|سوي|جهز)(?:لي)? (?:مجلد|فولدر|ملف)|تبويب|نافذ|انقل|نقل|ملفات|نزل|واتساب|واتس|whatsapp|متصفح|براوزر|سطح المكتب|الكمبيوتر|ابحث|سيرش|بحث.*(?:نت|انترنت)|حمل.*(?:ملف|صور)|download|browser|computer|\b(?:open|search|close|minimize|maximize|switch|copy|move|rename|extract|unzip|start|launch)\b|\bcreate (?:a |the )?folder\b', value))
 
 
 def direct_task(text):
@@ -87,7 +87,7 @@ def direct_task(text):
     if explicit_example_only(raw):
         return None
     value = normalized_command(raw).strip(' .،!؟?')
-    opening = r'(?:افتح(?:لي)?|فوت(?:لي)?(?: على)?|ادخل(?: على)?|شغل(?:لي)?|روح على|open|launch)'
+    opening = r'(?:افتح(?:لي|ي(?:لي)?)?|فوت(?:لي|ي(?:لي)?)?(?: على)?|ادخل(?:ي)?(?: على)?|دخلي(?:ني)?(?: على)?|شغل(?:لي|ي(?:لي)?)?|روح(?:ي)? على|open|launch)'
     closing = r'(?:اغلق|سكر(?:لي)?|اقفل|اخرج من|اطلع من|close)'
     if re.fullmatch(closing + r' (?:هذا |هاي |الـ)?(?:التبويب|الصفحه|الصفحة|التبويب الحالي|الصفحه الحاليه|الصفحة الحالية|current tab|this tab)', value):
         return ('browser_action', {'action': 'close_tab'})

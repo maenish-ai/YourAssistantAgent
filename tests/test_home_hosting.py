@@ -126,3 +126,22 @@ def test_full_access_pairing_saves_real_desktop_ai_drive_and_awake_permissions(h
     assert saved.remote_enabled and saved.remote_desktop_enabled and saved.remote_ai_enabled
     assert saved.remote_files_all_drives and saved.remote_keep_awake
     assert any(child.cget('image') for child in view._qr_panel.winfo_children())
+
+
+def test_pairing_page_reopens_saved_relay_and_allows_switching_to_home(home_view):
+    from dataclasses import replace
+
+    view, root, _ = home_view
+    view.settings = replace(view.settings, remote_connection_mode="relay",
+                            remote_relay_url="https://relay.example.test", remote_enabled=False)
+    view.show_category("pairing")
+    root.update()
+    assert view._pairing_page_mode == "relay"
+    assert not view._show_pairing_qr()
+    assert "Enable phone access" in view.status.cget("text")
+
+    view._show_home_pairing()
+    assert view._pairing_page_mode == "home"
+    assert "remote_home_port" in view.vars
+    view._show_relay_settings()
+    assert view.vars["remote_relay_url"].get() == "https://relay.example.test"

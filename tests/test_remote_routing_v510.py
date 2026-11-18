@@ -105,3 +105,11 @@ def test_approved_desktop_history_reaches_followup_and_new_chat_clears_it(tmp_pa
         assert assistant._desktop_history == []
     finally:
         assistant.close()
+
+
+@pytest.mark.parametrize("command", ["افتحيلي جوجل", "فوتي على جوجل", "دخليني على جوجل", "روحي على جوجل"])
+def test_transcribed_jordanian_navigation_uses_desktop_tools(command):
+    from yaa_lite.remote.desktop_intent import direct_task, is_desktop_request
+
+    assert is_desktop_request(command)
+    assert direct_task(command) == ("open_url", {"url": "https://www.google.com/"})

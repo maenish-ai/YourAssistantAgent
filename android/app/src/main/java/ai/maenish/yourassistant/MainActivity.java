@@ -272,7 +272,7 @@ public final class MainActivity extends Activity {
 
     private void showPairingHelp(){
         new android.app.AlertDialog.Builder(this).setTitle("ربط Windows وAndroid")
-            .setMessage("١. افتح ربط الهاتف في برنامج Windows واختر الاستضافة على هذا الكمبيوتر.\n٢. فعّل الاتصال والصلاحيات ثم امسح QR داخل شبكة البيت أول مرة.\n٣. للوصول من خارج البيت أضف عنوان HTTPS العام وافتح منفذ البرنامج في راوتر البيت. إذا كان الاتصال خلف CGNAT ولا يوجد IPv6 متاح، لا يمكن الوصول المباشر من الخارج.\n\nالكمبيوتر يستضيف الاتصال بنفسه ويجب أن يبقى مستيقظاً وبرنامجه مفتوحاً. قطع الاتصال يوقف هذا الهاتف؛ تغيير المفتاح من الكمبيوتر يلغي الاقتران.")
+            .setMessage("على شبكة البيت: افتح ربط الهاتف في Windows واختر الاستضافة على هذا الكمبيوتر. شغّلها ثم امسح QR والهاتف على نفس شبكة Wi-Fi.\n\nمن شبكة ثانية أو بيانات الهاتف: اختر الاتصال عبر خادم وسيط في Windows. استورد إعداد خادم HTTPS المنشور أو أدخل عنوانه ومفتاح تسجيله، وانتظر ظهور حالة «خادم الإقران متصل»، ثم امسح QR الجديد. هذا المسار يعمل بدون فتح منفذ في راوتر البيت.\n\nخلي الكمبيوتر مستيقظاً وبرنامج المساعد مفتوح القفل.")
             .setPositiveButton("فهمت",null).show();
     }
 
@@ -707,7 +707,6 @@ public final class MainActivity extends Activity {
             else throw new Exception();
             ApiClient validation=new ApiClient(address,secret);validation.close();
             pendingDictationId=null;main.removeCallbacks(dictationTimeout);
-            credentials.save(address,secret);credentials.autoConnect(true);
             serverField.setText(address);tokenField.setText(secret);allowReconnect=true;
             connect();
         }catch(Exception e){status.setText("هذا ليس رمز إقران صالحاً. امسح الرمز من برنامج الكمبيوتر الجديد.");}

@@ -744,7 +744,8 @@ class App(tk.Tk):
             try:
                 text = svc.listen_once()
             except Exception as exc:
-                self.after(0, lambda: messagebox.showerror(self.t("الصوت", "Voice"), str(exc), parent=self))
+                error = str(exc)
+                self.after(0, lambda: messagebox.showerror(self.t("الصوت", "Voice"), error, parent=self))
                 return
             if text:
                 self.after(0, lambda: chat.prefill_and_send(text))

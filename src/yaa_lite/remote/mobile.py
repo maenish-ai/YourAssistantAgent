@@ -57,6 +57,7 @@ class MobileServer:
         self._events = deque(maxlen=512)
         self._event_id = 0
         self._requests = {}
+        self._stop_requests = {}
         self._jobs = queue.Queue(maxsize=16)
         self._audio_jobs=queue.Queue(maxsize=2)
         self._stopping = threading.Event()
@@ -143,24 +144,36 @@ class MobileServer:
             return {'events': selected, 'cursor': cursor, 'reset': reset}
 
     def _enqueue(self, request_id: str, fingerprint: str, task: tuple) -> tuple[int, dict]:
+        stop = task[0] == 'desktop_stop'
         with self._lock:
             if not self._accepting.is_set():
                 return 503, {'error': 'connection_stopping'}
-            previous = self._requests.get(request_id)
+            previous = self._requests.get(request_id) or self._stop_requests.get(request_id)
             if previous:
                 old_fingerprint, job_id = previous
                 if not hmac.compare_digest(old_fingerprint, fingerprint):
                     return 409, {'error': 'request_id_conflict'}
                 return 202, {'job_id': job_id, 'duplicate': True}
-            if len(self._requests) >= 4096:
-                return 429, {'error': 'request_limit_restart_connection'}
             job_id = secrets.token_urlsafe(12)
-            try:
-                (self._audio_jobs if task[0]=='dictation' else self._jobs).put_nowait((job_id, task))
-            except queue.Full:
-                return 429, {'error': 'task_queue_full'}
-            self._requests[request_id] = (fingerprint, job_id)
-            return 202, {'job_id': job_id}
+            if stop:
+                # Keep emergency cancellation available even if the normal
+                # request cache is full.
+                self._stop_requests[request_id] = (fingerprint, job_id)
+                if len(self._stop_requests) > 128:
+                    del self._stop_requests[next(iter(self._stop_requests))]
+            else:
+                if len(self._requests) >= 4096:
+                    return 429, {'error': 'request_limit_restart_connection'}
+                try:
+                    (self._audio_jobs if task[0]=='dictation' else self._jobs).put_nowait((job_id, task))
+                except queue.Full:
+                    return 429, {'error': 'task_queue_full'}
+                self._requests[request_id] = (fingerprint, job_id)
+        # Run cancellation promptly, outside both the job queue and transport
+        # lock. Cancelling may publish an event through this transport.
+        if stop:
+            self.handler.stop_desktop_task()
+        return 202, {'job_id': job_id}
 
     def _run_jobs(self,jobs=None):
         jobs=self._jobs if jobs is None else jobs
@@ -414,8 +427,7 @@ class MobileServer:
                             task=('desktop_control',data)
                         elif path == '/v1/desktop/stop':
                             if data:raise ValueError()
-                            companion.handler.stop_desktop_task()
-                            return self._send(202, {'job_id': 'stop-requested'})
+                            task = ('desktop_stop', None)
                         elif path == '/v1/new-chat':
                             if data:
                                 raise ValueError()

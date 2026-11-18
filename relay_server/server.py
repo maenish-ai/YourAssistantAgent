@@ -148,8 +148,8 @@ class Handler(BaseHTTPRequestHandler):
             if not broker.envelope(value) or value['id']!=parts[5]:return self.send(400,{'error':'invalid_envelope'})
             with broker.lock:
                 job=info['jobs'].get(parts[5])
-                if not job:return self.send(404,{'error':'request_expired'})
-                if job['response'] is None:job['response']=value;job['event'].set()
+                if job and job['response'] is None:job['response']=value;job['event'].set()
+            if not job:return self.send(404,{'error':'request_expired'})
             return self.send(200,{'ok':True})
         self.send(404,{'error':'not_found'})
     def do_GET(self):
@@ -165,9 +165,12 @@ class Handler(BaseHTTPRequestHandler):
                     if info['queue']:
                         identifier=info['queue'].popleft()
                         info['jobs'][identifier]['delivered']=time.monotonic()
-                        return self.send(200,{'request':info['jobs'][identifier]['request']})
+                        request = info['jobs'][identifier]['request']
+                        break
                 time.sleep(.1)
-            return self.send(200,{'request':None})
+            else:
+                request = None
+            return self.send(200, {'request': request})
         if len(parts)==6 and parts[4]=='requests' and ID.fullmatch(parts[5]):
             info=self.auth('phone')
             if info is None:return self.send(403,{'error':'access_denied'})

@@ -28,6 +28,9 @@ class Assistant:
     def callback(self, callback):
         self.calls.put(('callback', callback))
 
+    def stop_desktop_task(self):
+        self.calls.put(('stop', None))
+
     def close(self):
         self.closed = True
 
@@ -232,3 +235,27 @@ def test_clear_approval_is_replayed_to_phone(companion):
     assert events[-1]['clear_approval'] is True
     assert events[-1]['type'] == 'message'
     assert events[-1]['text'] == ''
+
+
+def test_stop_is_immediate_and_deduplicated_while_job_worker_is_busy(companion):
+    server, handler = companion
+    started = threading.Event()
+    release = threading.Event()
+
+    def busy_task(text):
+        started.set()
+        release.wait(timeout=3)
+
+    handler.text = busy_task
+    assert request(server, '/v1/messages', {'text': 'do work'}, request_id='working_123')[0] == 202
+    try:
+        assert started.wait(timeout=2)
+        first = request(server, '/v1/desktop/stop', {})
+        retry = request(server, '/v1/desktop/stop', {})
+        assert first[0] == retry[0] == 202
+        assert retry[1] == {'job_id': first[1]['job_id'], 'duplicate': True}
+        assert request(server, '/v1/messages', {'text': 'different action'})[0] == 409
+        assert handler.calls.get_nowait() == ('stop', None)
+        assert handler.calls.empty()
+    finally:
+        release.set()

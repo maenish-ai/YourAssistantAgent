@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 
 from yaa_lite.personal_assistant_v220 import (

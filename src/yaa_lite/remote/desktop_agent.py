@@ -5,6 +5,7 @@ import math
 import re
 import time
 from ..ai.profiles import QWEN
+from ..agent.intent import normalized_command
 from .desktop import AmbiguousDesktopAction
 
 
@@ -100,6 +101,7 @@ _ACTION_LABELS = {
     'find_recent_uploads': 'البحث عن الملفات القادمة من الهاتف',
     'send_file_to_phone': 'تجهيز ملف للهاتف',
     'window_action': 'التحكم في نافذة',
+    'focus_window': 'البحث عن النافذة المطلوبة',
     'browser_action': 'التحكم في المتصفح',
 }
 
@@ -157,6 +159,21 @@ def _find_recent_uploads(files, contains='', *, max_folders=30, max_results=20, 
             'source_verified':False,
             'note':'Candidates in the shared area only; their phone origin is unverified. Ask the owner to identify the file before operating on it.'}
 
+def _focus_named_window(desktop, target):
+    windows = desktop.list_windows()['windows']
+    matches = [window for window in windows if target in normalized_command(window['title'])]
+    if not matches:
+        return {'ok': False, 'error': f'ما لقيت نافذة مفتوحة باسم «{target}». شو عنوانها كما يظهر على الشاشة؟'}
+    if len(matches) > 1:
+        titles = '، '.join(f'«{window["title"]}»' for window in matches[:5])
+        return {'ok': False, 'error': f'لقيت أكثر من نافذة: {titles}. أي عنوان تقصد؟'}
+    window = matches[0]
+    result = desktop.window_action(window['id'], 'focus')
+    if result.get('ok'):
+        result['result'] = f'نافذة «{window["title"]}» الآن بالمقدمة.'
+    return result
+
+
 def run_desktop_task(runtime, desktop, instruction, publish, *, max_steps=24, files=None, offer_download=None, history=None, owner_notes=None, phone_uploads=None):
     if desktop.cancel.is_set():
         return 'أُوقفت المهمة قبل بدء التحكم.'
@@ -171,6 +188,7 @@ def run_desktop_task(runtime, desktop, instruction, publish, *, max_steps=24, fi
                 windows=desktop.list_windows()['windows'];active=next((w for w in windows if w['active']),None)
                 if not active:raise ValueError('لا توجد نافذة مستخدم نشطة قابلة للتحكم. اطلب عرض النوافذ واختر واحدة.')
                 result=desktop.window_action(active['id'],args['action'])
+            elif name=='focus_window':result=_focus_named_window(desktop,args['target'])
             elif name=='open_url':result=desktop.open_url(args['url'])
             elif name=='browser_action':result=desktop.browser_action(**args)
             else:result=desktop.list_windows()
@@ -205,6 +223,9 @@ def run_desktop_task(runtime, desktop, instruction, publish, *, max_steps=24, fi
         'Do not claim you remember which tabs we opened unless the task history explicitly identifies them. '
         'If active-window UI cannot be read, use list_windows, window_action and browser_action; opening URLs and closing browser tabs do not require readable page elements. '
         'If a specific app truly exposes no usable controls, the owner can operate its screenshot/keyboard FROM THE PHONE; never require visiting the PC for an ordinary close/open action. Reply in the user\'s language. '
+        'When replying, use short natural sentences. Say what changed and where the user can see it. '
+        'If a decision is missing, ask one specific question with the observed choices. '
+        'If partly complete, name the completed part and what still needs attention. '
         'When the task is done return a normal short message without tools.')} ,
         {'role': 'system', 'content': 'Owner-approved task for this entire tool loop:\n' + instruction},
         {'role': 'user', 'content': instruction},

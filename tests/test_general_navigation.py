@@ -67,3 +67,29 @@ def test_general_file_and_application_requests_reach_planning(command):
 def test_invalid_addresses_never_become_direct_destination(target):
     action = direct_task('open ' + target)
     assert action is None
+
+
+@pytest.mark.parametrize("titles, expected_focus, expected_reply", [
+    (["مستند الدوام", "ملاحظات"], ["0"], "الآن بالمقدمة"),
+    (["مستند الدوام", "مستند المصاريف"], [], "أي عنوان تقصد؟"),
+    (["ملاحظات"], [], "ما لقيت نافذة"),
+])
+def test_named_window_focus_uses_observed_ids_without_the_model(titles, expected_focus, expected_reply):
+    from threading import Event
+    from types import SimpleNamespace
+    from yaa_lite.remote.desktop_agent import run_desktop_task
+
+    focused = []
+    desktop = SimpleNamespace(
+        cancel=Event(),
+        list_windows=lambda: {"windows": [
+            {"id": str(index), "title": title} for index, title in enumerate(titles)
+        ]},
+        window_action=lambda identifier, action: (
+            focused.append(identifier) or {"ok": action == "focus"}
+        ),
+    )
+    instruction = "رجعني على نافذة مستند"
+    assert is_desktop_request(instruction)
+    assert expected_reply in run_desktop_task(None, desktop, instruction, lambda message: None)
+    assert focused == expected_focus

@@ -21,6 +21,8 @@ _SITES = {
 _BROWSER = r'(?:المتصفح|متصفح|البراوزر|براوزر|browser|browser window|edge|ايدج|ايج|chrome|كروم|جوجل كروم|google chrome|microsoft edge)'
 _COMPOUND = r'\b(?:ثم|وبعدين|بعدين|وانشر|انشر|شير|شارك|احذف|اضغط|ارفع|حمل|نز[ّل]+|وانقل|انقل|انسخ|واستخرج|استخرج|فك|انشي|انشئ|غير اسم|and|then|publish|share|upload|download|delete|copy|move|rename|extract|click)\b'
 
+_FOCUS_WINDOW = r'(?:رجعني على|بدل الى|انتقل الى|switch to|focus) (?:نافذه |نافذة |window )?(.+)'
+
 
 def _web_address(target):
     """Accept only a host the owner actually supplied; never append a TLD."""
@@ -67,7 +69,7 @@ def is_desktop_request(text):
     if explicit_example_only(text):
         return False
     value = normalized_command(text)
-    if value.startswith('/computer '):
+    if value.startswith('/computer ') or re.fullmatch(_FOCUS_WINDOW, value):
         return True
     if re.match(r'^(اشرح|كيف|ما هي|ما هو|هل|ليش|لماذا|what is|how to|can you explain|why)\b', value):
         return False
@@ -87,6 +89,9 @@ def direct_task(text):
     if explicit_example_only(raw):
         return None
     value = normalized_command(raw).strip(' .،!؟?')
+    focus = re.fullmatch(_FOCUS_WINDOW, value)
+    if focus and not re.search(_COMPOUND, focus[1]):
+        return ('focus_window', {'target': focus[1]})
     opening = r'(?:افتح(?:لي|ي(?:لي)?)?|فوت(?:لي|ي(?:لي)?)?(?: على)?|ادخل(?:ي)?(?: على)?|دخلي(?:ني)?(?: على)?|شغل(?:لي|ي(?:لي)?)?|روح(?:ي)? على|open|launch)'
     closing = r'(?:اغلق|سكر(?:لي)?|اقفل|اخرج من|اطلع من|close)'
     if re.fullmatch(closing + r' (?:هذا |هاي |الـ)?(?:التبويب|الصفحه|الصفحة|التبويب الحالي|الصفحه الحاليه|الصفحة الحالية|current tab|this tab)', value):

@@ -390,7 +390,10 @@ class RemoteAssistant:
         closing=bool(re.search(r'اغلق|اغلاق|سكر|اقفل|اخرج|اطلع|\bclose\b',normalized_command(text)))
         from .desktop_intent import direct_task
         navigation = direct_task(text) if desktop_intent else None
-        simple_navigation = bool(navigation and navigation[0] == 'open_url' and navigation[1].get('search'))
+        simple_navigation = bool(navigation and (
+            navigation[0] == 'focus_window' or
+            (navigation[0] == 'open_url' and navigation[1].get('search'))
+        ))
         if desktop_intent and (closing or simple_navigation or not uses_facebook_tools(text)):
             if not (getattr(self.settings,'remote_desktop_enabled',False) and getattr(self.settings,'remote_ai_enabled',False)):
                 self._reply('فعّل التحكم بالكمبيوتر ومساعد الكمبيوتر من إعدادات نسخة Windows أولاً. للتحكم اليدوي استخدم زر سطح المكتب على الهاتف.')

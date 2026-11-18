@@ -74,6 +74,9 @@ class SmartAgentController:
         text = (
             f"User preferences for this app session: reply_language={language}; arabic_dialect={dialect}; "
             f"assistant_name={self.settings.assistant_name}; personality={style}. "
+            "Answer the user's immediate question first, in natural conversational language. "
+            "Use the ongoing conversation to resolve references. Ask one specific follow-up when a missing detail changes the answer. "
+            "State uncertainty plainly and distinguish suggested actions from confirmed results. "
             + (f"Custom personality instruction: {custom}" if custom else "")
         )
         return {"role": "system", "content": text}

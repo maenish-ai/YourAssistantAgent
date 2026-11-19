@@ -70,6 +70,7 @@ final class ApiClient {
     }
 
     String origin() { return baseUrl; }
+    ApiClient separateConnection() throws ApiException { return new ApiClient(baseUrl, token); }
 
     JSONObject events(long after) throws ApiException {
         JSONObject response = request("GET", "/v1/events?after=" + Math.max(0, after), null, null, null);

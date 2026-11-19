@@ -47,11 +47,14 @@ public final class MainActivity extends Activity {
     private static final int RECORD_PERMISSION=41;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService network = Executors.newSingleThreadExecutor();
+    private final ExecutorService stopNetwork = Executors.newSingleThreadExecutor();
+    private boolean stopPending;
     private final Set<String> usedApprovalTokens = new HashSet<>();
     private final List<Button> approvalButtons = new ArrayList<>();
     private SecureStore credentials;
     private ApiClient api;
     private EditText serverField, tokenField, composer;
+    private Button stopButton;
     private TextView status;
     private Button connectButton, disconnectButton, diagnosticsButton, sendButton, attachButton, newChatButton, desktopButton, filesButton, computerButton;
     private boolean desktopAllowed, filesAllowed, aiAllowed;
@@ -170,7 +173,9 @@ public final class MainActivity extends Activity {
         LinearLayout sendRow=row();
         micButton=AppUi.button(this,"🎙 إملاء صوتي",this::toggleDictation,false);
         sendButton=button("إرسال",this::sendText);
-        sendRow.addView(micButton,weighted());sendRow.addView(sendButton,weighted());chat.addView(sendRow);
+        stopButton=AppUi.button(this,"إيقاف",this::stopAssistant,false);
+        sendRow.addView(micButton,weighted());sendRow.addView(sendButton,weighted());
+        sendRow.addView(stopButton,weighted());chat.addView(sendRow);
 
         ScrollView computerScroll=new ScrollView(this);computerScroll.setFillViewport(true);
         LinearLayout computer=new LinearLayout(this);computer.setOrientation(LinearLayout.VERTICAL);
@@ -303,8 +308,47 @@ public final class MainActivity extends Activity {
         if(callButton!=null){callButton.setEnabled(callMode||(connected&&dictationAllowed));callButton.setText(callMode?"■ إنهاء المكالمة":"☎ بدء محادثة صوتية");}
         composer.setEnabled(connected && !busy);
         connectButton.setEnabled(!busy);
+        stopButton.setEnabled(connected && !stopPending);
         disconnectButton.setEnabled(api != null || allowReconnect);
         desktopButton.setEnabled(connected && desktopAllowed);filesButton.setEnabled(connected && filesAllowed);computerButton.setEnabled(connected && aiAllowed);
+    }
+
+    private void stopAssistant() {
+        if (!connected || api == null || stopPending) return;
+        final ApiClient activeClient = api;
+        final int requestGeneration = generation;
+        endCall();
+        if (dictation != null) dictation.cancel();
+        pendingDictationId = null;
+        recordAfterPermission = false;
+        main.removeCallbacks(dictationTimeout);
+        stopPending = true;
+        updateButtons();
+        status.setText("جاري إرسال طلب الإيقاف…");
+        stopNetwork.execute(() -> {
+            String result;
+            try {
+                ApiClient stopClient = activeClient.separateConnection();
+                try {
+                    stopClient.post("/v1/desktop/stop", new JSONObject());
+                    result = "وصل طلب الإيقاف للكمبيوتر. راجع آخر خطوة في المحادثة.";
+                } finally {
+                    stopClient.close();
+                }
+            } catch (Exception e) {
+                result = "لم أتأكد من وصول الإيقاف. افحص الاتصال وحالة المهمة.";
+            }
+            final String message = result;
+            main.post(() -> {
+                stopPending = false;
+                if (destroyed) return;
+                if (current(requestGeneration)) {
+                    status.setText(message);
+                    appendText(message, "الإيقاف");
+                }
+                updateButtons();
+            });
+        });
     }
 
     private void connect() { connect(false); }
@@ -1003,6 +1047,7 @@ public final class MainActivity extends Activity {
         main.removeCallbacksAndMessages(null);
         if (api != null) api.close();
         network.shutdownNow();
+        stopNetwork.shutdownNow();
         super.onDestroy();
     }
 }

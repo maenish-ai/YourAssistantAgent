@@ -772,3 +772,30 @@ def test_common_spoken_choices_are_recognized():
     assert remote._desktop_choice('الصفحة الأولى')
     assert remote._desktop_choice('الثانية')
     assert not remote._desktop_choice('افتح الصفحة الأولى واحذفها')
+
+
+def test_stop_suppresses_in_flight_model_reply_and_review(conversation, monkeypatch):
+    from threading import Event, Thread
+
+    assistant = conversation.assistant
+    started, release = Event(), Event()
+
+    def slow_reply(*args, **kwargs):
+        started.set()
+        release.wait(3)
+        conversation.db.set_pending_action(assistant.session_id, 'approve_facebook_campaign',
+                                           {'plan': {}}, 'Late review')
+        return AgentResponse('Late response')
+
+    monkeypatch.setattr(conversation.controller, 'handle', slow_reply)
+    worker = Thread(target=assistant.text, args=('جهز آخر إعلان للمجموعات',))
+    worker.start()
+    try:
+        assert started.wait(2)
+        assistant.stop_desktop_task()
+    finally:
+        release.set()
+        worker.join(4)
+    assert not worker.is_alive()
+    assert not conversation.events
+    assert conversation.db.get_pending_action(assistant.session_id) is None

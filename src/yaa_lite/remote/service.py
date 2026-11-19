@@ -58,6 +58,7 @@ class RemoteAssistant:
         self.controller = controller or SmartAgentController(db, settings, ChatEngine(runtime), facebook)
         self._lock = threading.RLock()
         self._closed = False
+        self._reply_generation = 0
         self._approval: Approval | None = None
         self._watching: dict[int, int] = {}
         self._notified: set[int] = set()
@@ -238,8 +239,10 @@ class RemoteAssistant:
             self.db.add_memory_item('desktop_failure', code, self.session_id)
 
     def text(self, text: str) -> None:
-        if self._closed:
-            return
+        with self._lock:
+            if self._closed:
+                return
+            reply_generation = self._reply_generation
         text = str(text or '').strip()
         if not text:
             return
@@ -435,20 +438,30 @@ class RemoteAssistant:
                 max(128, min(384, int(self.settings.max_response_tokens))),
                 min(120, int(self.settings.ai_timeout_seconds)),
             )
-            pending = self.db.get_pending_action(self.session_id)
-            if pending_is_fresh(pending) and not discussion:
-                summary = str(pending.get('summary') or '')
-                self._offer('facebook', None, pending_signature(pending), summary)
-            else:
-                self._reply(outcome.text)
+            with self._lock:
+                if reply_generation != self._reply_generation:
+                    if not discussion:
+                        self.db.clear_pending_action(self.session_id)
+                    return
+                pending = self.db.get_pending_action(self.session_id)
+                if pending_is_fresh(pending) and not discussion:
+                    summary = str(pending.get('summary') or '')
+                    self._offer('facebook', None, pending_signature(pending), summary)
+                else:
+                    self._reply(outcome.text)
         except Exception as exc:
-            from .diagnostics import failure_report, failure_message
-            if not discussion:
-                self._invalidate()
-                self.db.clear_pending_action(self.session_id)
-            self._last_failure = failure_report(exc)
-            self.activity('remote_request_error', json.dumps(self._last_failure, ensure_ascii=False))
-            self._reply(failure_message(self._last_failure), clear_approval=not discussion)
+            with self._lock:
+                if reply_generation != self._reply_generation:
+                    if not discussion:
+                        self.db.clear_pending_action(self.session_id)
+                    return
+                from .diagnostics import failure_report, failure_message
+                if not discussion:
+                    self._invalidate()
+                    self.db.clear_pending_action(self.session_id)
+                self._last_failure = failure_report(exc)
+                self.activity('remote_request_error', json.dumps(self._last_failure, ensure_ascii=False))
+                self._reply(failure_message(self._last_failure), clear_approval=not discussion)
 
     def document(self, path: Path, caption: str = '') -> None:
         path = Path(path)
@@ -661,8 +674,9 @@ class RemoteAssistant:
     def stop_desktop_task(self):
         self.desktop.cancel.set()
         with self._lock:
-            pending = bool(self._approval and self._approval.kind=='desktop_ai')
-        if pending:self._invalidate()
+            self._reply_generation += 1
+            if self._approval:
+                self._invalidate()
 
     def close(self) -> None:
         with self._lock:

@@ -26,7 +26,7 @@ from yaa_lite.config import Settings
 def desktop(monkeypatch):
     desktop=WindowsDesktop(lambda: True)
     events=[]
-    user=SimpleNamespace(GetSystemMetrics=lambda index: (1920,1080)[index],
+    user=SimpleNamespace(GetForegroundWindow=lambda: 42, GetSystemMetrics=lambda index: (1920,1080)[index],
                          SetCursorPos=lambda x,y: events.append(('position',x,y)) or True)
     @contextmanager
     def session():yield user
@@ -324,3 +324,17 @@ def test_open_url_does_not_guess_between_browser_windows(desktop, monkeypatch):
     with pytest.raises(DesktopError,match='عدة نوافذ'):
         control.open_url('https://example.test')
     assert events==[]
+
+
+def test_guarded_text_refuses_changed_foreground_window(desktop, monkeypatch):
+    control, events = desktop
+
+    @contextmanager
+    def session():
+        yield SimpleNamespace(GetForegroundWindow=lambda: 21)
+
+    monkeypatch.setattr(control, '_session', session)
+    control._frames['frame'] = (1920, 1080, time.monotonic(), 42)
+    with pytest.raises(DesktopError, match='تغيّرت النافذة'):
+        control.input({'action': 'text', 'text': 'مسودة', 'frame_id': 'frame', 'guard_window': True})
+    assert not events

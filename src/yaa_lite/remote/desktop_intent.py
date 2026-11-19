@@ -139,9 +139,12 @@ def direct_task(text):
     if target in _SITES:
         return ('open_url', {'url': _SITES[target]})
     # A named Facebook page opens a real search; it is not a verified page URL.
-    page = re.fullmatch(r'(.+?) (?:على|في) (?:الفيسبوك|فيسبوك|الفيس بوك|فيس بوك|facebook)', target)
+    page_pattern = r'(.+?) (?:على|في) (?:الفيسبوك|فيسبوك|الفيس بوك|فيس بوك|facebook)'
+    page = re.fullmatch(page_pattern, target)
     if page and not re.search(r'جروب|مجموع|group', page[1]):
-        return ('open_url', {'url': 'https://www.facebook.com/search/pages/?q=' + quote(page[1]), 'search': True})
+        original_page = re.fullmatch(page_pattern, original_target.strip(' .،!؟?'), re.I)
+        name = original_page[1] if original_page else page[1]
+        return ('open_url', {'url': 'https://www.facebook.com/search/pages/?q=' + quote(name), 'search': True})
     # A bare page name is a real web search, never an invented domain.
     query = re.fullmatch(opening + r' (?:صفحة|صفحه|موقع|page|website|site)\s+(?:اسمها\s+)?(.+)', value)
     if query and not re.search(r'فيسبوك|facebook|جروب|group', query[1]):

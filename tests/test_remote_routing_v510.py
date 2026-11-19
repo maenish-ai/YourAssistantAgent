@@ -113,3 +113,24 @@ def test_transcribed_jordanian_navigation_uses_desktop_tools(command):
 
     assert is_desktop_request(command)
     assert direct_task(command) == ("open_url", {"url": "https://www.google.com/"})
+
+
+def test_named_facebook_page_search_uses_one_approved_browser_navigation(tmp_path, monkeypatch):
+    from urllib.parse import parse_qs, urlsplit
+
+    opened = []
+    assistant = RemoteAssistant(ChatDB(tmp_path/'db.sqlite'),
+        Settings(remote_desktop_enabled=True, remote_ai_enabled=True), None, SimpleNamespace(),
+        lambda *a, **kw: None, tmp_path/'state',
+        controller=SimpleNamespace(handle=lambda *a, **kw: pytest.fail('Wrong executor')))
+    monkeypatch.setattr(assistant.desktop, 'open_url', lambda url: opened.append(url) or {'ok': True})
+    try:
+        assistant.text('افتح صفحة معن حنونة للساتلايت على الفيسبوك')
+        assert not opened
+        token = assistant._approval.token
+        assistant.callback('approve:'+token)
+        assistant.callback('approve:'+token)
+        assert len(opened) == 1
+        assert parse_qs(urlsplit(opened[0]).query)['q'] == ['معن حنونة للساتلايت']
+    finally:
+        assistant.close()

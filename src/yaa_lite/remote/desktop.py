@@ -83,9 +83,12 @@ class WindowsDesktop(WindowControl, AppControl):
                 user.SetThreadDpiAwarenessContext(previous)
 
     def frame(self):
-        with self._lock, self._session():
+        with self._lock, self._session() as user:
+            foreground = user.GetForegroundWindow()
             from PIL import ImageGrab
             image = ImageGrab.grab(all_screens=False)
+            if foreground != user.GetForegroundWindow():
+                foreground = None
             width, height = image.size
             image.thumbnail((1280, 900))
             output = io.BytesIO()
@@ -93,7 +96,7 @@ class WindowsDesktop(WindowControl, AppControl):
             identifier = secrets.token_urlsafe(12)
             now = time.monotonic()
             self._frames = {k: v for k, v in self._frames.items() if now - v[2] < 15}
-            self._frames[identifier] = (width, height, now)
+            self._frames[identifier] = (width, height, now, foreground)
             return {'frame_id': identifier, 'width': image.width, 'height': image.height,
                     'screen_width': width, 'screen_height': height,
                     'image_b64': base64.b64encode(output.getvalue()).decode('ascii')}
@@ -146,7 +149,7 @@ class WindowsDesktop(WindowControl, AppControl):
                 frame = self._frames.get(str(data.get('frame_id', '')))
                 if not frame or time.monotonic() - frame[2] > 15:
                     raise DesktopError('الصورة قديمة. حدّث الشاشة قبل النقر.')
-                width, height, _ = frame
+                width, height = frame[:2]
                 if (user.GetSystemMetrics(0), user.GetSystemMetrics(1)) != (width, height):
                     raise DesktopError('تغير حجم الشاشة. حدّث الصورة.')
                 x = self._number(data.get('x'), 0, 1)
@@ -172,12 +175,21 @@ class WindowsDesktop(WindowControl, AppControl):
                     if action == 'double_click':
                         time.sleep(.08)
             elif action == 'text':
+                checked_window = None
+                if data.get('guard_window') is True:
+                    checked_frame = self._frames.get(str(data.get('frame_id', '')))
+                    if checked_frame and len(checked_frame) == 4:
+                        checked_window = checked_frame[3]
+                    if not checked_window or checked_window != user.GetForegroundWindow():
+                        raise DesktopError('تغيّرت النافذة. حدّث الصورة، اختر الحقل، وأكّده من جديد.')
                 text = data.get('text')
                 if not isinstance(text, str) or not text or len(text) > 4000 or '\x00' in text:
                     raise DesktopError('النص يجب أن يكون بين 1 و4000 حرف.')
                 encoded = text.encode('utf-16-le')
                 for i in range(0, len(encoded), 2):
                     self._check()
+                    if checked_window and checked_window != user.GetForegroundWindow():
+                        raise DesktopError('تغيّرت النافذة أثناء الإدخال. راجع النص قبل إعادة المحاولة.')
                     code = int.from_bytes(encoded[i:i + 2], 'little')
                     self._send(user, key=code, flags=4)
                     self._send(user, key=code, flags=4 | 2)

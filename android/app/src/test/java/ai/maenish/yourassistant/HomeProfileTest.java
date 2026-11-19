@@ -142,6 +142,56 @@ public class HomeProfileTest {
             LinearLayout fields=ReflectionHelpers.getField(activity,"connectionFields");assertEquals(View.GONE,fields.getVisibility());
         }
     }
+    @Test public void stopButtonSendsItsOwnRequestWhileTheChatExecutorIsBusy() throws Exception {
+        try (LocalServer server = new LocalServer(false);
+             ActivityController<MainActivity> controller = Robolectric.buildActivity(MainActivity.class).setup()) {
+            var activity = controller.get();
+            var client = new ApiClient(new HomeProfile(code(server.url())).encode(), TOKEN);
+            ReflectionHelpers.setField(activity, "api", client);
+            ReflectionHelpers.setField(activity, "connected", true);
+            ReflectionHelpers.setField(activity, "busy", true);
+            var release = new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.ExecutorService queue = ReflectionHelpers.getField(activity, "network");
+            queue.execute(() -> {
+                try {
+                    release.await(5, java.util.concurrent.TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+            try {
+                ReflectionHelpers.callInstanceMethod(activity, "updateButtons");
+                Button stop = ReflectionHelpers.getField(activity, "stopButton");
+                assertTrue(stop.isEnabled());
+                assertTrue(stop.performClick());
+                long deadline = System.nanoTime() + 4_000_000_000L;
+                while ((Boolean) ReflectionHelpers.getField(activity, "stopPending")
+                        && System.nanoTime() < deadline) {
+                    Thread.sleep(10);
+                    Shadows.shadowOf(Looper.getMainLooper()).idle();
+                }
+                assertFalse((Boolean) ReflectionHelpers.getField(activity, "stopPending"));
+                assertEquals("POST /v1/desktop/stop HTTP/1.1", server.lastPostRequest);
+                assertEquals(1, server.posts.get());
+            } finally {
+                release.countDown();
+            }
+        }
+    }
+
+    @Test public void desktopSpeechResultOnlyFillsEditableDraft() {
+        try (ActivityController<DesktopActivity> controller = Robolectric.buildActivity(DesktopActivity.class).setup()) {
+            DesktopActivity activity = controller.get();
+            var result = new android.content.Intent().putStringArrayListExtra(
+                    android.speech.RecognizerIntent.EXTRA_RESULTS,
+                    new java.util.ArrayList<>(List.of("نص عربي")));
+            activity.onActivityResult(301, android.app.Activity.RESULT_OK, result);
+            EditText draft = ReflectionHelpers.getField(activity, "computerText");
+            assertEquals("نص عربي", draft.getText().toString());
+            assertEquals("", ReflectionHelpers.getField(activity, "textFrame"));
+        }
+    }
+
     /** Public test-only PKCS12 fixture. Never used by a distributed application. */
     private final class LocalServer implements AutoCloseable{
         final SSLServerSocket socket;final Thread thread;volatile boolean stopped;

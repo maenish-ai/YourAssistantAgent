@@ -10,8 +10,6 @@ import android.util.Base64;
 import android.widget.*;
 import org.json.JSONArray;
 import org.json.JSONObject;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 public final class DesktopActivity extends Activity {
     private final Handler main=new Handler(Looper.getMainLooper());
@@ -19,6 +17,9 @@ public final class DesktopActivity extends Activity {
     private ApiClient api;
     private RemoteScreenView screen;
     private TextView status;
+    private EditText computerText;
+    private String textFrame = "";
+    private static final int DESKTOP_SPEECH = 301;
     private boolean resumed, destroyed, polling;
     private final Runnable poll=this::frame;
     @Override public void onCreate(Bundle state) {
@@ -43,7 +44,7 @@ public final class DesktopActivity extends Activity {
             .setPositiveButton("إغلاق",(d,w)->keys("ALT","F4")).setNegativeButton("إلغاء",null).show());root.addView(windows);
         LinearLayout keyboard=new LinearLayout(this);keyboard.setOrientation(LinearLayout.VERTICAL);keyboard.setVisibility(android.view.View.GONE);
         LinearLayout toolbar=new LinearLayout(this);
-        add(toolbar,"لوحة المفاتيح",()->keyboard.setVisibility(keyboard.getVisibility()==android.view.View.VISIBLE?android.view.View.GONE:android.view.View.VISIBLE));
+        add(toolbar,"اكتب على الكمبيوتر",()->keyboard.setVisibility(keyboard.getVisibility()==android.view.View.VISIBLE?android.view.View.GONE:android.view.View.VISIBLE));
         add(toolbar,"ملاءمة",()->screen.reset());
         add(toolbar,"سحب / نقر",()->{screen.dragMode=!screen.dragMode;status.setText(screen.dragMode?"وضع سحب العناصر مفعّل":"وضع النقر مفعّل");});
         add(toolbar,"إيقاف المهمة",()->{network.getQueue().clear();polling=false;post("/v1/desktop/stop",new JSONObject());});
@@ -54,16 +55,69 @@ public final class DesktopActivity extends Activity {
             String[][] values={{"LEFT"},{"RIGHT"},{"UP"},{"DOWN"},{"DELETE"},{"HOME"},{"END"},{"PAGEUP"},{"PAGEDOWN"},{"F5"},{"CTRL","S"},{"CTRL","F"},{"WIN"}};
             new android.app.AlertDialog.Builder(this).setTitle("لوحة المفاتيح").setItems(labels,(dialog,index)->keys(values[index])).show();
         }); keyboard.addView(modes);
-        EditText text=AppUi.field(this,"اكتب على الكمبيوتر…");text.setHint("اكتب النص الذي تريد إدخاله على الكمبيوتر");text.setMaxLines(2);keyboard.addView(text);
+        computerText=AppUi.field(this,"اكتب أو أملي النص هنا…");
+        computerText.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        computerText.setMaxLines(2);keyboard.addView(computerText);
+        LinearLayout typing=new LinearLayout(this);
+        add(typing,"🎙 إملاء",this::startDesktopSpeech);
+        add(typing,"تأكيد الحقل",()->{
+            textFrame=screen.frameId();
+            status.setText(textFrame.isEmpty()?"حدّث الشاشة، وانقر حقل الكتابة على الكمبيوتر أولاً.":"تم تثبيت النافذة الظاهرة. أدخل النص قبل انتهاء صلاحية الصورة.");
+        });
+        add(typing,"إدخال النص",this::typeComputerDraft);
+        keyboard.addView(typing);
         LinearLayout keys=new LinearLayout(this);
-        add(keys,"كتابة",()->{String value=text.getText().toString();if(value.isEmpty())return;try{input(new JSONObject().put("action","text").put("text",value));text.setText("");}catch(Exception ignored){}});
-        add(keys,"Enter",()->keys("ENTER"));add(keys,"Tab",()->keys("TAB"));add(keys,"⌫",()->keys("BACKSPACE"));add(keys,"Esc",()->keys("ESC"));keyboard.addView(keys);
+        add(keys,"إرسال Enter",()->keys("ENTER"));add(keys,"Tab",()->keys("TAB"));
+        add(keys,"⌫",()->keys("BACKSPACE"));add(keys,"Esc",()->keys("ESC"));keyboard.addView(keys);
         LinearLayout shortcuts=new LinearLayout(this);
         add(shortcuts,"العنوان",()->keys("CTRL","L"));add(shortcuts,"تحديد",()->keys("CTRL","A"));add(shortcuts,"نسخ",()->keys("CTRL","C"));add(shortcuts,"لصق",()->keys("CTRL","V"));add(shortcuts,"النوافذ",()->keys("ALT","TAB"));keyboard.addView(shortcuts);
         LinearLayout scroll=new LinearLayout(this);add(scroll,"أعلى",()->wheel(3));add(scroll,"أسفل",()->wheel(-3));add(scroll,"سطح المكتب",()->keys("WIN","D"));keyboard.addView(scroll);
         try{SecureStore store=new SecureStore(this);api=new ApiClient(store.url(),store.token());}
         catch(Exception e){status.setText("ارجع للمحادثة واضبط الاتصال أولاً.");}
     }
+    private void typeComputerDraft() {
+        String value = computerText.getText().toString();
+        if (value.isEmpty()) return;
+        if (value.length() > 4000) {
+            status.setText("اختصر النص إلى 4000 حرف أو أرسله على أجزاء.");
+            return;
+        }
+        if (textFrame.isEmpty()) {
+            status.setText("انقر حقل الكتابة على شاشة الكمبيوتر ثم اضغط تأكيد الحقل.");
+            return;
+        }
+        try {
+            input(new JSONObject().put("action", "text").put("text", value)
+                    .put("frame_id", textFrame).put("guard_window", true));
+            textFrame = "";
+        } catch (Exception e) {
+            status.setText("تعذر تجهيز النص. بقي النص في خانة التحرير.");
+        }
+    }
+
+    private void startDesktopSpeech() {
+        android.content.Intent intent = new android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+                .putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL, android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                .putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE, "ar-JO");
+        try {
+            startActivityForResult(intent, DESKTOP_SPEECH);
+        } catch (android.content.ActivityNotFoundException e) {
+            status.setText("الإملاء غير متاح على هاتفك. استخدم لوحة مفاتيح الهاتف للكتابة.");
+        }
+    }
+
+    @Override protected void onActivityResult(int request, int result, android.content.Intent data) {
+        super.onActivityResult(request, result, data);
+        if (request != DESKTOP_SPEECH || result != RESULT_OK || data == null) return;
+        textFrame = "";
+        java.util.ArrayList<String> matches = data.getStringArrayListExtra(android.speech.RecognizerIntent.EXTRA_RESULTS);
+        if (matches == null || matches.isEmpty()) return;
+        if (computerText.length() > 0) computerText.append(" ");
+        computerText.append(matches.get(0));
+        computerText.setSelection(computerText.length());
+        status.setText("راجع النص. انقر الحقل في شاشة الكمبيوتر وأكّد اختياره قبل الإدخال.");
+    }
+
     private void chooseWindow(){
         if(api==null||destroyed)return;
         network.execute(()->{try{
@@ -94,7 +148,7 @@ public final class DesktopActivity extends Activity {
         network.execute(()->{try{
             JSONObject result=api.desktop();byte[] bytes=Base64.decode(result.getString("image_b64"),Base64.DEFAULT);
             Bitmap image=BitmapFactory.decodeByteArray(bytes,0,bytes.length);if(image==null)throw new Exception();
-            main.post(()->{polling=false;if(destroyed){image.recycle();return;}screen.image(image,result.optString("frame_id"));status.setText("● مباشر • "+result.optInt("screen_width")+" × "+result.optInt("screen_height")+" • تكبير بإصبعين");schedule();});
+            main.post(()->{polling=false;if(destroyed){image.recycle();return;}screen.image(image,result.optString("frame_id"));schedule();});
         }catch(Exception e){main.post(()->{polling=false;schedule();});showError(e);}});
     }
     private void schedule(){main.removeCallbacks(poll);if(resumed&&!destroyed)main.postDelayed(poll,1000);}

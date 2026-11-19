@@ -134,3 +134,37 @@ def test_named_facebook_page_search_uses_one_approved_browser_navigation(tmp_pat
         assert parse_qs(urlsplit(opened[0]).query)['q'] == ['معن حنونة للساتلايت']
     finally:
         assistant.close()
+
+
+def test_phone_unzips_one_verified_attachment_to_desktop_after_approval(tmp_path, monkeypatch):
+    import zipfile
+    from yaa_lite.remote.files import RemoteFiles
+
+    monkeypatch.setattr(Path, 'home', classmethod(lambda cls: tmp_path))
+    workspace = tmp_path / 'Desktop'
+    workspace.mkdir()
+    archive = tmp_path / 'site.zip'
+    with zipfile.ZipFile(archive, 'w') as package:
+        package.writestr('text.txt', 'hello from phone')
+    replies = []
+    assistant = RemoteAssistant(ChatDB(tmp_path/'chat.sqlite'), Settings(
+        remote_files_root=str(tmp_path), remote_desktop_enabled=True, remote_ai_enabled=True),
+        None, SimpleNamespace(), lambda reply, **kw: replies.append(reply), tmp_path/'state',
+        controller=SimpleNamespace(handle=lambda *args: pytest.fail('Unexpected cloud call')))
+    assistant.files = RemoteFiles(tmp_path)
+    monkeypatch.setattr(assistant.files, 'desktop_folder', lambda: 'Desktop')
+    assistant._phone_uploads = [{'path': archive.name, 'size': archive.stat().st_size,
+                                 'mtime_ns': archive.stat().st_mtime_ns}]
+    try:
+        command = 'افرد لي هالملف المضغوط على الديسكتوب'
+        assistant.text(command)
+        assert not (workspace/'site').exists()
+        assistant.callback('approve:' + assistant._approval.token)
+        assert (workspace/'site'/'text.txt').read_text() == 'hello from phone'
+        assert str(workspace/'site') in replies[-1]
+        assistant.text(command)
+        assistant.callback('approve:' + assistant._approval.token)
+        assert 'بنفس الاسم' in replies[-1]
+        assert (workspace/'site'/'text.txt').read_text() == 'hello from phone'
+    finally:
+        assistant.close()

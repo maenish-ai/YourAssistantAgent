@@ -628,7 +628,7 @@ public final class MainActivity extends Activity {
         try {
             JSONObject body = new JSONObject().put("text", text);
             submit("/v1/messages", body, "وصل الطلب لقائمة المهام؛ النتيجة تظهر في المحادثة.", () -> {
-                appendText(text, "أنت");
+                appendText(text, "أنت • وصل الطلب للكمبيوتر");
                 composer.setText("");
             });
         } catch (Exception e) { status.setText("تعذر تجهيز الرسالة."); }
@@ -687,6 +687,9 @@ public final class MainActivity extends Activity {
                         main.postDelayed(this::startCallListening, 600);
                     }
                     status.setText(e.getMessage());
+                    if ("/v1/messages".equals(path) && invalidateApproval) {
+                        appendText(e.getMessage(), "حالة الإرسال");
+                    }
                     updateButtons();
                     schedulePoll();
                 });

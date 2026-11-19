@@ -40,7 +40,7 @@ class BrowserBridge:
         return f"connected — {self.browser or 'browser'} — {self.tabs} tab(s)"
 
     def queue_command(self, action: str, **arguments) -> str:
-        if action not in {"open_url", "active_page", "extract_links", "click_text", "click_selector", "type_selector", "probe_url", "discover_facebook_groups", "facebook_session"}:
+        if action not in {"open_url", "active_page", "extract_links", "click_text", "click_selector", "type_selector", "probe_url", "discover_facebook_groups", "facebook_session", "facebook_page_results", "open_facebook_page_result"}:
             raise ValueError(f"Browser action not allowed: {action}")
         if action == "discover_facebook_groups":
             arguments["limit"] = max(1, min(int(arguments.get("limit", 500)), 1000))

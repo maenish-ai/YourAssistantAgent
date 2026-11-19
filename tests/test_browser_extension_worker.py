@@ -175,3 +175,38 @@ await assert.rejects(worker.context.facebookSession(), /finish loading/);
 assert.equal(scripts, 0);
 assert.deepEqual(worker.closed, [5]);
 """)
+
+
+def test_facebook_page_search_reuses_tab_and_checks_result_before_navigation():
+    run_worker(r"""
+const updates = [];
+const target = 'https://www.facebook.com/arbor.club';
+const worker = makeWorker();
+await flush();
+worker.context.chrome.tabs.update = async (id, {url}) => {
+  assert.equal(id, 1);
+  updates.push(url);
+  worker.context.location.href = url;
+};
+worker.context.chrome.tabs.create = async () => { throw Error('unexpected new tab'); };
+worker.context.chrome.tabs.get = async id => ({id, status:'complete', url:worker.context.location.href});
+worker.context.document.querySelectorAll = () => [
+  {innerText:'نادي الأشجار', href:target, getClientRects:() => [1]},
+  {innerText:'نادي الأشجار', href:'https://www.facebook.com/profile.php?id=42', getClientRects:() => [1]},
+  {innerText:'نادي الأشجار', href:'https://example.com/', getClientRects:() => [1]},
+];
+const found = await worker.context.facebookPageResults('نادي الأشجار');
+assert.equal(found.matches.length, 1);
+assert.equal(found.matches[0].url, target);
+assert.equal(updates.length, 1);
+const opened = await worker.context.openFacebookPageResult({
+  tabId:found.tabId, query:found.query, ...found.matches[0],
+});
+assert.equal(opened.url, target);
+assert.equal(updates.length, 2);
+const stale = await worker.context.openFacebookPageResult({
+  tabId:found.tabId, query:found.query, ...found.matches[0],
+});
+assert.equal(stale.ok, false);
+assert.equal(updates.length, 2);
+""")

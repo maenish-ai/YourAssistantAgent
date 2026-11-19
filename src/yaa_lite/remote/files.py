@@ -211,6 +211,24 @@ class RemoteFiles:
     def _relative_child(parent, name):
         return '/'.join(part for part in (parent.strip('/'), name) if part)
 
+    def desktop_folder(self):
+        """Resolve the user's Windows Desktop through the existing file scope."""
+        if os.name == 'nt':
+            import ctypes
+            path = ctypes.create_unicode_buffer(32768)
+            shell = ctypes.WinDLL('shell32')
+            if shell.SHGetFolderPathW(None, 0x10, None, 0, path) != 0:
+                raise FileError('تعذر تحديد مسار سطح المكتب في ويندوز.')
+            folder = Path(path.value).resolve(strict=True)
+        else:
+            folder = (Path.home() / 'Desktop').resolve(strict=True)
+        areas = self.roots.items() if self.all_drives else [('', self.root)]
+        for drive, root in areas:
+            if folder.is_relative_to(root):
+                relative = folder.relative_to(root).as_posix() if folder != root else ''
+                return '/'.join(part for part in (f'@drives/{drive}' if drive else '', relative) if part)
+        raise FileError('سطح المكتب خارج مجلد الملفات المسموح للهاتف. اختر مجلد مشاركة يشمل سطح المكتب.')
+
     def _destination(self, parent, name):
         directory = self._mutation_path(parent)
         if not directory.is_dir():
@@ -254,7 +272,7 @@ class RemoteFiles:
                 raise FileError('تم نسخ الملف لكن تعذر إزالة المصدر؛ ما زالت النسختان موجودتين.') from exc
             return {'ok': True, 'path': relative, 'source': source, 'result': 'تم نقل الملف إلى: ' + relative}
 
-    def extract_zip(self, path, destination_folder, new_name):
+    def extract_zip(self, path, destination_folder, new_name, *, cancelled=None):
         """Extract into a new reviewed folder; never execute archive contents."""
         with self._mutation_lock:
             archive = self._mutation_path(path, file=True)
@@ -313,6 +331,8 @@ class RemoteFiles:
                         written = 0
                         with zipped.open(member) as source, output.open('xb') as destination:
                             while block := source.read(65536):
+                                if cancelled and cancelled():
+                                    raise FileError('أُوقفت مهمة فك ZIP.')
                                 written += len(block)
                                 if written > member.file_size or written > MAX_ZIP_MEMBER:
                                     raise FileError('حجم أحد ملفات ZIP لا يطابق بياناته.')
@@ -320,6 +340,8 @@ class RemoteFiles:
                         if written != member.file_size:
                             raise FileError('ZIP غير مكتمل؛ لم يتم نشر مجلد فك الضغط.')
                         file_count += 1
+                    if cancelled and cancelled():
+                        raise FileError('أُوقفت مهمة فك ZIP.')
                     self._publish_directory(temporary, target)
                     temporary = None
                     return {'ok': True, 'path': relative, 'files': file_count,

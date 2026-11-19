@@ -387,14 +387,14 @@ class RemoteAssistant:
         # Plain GitHub uploads keep their existing reviewed workflow.
         from ..agent.intent import normalized_command
         command = normalized_command(text)
-        file_work = bool(re.search(r'\b(?:فك|فكي(?:ه|ها|هم)?|استخرج|استخرجي(?:ه|ها|هم)?|انسخ|انسخي(?:ه|ها|هم)?|انقل|انقلي(?:ه|ها|هم)?|unzip|extract|copy|move)\b', command))
+        file_work = bool(re.search(r'\b(?:افرد(?:لي|ي)?|فك|فكي(?:ه|ها|هم)?|استخرج|استخرجي(?:ه|ها|هم)?|انسخ|انسخي(?:ه|ها|هم)?|انقل|انقلي(?:ه|ها|هم)?|unzip|extract|copy|move)\b', command))
         desktop_intent = not discussion and is_desktop_request(text) and (not is_upload_request(text) or file_work)
         from .request_router import uses_facebook_tools
         closing=bool(re.search(r'اغلق|اغلاق|سكر|اقفل|اخرج|اطلع|\bclose\b',normalized_command(text)))
         from .desktop_intent import direct_task
         navigation = direct_task(text) if desktop_intent else None
         simple_navigation = bool(navigation and (
-            navigation[0] == 'focus_window' or
+            navigation[0] in {'focus_window', 'unzip_on_desktop', 'open_named_application'} or
             (navigation[0] == 'open_url' and navigation[1].get('search'))
         ))
         if desktop_intent and (closing or simple_navigation or not uses_facebook_tools(text)):
@@ -555,6 +555,7 @@ class RemoteAssistant:
                     files=self.files,history=list(self._desktop_history),
                     owner_notes=[row['content'] for row in self._memory_rows()],
                     phone_uploads=list(self._phone_uploads),
+                    browser_bridge=getattr(self.facebook, 'browser_bridge', None),
                     offer_download=lambda path,name:self.publish('ملف جاهز للتنزيل: '+name,download_path=path,download_name=name))
                 # Only retain an explicit selection question briefly. A new
                 # unrelated request, cancellation or new chat clears it.
@@ -570,7 +571,7 @@ class RemoteAssistant:
                 self._desktop_history = self._desktop_history[-4:]
                 result_text = str(result)
                 state = 'stopped' if 'أُوقف' in result_text or 'توقفت المهمة' in result_text else (
-                    'unverified' if 'لا أستطيع تأكيد' in result_text or 'غير مؤكدة' in result_text else (
+                    'unverified' if any(term in result_text for term in ('لا أستطيع تأكيد', 'غير مؤكدة', 'لم أتحقق', 'لم أستطع تأكيد', 'أي رابط تقصد', 'أي اسم تقصد')) else (
                     'failed' if any(term in result_text for term in ('لم تكتمل', 'تعذر', 'لم أنفذ', 'لم ينفذ', 'لم أستطع')) else 'done'))
                 if state == 'failed':
                     self._record_desktop_failure('desktop_step_failed')

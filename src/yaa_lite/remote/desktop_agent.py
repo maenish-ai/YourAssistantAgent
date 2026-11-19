@@ -6,6 +6,7 @@ import re
 import time
 from ..ai.profiles import QWEN
 from ..agent.intent import normalized_command
+from urllib.parse import parse_qs, urlsplit
 from .desktop import AmbiguousDesktopAction
 
 
@@ -174,7 +175,73 @@ def _focus_named_window(desktop, target):
     return result
 
 
-def run_desktop_task(runtime, desktop, instruction, publish, *, max_steps=24, files=None, offer_download=None, history=None, owner_notes=None, phone_uploads=None):
+def _open_named_application(desktop, target):
+    def exact(title):
+        return normalized_command(title) == target
+
+    windows = desktop.list_windows()['windows']
+    visible = [window for window in windows if exact(window['title'])]
+    if len(visible) == 1:
+        return desktop.window_action(visible[0]['id'], 'focus')
+    if len(visible) > 1:
+        raise ValueError('وجدت أكثر من نافذة بنفس الاسم. اختر نافذة من شاشة التحكم.')
+    matches = desktop.list_applications(query=target)
+    rows = matches['applications']
+    if matches.get('truncated') or matches.get('next_offset') is not None:
+        raise ValueError('بحث البرامج غير مكتمل. اكتب اسم البرنامج بدقة أكبر.')
+    exact_rows = [row for row in rows if exact(row['name'])]
+    if len(exact_rows) == 1:
+        return desktop.launch_application(exact_rows[0]['id'])
+    titles = '، '.join(row['name'] for row in rows[:5])
+    if not titles:
+        raise ValueError('لم أجد البرنامج في اختصارات ويندوز. ما اسمه كما يظهر في قائمة ابدأ؟')
+    raise ValueError('البرامج المطابقة: ' + titles + '. أي اسم تقصد؟')
+
+
+def _unzip_on_desktop(files, archive, phone_uploads, cancelled):
+    if files is None:
+        raise ValueError('مجلد الملفات المشتركة غير متاح.')
+    if archive:
+        listing = _find_recent_uploads(files, archive, max_results=40)
+        candidates = [row for row in listing['entries'] if normalized_command(row['name']) == archive]
+        if listing['search_incomplete'] or len(candidates) != 1:
+            raise ValueError('لم أجد ملف ZIP واحداً مطابقاً. حدّد الملف أو أعد إرساله من تبويب الملفات.')
+    else:
+        recorded = _find_recent_uploads(files, '.zip', phone_uploads=phone_uploads)
+        candidates = [row for row in recorded['entries'] if row['name'].casefold().endswith('.zip')]
+        if not recorded['source_verified'] or len(candidates) != 1 or recorded['search_incomplete']:
+            names = '، '.join(row['name'] for row in candidates[:5]) if recorded['source_verified'] else ''
+            raise ValueError((f'أي ملف ZIP تقصد؟ {names}' if names else
+                              'ما قدرت أحدد الملف المقصود. اكتب اسم ZIP أو ارفعه من تبويب الملفات.'))
+    source = candidates[0]
+    folder = files.desktop_folder()
+    if cancelled():
+        return {'result': 'أُوقفت المهمة قبل فك ZIP.'}
+    result = files.extract_zip(source['path'], folder, source['name'][:-4], cancelled=cancelled)
+    return {'result': f'فككت {result["files"]} ملف من {source["name"]} في: ' + str(files.resolve(result['path']))}
+
+
+def _find_facebook_page(bridge, name, cancelled):
+    result = bridge.execute('facebook_page_results', timeout=18, name=name)
+    if not result.get('ok'):
+        return 'تعذر فحص نتائج فيسبوك. افحص التبويب المفتوح وتسجيل الدخول.'
+    rows = result.get('matches', [])
+    if not rows:
+        return 'فتح البحث في المتصفح، ولم أتحقق من صفحة مطابقة. راجع النتائج على الشاشة.'
+    if len(rows) > 1:
+        options = '\n'.join(f'{row["name"]}: {row["url"]}' for row in rows[:5])
+        return 'وجدت أكثر من مطابقة. أي رابط تقصد؟\n' + options
+    if cancelled():
+        return 'أُوقفت المهمة عند نتائج البحث.'
+    row = rows[0]
+    opened = bridge.execute('open_facebook_page_result', timeout=16, tabId=result['tabId'],
+                            query=name, name=row['name'], url=row['url'])
+    if not opened.get('ok'):
+        return 'لم أستطع تأكيد فتح الصفحة. افحص التبويب الحالي قبل إعادة الطلب.'
+    return f'فتحت الصفحة المطابقة «{row["name"]}»: {opened["url"]}'
+
+
+def run_desktop_task(runtime, desktop, instruction, publish, *, max_steps=24, files=None, offer_download=None, history=None, owner_notes=None, phone_uploads=None, browser_bridge=None):
     if desktop.cancel.is_set():
         return 'أُوقفت المهمة قبل بدء التحكم.'
     deadline = time.monotonic() + 180
@@ -189,7 +256,15 @@ def run_desktop_task(runtime, desktop, instruction, publish, *, max_steps=24, fi
                 if not active:raise ValueError('لا توجد نافذة مستخدم نشطة قابلة للتحكم. اطلب عرض النوافذ واختر واحدة.')
                 result=desktop.window_action(active['id'],args['action'])
             elif name=='focus_window':result=_focus_named_window(desktop,args['target'])
-            elif name=='open_url':result=desktop.open_url(args['url'])
+            elif name=='unzip_on_desktop':
+                result = _unzip_on_desktop(files, args['archive'], phone_uploads, desktop.cancel.is_set)
+            elif name=='open_named_application':result=_open_named_application(desktop, args['target'])
+            elif name=='open_url':
+                link = urlsplit(args['url'])
+                if (browser_bridge and browser_bridge.connected and args.get('search')
+                        and link.hostname == 'www.facebook.com' and link.path == '/search/pages/'):
+                    return _find_facebook_page(browser_bridge, parse_qs(link.query)['q'][0], desktop.cancel.is_set)
+                result=desktop.open_url(args['url'])
             elif name=='browser_action':result=desktop.browser_action(**args)
             else:result=desktop.list_windows()
             if isinstance(result,dict) and result.get('ok') is False:

@@ -53,7 +53,7 @@ def test_compound_steps_and_non_commands_are_not_reduced_to_direct_navigation(co
 
 @pytest.mark.parametrize('command', [
     'انسخ ملف التقرير إلى المجلد الثاني', 'استخرج الملف المضغوط هنا',
-    'فك ضغط الملف على سطح المكتب', 'سوي مجلد جديد',
+    'سوي مجلد جديد',
     'اعمل فولدر للمشروع', 'غير اسم الملف', 'launch My Installed Editor',
     'copy the selected file', 'extract this archive', 'create a folder',
 ])
@@ -93,3 +93,24 @@ def test_named_window_focus_uses_observed_ids_without_the_model(titles, expected
     assert is_desktop_request(instruction)
     assert expected_reply in run_desktop_task(None, desktop, instruction, lambda message: None)
     assert focused == expected_focus
+
+
+def test_named_page_uses_existing_browser_bridge_and_returns_verified_url():
+    from threading import Event
+    from types import SimpleNamespace
+    from yaa_lite.remote.desktop_agent import run_desktop_task
+
+    calls = []
+    def execute(action, **args):
+        calls.append((action, args))
+        if action == 'facebook_page_results':
+            return {'ok': True, 'tabId': 77,
+                    'matches': [{'name': args['name'], 'url': 'https://www.facebook.com/arboretum.example'}]}
+        return {'ok': True, 'url': args['url']}
+
+    reply = run_desktop_task(None, SimpleNamespace(cancel=Event()),
+        'افتح صفحة نادي الأشجار على الفيسبوك', lambda _: None,
+        browser_bridge=SimpleNamespace(connected=True, execute=execute))
+    assert [name for name, _ in calls] == ['facebook_page_results', 'open_facebook_page_result']
+    assert calls[1][1]['tabId'] == 77
+    assert 'نادي الأشجار' in reply and 'https://www.facebook.com/arboretum.example' in reply

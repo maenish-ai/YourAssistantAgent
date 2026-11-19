@@ -124,9 +124,82 @@ async function facebookSession() {
   }
 }
 
+async function facebookPageResults(name, expiresAt) {
+  const tab = await activeTab();
+  const query = String(name || "").trim();
+  if (!query || query.length > 180) return {ok:false, error:"invalid_page_name"};
+  const search = new URL("https://www.facebook.com/search/pages/");
+  search.searchParams.set("q", query);
+  await chrome.tabs.update(tab.id, {url: search.href});
+  const deadline = Math.min(Date.now() + 12000, expiresAt ? expiresAt * 1000 : Infinity);
+  let previousMatches = "";
+  while (Date.now() < deadline) {
+    const current = await chrome.tabs.get(tab.id);
+    if (current.status === "complete") {
+      const inspected = await inTab(tab.id, (query, expectedQuery) => {
+        const url = new URL(location.href);
+        if (url.hostname !== "www.facebook.com") return {blocked:true};
+        if (url.pathname.startsWith("/login") || url.pathname.startsWith("/checkpoint")) return {blocked:true};
+        if (url.pathname.replace(/\/$/, "") !== "/search/pages"
+            || url.searchParams.get("q") !== expectedQuery) return {moved:true};
+        const normalize = value => value.normalize("NFKC").toLowerCase()
+          .replace(/[أإآٱ]/g, "ا").replace(/[\u064b-\u065f\u0670\u0640]/g, "").replace(/\s+/g, " ").trim();
+        const matches = new Map();
+        for (const link of document.querySelectorAll("main a[href], [role=main] a[href]")) {
+          const name = (link.innerText || link.getAttribute("aria-label") || "").trim();
+          if (!name || normalize(name) !== normalize(query) || !link.getClientRects().length) continue;
+          const href = new URL(link.href);
+          if (href.origin !== url.origin || !/^\/[a-z0-9._-]+\/?$/i.test(href.pathname)) continue;
+          if (/^\/(?:profile\.php|search|login|checkpoint|groups|pages|watch|events|marketplace|reel|gaming|help|share|photo|feed)\/?$/i.test(href.pathname)) continue;
+          const canonical = href.origin + href.pathname.replace(/\/$/, "");
+          matches.set(canonical, {name, url:canonical});
+          if (matches.size > 5) break;
+        }
+        return {matches:[...matches.values()]};
+      }, [query, query]);
+      if (inspected?.blocked || inspected?.moved) return {ok:false, error:"search_not_available"};
+      if (inspected?.matches?.length) {
+        const key = JSON.stringify(inspected.matches);
+        if (key === previousMatches) return {ok:true, tabId:tab.id, query, matches:inspected.matches};
+        previousMatches = key;
+      } else {
+        previousMatches = "";
+      }
+    }
+    await new Promise(resolve => setTimeout(resolve, 600));
+  }
+  return {ok:true, matches:[]};
+}
+
+async function openFacebookPageResult(args) {
+  const tab = await activeTab();
+  if (tab.id !== args.tabId) return {ok:false, error:"active_tab_changed"};
+  const target = new URL(args.url);
+  if (target.origin !== "https://www.facebook.com") return {ok:false, error:"invalid_result"};
+  const visible = await inTab(tab.id, (url, query, name) => {
+    const current = new URL(location.href);
+    if (current.origin !== "https://www.facebook.com" || current.pathname.replace(/\/$/, "") !== "/search/pages"
+        || current.searchParams.get("q") !== query) return false;
+    return [...document.querySelectorAll("main a[href], [role=main] a[href]")].some(link => {
+      const href = new URL(link.href);
+      return href.origin + href.pathname.replace(/\/$/, "") === url
+          && (link.innerText || link.getAttribute("aria-label") || "").trim() === name
+          && link.getClientRects().length;
+    });
+  }, [target.href, args.query, args.name]);
+  if (!visible) return {ok:false, error:"result_not_visible"};
+  await chrome.tabs.update(tab.id, {url:target.href});
+  const loaded = await waitForTab(tab.id, 10000);
+  const actual = new URL(loaded.url);
+  const confirmed = actual.origin === target.origin && actual.pathname.replace(/\/$/, "") === target.pathname.replace(/\/$/, "");
+  return {ok:confirmed, url:confirmed ? actual.origin + actual.pathname : ""};
+}
+
 async function execute(command) {
   const a = command.action;
   const x = command.arguments || {};
+  if (a === "facebook_page_results") return facebookPageResults(x.name, command.expires_at);
+  if (a === "open_facebook_page_result") return openFacebookPageResult(x);
   if (a === "open_url") {
     const tab = await chrome.tabs.create({url: String(x.url || ""), active: x.active !== false});
     return {ok: true, tabId: tab.id, url: tab.url || String(x.url || "")};

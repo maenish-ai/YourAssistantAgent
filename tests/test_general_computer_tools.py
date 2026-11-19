@@ -148,3 +148,20 @@ def test_uncertain_ui_action_stops_before_any_retry():
     result=run_desktop_task(Runtime(),desktop,'اضغط الزر المحدد',lambda _:None)
     assert calls==['real']
     assert 'غير مؤكدة' in result and 'تكراره' in result
+
+
+def test_named_program_launch_does_not_use_model_or_guess_a_shortcut():
+    from threading import Event
+    from types import SimpleNamespace
+    from yaa_lite.remote.desktop_agent import run_desktop_task
+
+    choices = [{'id': 'found', 'name': 'LibreOffice Writer'}, {'id': 'other', 'name': 'LibreOffice Writer Tools'}]
+    launched = []
+    desktop = SimpleNamespace(cancel=Event(), list_windows=lambda: {'windows': []},
+        list_applications=lambda query: {'applications': choices},
+        launch_application=lambda identifier: launched.append(identifier) or {'result': 'أُرسل طلب التشغيل'})
+    instruction = 'افتح برنامج LibreOffice Writer'
+    assert 'أُرسل' in run_desktop_task(None, desktop, instruction, lambda _: None)
+    choices.append({'id': 'duplicate', 'name': 'LibreOffice Writer'})
+    assert 'أي اسم تقصد' in run_desktop_task(None, desktop, instruction, lambda _: None)
+    assert launched == ['found']

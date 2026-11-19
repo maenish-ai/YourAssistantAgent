@@ -214,6 +214,7 @@ class SettingsView(ttk.Frame):
         self._qr_panel=ttk.Frame(b);self._qr_panel.grid(row=2,column=0,columnspan=2,sticky='ew')
         ttk.Label(self._qr_panel,text=self.t("اضغط تشغيل وعرض QR لإنشاء اتصال هذا الكمبيوتر.","Tap Start hosting and show QR to set up this computer."),wraplength=500).pack(anchor='w')
         ttk.Button(b,text=self.t("تشغيل وعرض QR","Start hosting and show QR"),style="Accent.TButton",command=self._save_home_pairing).grid(row=3,column=0,sticky='w',pady=8)
+        ttk.Button(b,text=self.t("تحديث رمز QR","Refresh QR"),command=self._show_pairing_qr_when_ready).grid(row=3,column=1,sticky='e',pady=8)
         ttk.Button(b,text=self.t("تفعيل التحكم الكامل وعرض QR","Enable full desktop access and show QR"),style="Accent.TButton",command=self._full_access_pairing).grid(row=4,column=0,columnspan=2,sticky='w',pady=6)
         ttk.Label(b,text=self.t("يشمل الشاشة والنقر والكتابة وكل الأقراص ومساعد الكمبيوتر. لا يشمل تجاوز قفل Windows أو UAC.","Includes screen, input, all local drives and computer AI. Does not bypass Windows lock or UAC."),wraplength=500,style='Muted.TLabel').grid(row=5,column=0,columnspan=2,sticky='w')
         permissions=self._section(self.t("١  •  شغّل الاستضافة واختر الصلاحيات","1  •  Start hosting and choose permissions"))
@@ -355,6 +356,12 @@ class SettingsView(ttk.Frame):
             if show_qr:self._show_pairing_qr()
         except (ValueError,OSError,SecurityError) as exc:self.status.configure(text=str(exc))
 
+    def _show_pairing_qr_when_ready(self):
+        if self._show_pairing_qr():
+            self.status.configure(text=self.t(
+                'تم تحديث الرمز بعنوان الكمبيوتر الحالي. امسح الرمز من الهاتف.',
+                'QR refreshed with the current computer address. Scan it on your phone.'))
+
     def _show_pairing_qr(self):
         from ..remote.settings import pairing_payload,load_remote_token
         try:
@@ -382,7 +389,12 @@ class SettingsView(ttk.Frame):
             self._canvas.yview_moveto(0)
             return True
 
-        except Exception as exc:self.status.configure(text=str(exc) if isinstance(exc,(ValueError,SecurityError)) else self.t('تعذر عرض رمز الاقتران.','Could not show pairing QR.'))
+        except Exception as exc:
+            panel = getattr(self, '_qr_panel', None)
+            if panel is not None and panel.winfo_exists():
+                for child in panel.winfo_children():
+                    child.destroy()
+            self.status.configure(text=str(exc) if isinstance(exc,(ValueError,SecurityError)) else self.t('تعذر عرض رمز الاقتران.','Could not show pairing QR.'))
 
     def _page_desktop(self):
         b=self._section(self.t("التحكم بالكمبيوتر من الهاتف", "Control this computer from the phone"), self.t(

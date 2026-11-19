@@ -76,6 +76,35 @@ public class HomeProfileTest {
             assertEquals(handled,server.handled.get());
         }
     }
+    @Test public void reconnectUsesAnotherPinnedAddressAfterTemporaryFailure() throws Exception {
+        try (LocalServer lan = new LocalServer(false); LocalServer alternate = new LocalServer(false)) {
+            ApiClient client = new ApiClient(new HomeProfile(code(lan.url(), alternate.url())).encode(), TOKEN);
+            try {
+                client.events(0);
+                assertEquals(1, lan.handled.get());
+                lan.getStatus = 503;
+                client.events(0);
+                assertEquals(1, alternate.handled.get());
+
+                alternate.getStatus = 503;
+                lan.getStatus = 200;
+                client.events(0);
+                assertEquals(3, lan.handled.get());
+
+                lan.getStatus = 401;
+                try {
+                    client.events(0);
+                    fail("Authentication failure should be shown to the user");
+                } catch (ApiClient.ApiException expected) {
+                    assertEquals(401, expected.status);
+                }
+                assertEquals(2, alternate.handled.get());
+                assertEquals(0, lan.posts.get() + alternate.posts.get());
+            } finally {
+                client.close();
+            }
+        }
+    }
     @Test public void uncertainPostIsNeverReplayedAtAnotherAddress()throws Exception{
         try(LocalServer server=new LocalServer(true)){
             ApiClient client=new ApiClient(new HomeProfile(code(server.url(),"https://127.0.0.1:1")).encode(),TOKEN);
@@ -118,6 +147,7 @@ public class HomeProfileTest {
         final SSLServerSocket socket;final Thread thread;volatile boolean stopped;
         final AtomicInteger posts=new AtomicInteger(),handled=new AtomicInteger();
         volatile String lastPostBody,lastPostRequest;
+        volatile int getStatus = 200;
         LocalServer(boolean dropPost)throws Exception{
             KeyManagerFactory managers=KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());managers.init(keys(),"test-only".toCharArray());
             SSLContext context=SSLContext.getInstance("TLS");context.init(managers.getKeyManagers(),null,null);
@@ -138,7 +168,8 @@ public class HomeProfileTest {
                     if(post){lastPostRequest=request;lastPostBody=body.toString();posts.incrementAndGet();if(dropPost)continue;}
                     String json=post?"{\"job_id\":\"accepted\"}":request.contains("/events?")?"{\"events\":[],\"cursor\":0}":"{\"desktop\":false}";
                     byte[] bytes=json.getBytes(StandardCharsets.UTF_8);OutputStream output=peer.getOutputStream();
-                    output.write(("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "+bytes.length+"\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));output.write(bytes);output.flush();
+                    int status = post ? 200 : getStatus;
+                    output.write(("HTTP/1.1 " + status + " Test\r\nContent-Type: application/json\r\nContent-Length: "+bytes.length+"\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));output.write(bytes);output.flush();
                 }catch(Exception ignored){}
             },"home-https-test");thread.setDaemon(true);thread.start();
         }

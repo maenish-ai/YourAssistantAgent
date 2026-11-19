@@ -73,6 +73,10 @@ final class ApiClient {
 
     JSONObject events(long after) throws ApiException {
         JSONObject response = request("GET", "/v1/events?after=" + Math.max(0, after), null, null, null);
+        return requireEvents(response);
+    }
+
+    private static JSONObject requireEvents(JSONObject response) throws ApiException {
         if (response.optJSONArray("events") == null || response.optLong("cursor", -1) < 0) {
             throw new ApiException("رابط HTTPS لا يشير إلى خدمة المساعد الصحيحة.");
         }
@@ -174,8 +178,14 @@ final class ApiClient {
         if(selectedOrigin!=null)candidates.add(selectedOrigin);
         for(String url:home.urls)if(!candidates.contains(url))candidates.add(url);
         for(String url:candidates){
-            try{JSONObject result=requestAt(url,"GET",path,null,null,null,"application/json");selectedOrigin=url;return result;}
-            catch(ApiException e){if(e.status>=0||closed)throw e;}
+            try {
+                JSONObject result = requestAt(url, "GET", path, null, null, null, "application/json");
+                if (path.startsWith("/v1/events?")) requireEvents(result);
+                selectedOrigin = url;
+                return result;
+            } catch (ApiException e) {
+                if (closed || (e.status >= 0 && e.status != 502 && e.status != 503 && e.status != 504)) throw e;
+            }
         }
         selectedOrigin=null;
         throw new ApiException("تعذر الوصول المباشر للكمبيوتر. داخل البيت افحص Wi-Fi والجدار الناري؛ من الخارج افحص عنوان الراوتر وتوجيه المنفذ. تحقق أيضاً من وقت الجهازين وهوية QR.");

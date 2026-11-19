@@ -145,3 +145,31 @@ def test_pairing_page_reopens_saved_relay_and_allows_switching_to_home(home_view
     assert "remote_home_port" in view.vars
     view._show_relay_settings()
     assert view.vars["remote_relay_url"].get() == "https://relay.example.test"
+
+
+def test_refresh_qr_uses_new_lan_address_without_restarting_host(home_view, monkeypatch):
+    from yaa_lite.remote import home
+    from yaa_lite.ui import pairing_qr
+
+    view, _, calls = home_view
+    addresses = iter(['192.168.1.10', '192.168.1.25'])
+    monkeypatch.setattr(home, 'local_address', lambda: next(addresses))
+    captured = []
+    render_qr = pairing_qr.pairing_qr_image
+
+    def record_payload(payload):
+        captured.append(json.loads(payload))
+        return render_qr(payload)
+
+    monkeypatch.setattr(pairing_qr, 'pairing_qr_image', record_payload)
+    view.save()
+    view._show_pairing_qr_when_ready()
+    assert len(calls) == 1
+    assert [code['urls'] for code in captured] == [
+        ['https://192.168.1.10:8443'], ['https://192.168.1.25:8443'],
+    ]
+    assert captured[0]['cert_sha256'] == captured[1]['cert_sha256']
+    assert captured[0]['token'] == captured[1]['token']
+    view.remote_ready = lambda: False
+    view._show_pairing_qr_when_ready()
+    assert not view._qr_panel.winfo_children()

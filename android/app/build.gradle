@@ -19,7 +19,11 @@ android {
     testOptions {
         unitTests.includeAndroidResources = true
         // Robolectric's test-only TLS provider reflects on JDK 17 InetAddress.
-        unitTests.all { jvmArgs '--add-opens=java.base/java.net=ALL-UNNAMED' }
+        unitTests.all {
+            jvmArgs '--add-opens=java.base/java.net=ALL-UNNAMED'
+            // Robolectric resolves its instrumented SDKs outside Gradle repositories.
+            systemProperty 'robolectric.dependency.repo.url', 'https://repo.maven.apache.org/maven2'
+        }
     }
     signingConfigs {
         release {

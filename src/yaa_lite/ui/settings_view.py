@@ -285,17 +285,12 @@ class SettingsView(ttk.Frame):
         ttk.Button(b,text=self.t("عرض QR وإقران الهاتف","Show pairing QR"),style="Accent.TButton",command=self._show_pairing_qr).grid(row=3,column=0,sticky='w',pady=8)
         ttk.Button(b,text=self.t("تحديث الحالة","Refresh status"),command=self._refresh_remote_status).grid(row=3,column=1,sticky='e')
         setup=self._section(self.t("١  •  إعداد الاتصال مرة واحدة","1  •  One-time connection setup"),self.t(
-            "للوصول من خارج البيت يلزم خادم HTTPS منشور. لا يتوفر خادم عام تلقائياً مع تثبيت البرنامج. استورد ملف الإعداد الذي ينتج عن نشر خادمك.",
-            "Access away from home requires a hosted HTTPS relay. Installing this app does not provision a public server. Import the setup file from your deployment."))
-        ttk.Button(setup,text=self.t("استيراد ملف إعداد الخادم","Import server setup file"),style="Accent.TButton",command=self._import_relay_setup).grid(row=1,column=0,columnspan=2,sticky='w',pady=8)
-        manual=ttk.Frame(setup)
-        def toggle():
-            if manual.winfo_manager():manual.grid_remove()
-            else:manual.grid(row=3,column=0,columnspan=2,sticky='ew')
-        ttk.Button(setup,text=self.t("إعداد الخادم يدوياً — متقدم","Manual server setup — advanced"),command=toggle).grid(row=2,column=0,columnspan=2,sticky='w')
-        manual.columnconfigure(1,weight=1)
-        self._row_entry(manual,1,self.t("عنوان HTTPS للخادم","Relay HTTPS address"),'remote_relay_url',self.settings.remote_relay_url,width=32)
-        self._row_entry(manual,2,self.t("مفتاح تسجيل الخادم","Server enrollment key"),'relay_enrollment_input','',show='•',width=32)
+            "عنوان خادمك الشخصي جاهز. أدخل مفتاح التسجيل من Render مرة واحدة؛ إذا حفظته سابقاً لهذا العنوان، اترك خانة المفتاح فارغة.",
+            "Your personal relay address is ready. Enter the Render enrollment key once. If you already saved it for this address, leave the key field blank."))
+        relay_address = self.settings.remote_relay_url or "https://yourassistantagent.onrender.com"
+        self._row_entry(setup,1,self.t("عنوان HTTPS للخادم","Relay HTTPS address"),'remote_relay_url',relay_address,width=32)
+        self._row_entry(setup,2,self.t("مفتاح تسجيل الخادم","Server enrollment key"),'relay_enrollment_input','',show='•',width=32)
+        ttk.Button(setup,text=self.t("استيراد ملف إعداد الخادم","Import server setup file"),command=self._import_relay_setup).grid(row=3,column=0,columnspan=2,sticky='w',pady=8)
         permissions=self._section(self.t("٢  •  صلاحيات هاتفك","2  •  Phone permissions"),self.t(
             "الرمز يسمح لهاتفك باستخدام الصلاحيات المحددة هنا. تغيير مفتاح الاقتران يلغي وصول الهواتف القديمة.",
             "The QR grants your phone the permissions selected here. Rotating the pairing key revokes previously paired phones."))
@@ -343,7 +338,10 @@ class SettingsView(ttk.Frame):
             updated=replace(self.settings)
             updated.remote_relay_url=origin(self._value('remote_relay_url',self.settings.remote_relay_url))
             enrollment=str(self._value('relay_enrollment_input','')).strip()
-            if not enrollment and not load_relay_enrollment(self.security):raise ValueError(self.t('أدخل مفتاح تسجيل الخادم أولاً.','Enter the relay enrollment key first.'))
+            saved_address = self.settings.remote_relay_url
+            if not enrollment and ((saved_address and updated.remote_relay_url != origin(saved_address))
+                                   or not load_relay_enrollment(self.security)):
+                raise ValueError(self.t('أدخل مفتاح التسجيل الخاص بعنوان هذا الخادم.','Enter the enrollment key for this relay address.'))
             for name in ('remote_desktop_enabled','remote_ai_enabled','remote_files_all_drives','remote_keep_awake'):
                 if name in self.vars:setattr(updated,name,bool(self._value(name,getattr(updated,name))))
             if updated.remote_ai_enabled and not updated.remote_desktop_enabled:raise ValueError(self.t('فعّل الشاشة والملفات لاستخدام مساعد الكمبيوتر.','Enable screen and files to use computer AI.'))

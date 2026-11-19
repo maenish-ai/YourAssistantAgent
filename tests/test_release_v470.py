@@ -114,3 +114,38 @@ def test_hosted_setup_file_is_private_and_never_silently_overwritten(tmp_path):
     module.create('https://relay.example.test','X'*48,destination)
     with pytest.raises(FileExistsError):module.create('https://other.example.test','Y'*48,destination)
     assert 'other.example' not in destination.read_text()
+
+
+
+def test_personal_relay_prefill_keeps_saved_address_and_credentials(pairing_view, tmp_path, monkeypatch):
+    import json
+    from dataclasses import asdict
+    from yaa_lite import config
+    from yaa_lite.remote.settings import load_relay_enrollment, load_remote_token
+
+    view, security, calls, _ = pairing_view
+    assert view.vars['remote_relay_url'].get() == 'https://yourassistantagent.onrender.com'
+    view.save()
+    assert not calls and not load_remote_token(security)
+
+    address = 'https://existing-relay.example.test'
+    view.vars['remote_relay_url'].set(address)
+    view.vars['relay_enrollment_input'].set('E' * 48)
+    view.save()
+    token = load_remote_token(security)
+
+    monkeypatch.setattr(config, 'config_dir', lambda: tmp_path)
+    (tmp_path / 'settings.json').write_text(json.dumps(asdict(calls[-1])), encoding='utf-8')
+    view.settings = config.Settings.load()
+    view._show_relay_settings()
+    assert view.vars['remote_relay_url'].get() == address
+    assert not view.vars['relay_enrollment_input'].get()
+    view.save()
+    assert calls[-1].remote_relay_url == address
+    assert load_relay_enrollment(security) == 'E' * 48
+    assert token and load_remote_token(security) == token
+
+    view.vars['remote_relay_url'].set('https://another-relay.example.test')
+    view.save()
+    assert len(calls) == 2
+    assert 'enrollment key for this relay address' in view.status.cget('text')

@@ -53,7 +53,9 @@ public class AppScreensTest {
     @Test public void desktopLaunchesAndKeyboardCanBeExpandedWithoutAConnection(){
         try(ActivityController<DesktopActivity> controller=Robolectric.buildActivity(DesktopActivity.class).setup()){
             DesktopActivity activity=controller.get();assertNotNull(text(activity,"سطح المكتب"));
-            assertTrue(text(activity,"لوحة المفاتيح").performClick());assertNotNull(text(activity,"Enter"));
+            assertTrue(text(activity,"اكتب على الكمبيوتر").performClick());
+            assertTrue(text(activity,"إدخال النص").isShown());
+            assertTrue(text(activity,"إرسال Enter").isShown());
         }
     }
     @Test public void filesLaunchesWithTransferAndCancelControls(){

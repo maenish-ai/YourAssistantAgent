@@ -274,6 +274,7 @@ class SettingsView(ttk.Frame):
 
     def _page_relay_pairing(self):
         self._pairing_page_mode="relay"
+        self._relay_qr_pending = False
         ttk.Button(self.content,text=self.t("العودة للاستضافة على هذا الكمبيوتر","Back to hosting on this computer"),command=self._show_home_pairing).pack(anchor="w",pady=8)
         b=self._section(self.t("هاتفك. كمبيوترك. اتصال واحد.","Your phone. Your computer. Connected."),self.t(
             "الشاشة والملفات والمساعد في تطبيق واحد. جهّز الربط مرة واحدة، ثم امسح الرمز بهاتفك.",
@@ -281,9 +282,9 @@ class SettingsView(ttk.Frame):
         self._remote_status_label=ttk.Label(b,text='',style="CardTitle.TLabel",wraplength=510)
         self._remote_status_label.grid(row=1,column=0,columnspan=2,sticky='w',pady=8)
         self._qr_panel=ttk.Frame(b);self._qr_panel.grid(row=2,column=0,columnspan=2,sticky='ew',pady=8)
-        ttk.Label(self._qr_panel,text=self.t("QR يظهر هنا بعد استيراد إعداد الخادم.","Your QR appears here after importing server setup."),style="Muted.TLabel",wraplength=500).pack(anchor='w')
+        ttk.Label(self._qr_panel,text=self.t("احفظ إعدادات الربط أدناه ليظهر الرمز هنا.","Save the connection settings below to show the QR here."),style="Muted.TLabel",wraplength=500).pack(anchor='w')
         ttk.Button(b,text=self.t("عرض QR وإقران الهاتف","Show pairing QR"),style="Accent.TButton",command=self._show_pairing_qr).grid(row=3,column=0,sticky='w',pady=8)
-        ttk.Button(b,text=self.t("تحديث الحالة","Refresh status"),command=self._refresh_remote_status).grid(row=3,column=1,sticky='e')
+        ttk.Button(b,text=self.t("تحديث الحالة","Refresh status"),command=self._check_relay_status).grid(row=3,column=1,sticky='e')
         setup=self._section(self.t("١  •  إعداد الاتصال مرة واحدة","1  •  One-time connection setup"),self.t(
             "عنوان خادمك الشخصي جاهز. أدخل مفتاح التسجيل من Render مرة واحدة؛ إذا حفظته سابقاً لهذا العنوان، اترك خانة المفتاح فارغة.",
             "Your personal relay address is ready. Enter the Render enrollment key once. If you already saved it for this address, leave the key field blank."))
@@ -310,10 +311,32 @@ class SettingsView(ttk.Frame):
     def _poll_pairing_status(self):
         self._status_after=None
         if self.current=='pairing' and self.winfo_exists():
-            self._refresh_remote_status();self._status_after=self.after(2500,self._poll_pairing_status)
+            self._refresh_remote_status()
+            if (getattr(self, '_pairing_page_mode', '') == 'relay'
+                    and self._relay_qr_pending and self.remote_ready and self.remote_ready()):
+                self._show_pairing_qr()
+            self._status_after=self.after(2500,self._poll_pairing_status)
+
+    def _check_relay_status(self):
+        self._refresh_remote_status()
+        if self.remote_ready and self.remote_ready() and self.settings.remote_connection_mode == 'relay':
+            self._show_pairing_qr()
+        else:
+            self._pairing_feedback(self._remote_status_label.cget('text'))
+
+    def _pairing_feedback(self, message):
+        self.status.configure(text=message)
+        panel = getattr(self, '_qr_panel', None)
+        if panel is not None and panel.winfo_exists():
+            for child in panel.winfo_children():
+                child.destroy()
+            ttk.Label(panel, text=message, wraplength=480).pack(anchor='w')
+            self._canvas.yview_moveto(0)
 
     def _disable_phone(self):
         updated=replace(self.settings);updated.remote_enabled=False;updated.save();self.settings=updated;self.on_save(updated);self._refresh_remote_status()
+        self._relay_qr_pending = False
+        self._pairing_feedback(self.t('ربط الهاتف متوقف.', 'Phone access is disabled.'))
 
     def _import_relay_setup(self):
         import json
@@ -352,7 +375,7 @@ class SettingsView(ttk.Frame):
             if 'relay_enrollment_input' in self.vars:self.vars['relay_enrollment_input'].set('')
             self.status.configure(text=self.t('تم الحفظ؛ جارٍ الاتصال بالخادم.','Saved; connecting to relay.'));self._refresh_remote_status()
             if show_qr:self._show_pairing_qr()
-        except (ValueError,OSError,SecurityError) as exc:self.status.configure(text=str(exc))
+        except (ValueError,OSError,SecurityError) as exc:self._pairing_feedback(str(exc))
 
     def _show_pairing_qr_when_ready(self):
         if self._show_pairing_qr():
@@ -362,6 +385,7 @@ class SettingsView(ttk.Frame):
 
     def _show_pairing_qr(self):
         from ..remote.settings import pairing_payload,load_remote_token
+        self._relay_qr_pending = False
         try:
             if not self.security or not self.security.unlocked:raise ValueError(self.t('افتح قفل البرنامج أولاً.','Unlock the app first.'))
             if getattr(self,'_pairing_page_mode','')=='home':
@@ -370,8 +394,14 @@ class SettingsView(ttk.Frame):
                 from ..remote.home import pairing_payload as home_payload
                 payload=home_payload(self.security,load_remote_token(self.security),self.settings.remote_home_port,self.settings.remote_home_public_url,self.settings.remote_home_lan_url)
             else:
-                if self.settings.remote_connection_mode!='relay' or not self.settings.remote_relay_url:raise ValueError(self.t('الخادم غير مجهّز بعد. استورد ملف إعداد الخادم في الخطوة ١؛ بعدها سيظهر الرمز هنا.','Relay is not configured yet. Import the server setup in step 1, then your QR will appear here.'))
+                if self.settings.remote_connection_mode!='relay' or not self.settings.remote_relay_url:raise ValueError(self.t('الخادم غير مجهّز بعد. أدخل مفتاح التسجيل أدناه واضغط حفظ وتفعيل الربط.','Relay is not configured yet. Enter the key below and save to enable pairing.'))
                 if not self.settings.remote_enabled:raise ValueError(self.t('فعّل ربط الهاتف أولاً لعرض QR.','Enable phone access first to display the QR.'))
+                if self.remote_ready and not self.remote_ready():
+                    self._relay_qr_pending = True
+                    self._pairing_feedback(self.t(
+                        'سيظهر رمز QR تلقائيًا بعد اتصال الكمبيوتر بالخادم. تابع حالة الاتصال أعلاه.',
+                        'The QR will appear when the computer connects. Check the connection status above.'))
+                    return False
                 payload=pairing_payload(self.settings.remote_relay_url,load_remote_token(self.security))
             from PIL import ImageTk
             # Keep integer module sizes so scanners see sharp edges at any DPI.
@@ -388,11 +418,7 @@ class SettingsView(ttk.Frame):
             return True
 
         except Exception as exc:
-            panel = getattr(self, '_qr_panel', None)
-            if panel is not None and panel.winfo_exists():
-                for child in panel.winfo_children():
-                    child.destroy()
-            self.status.configure(text=str(exc) if isinstance(exc,(ValueError,SecurityError)) else self.t('تعذر عرض رمز الاقتران.','Could not show pairing QR.'))
+            self._pairing_feedback(str(exc) if isinstance(exc,(ValueError,SecurityError)) else self.t('تعذر عرض رمز الاقتران.','Could not show pairing QR.'))
 
     def _page_desktop(self):
         b=self._section(self.t("التحكم بالكمبيوتر من الهاتف", "Control this computer from the phone"), self.t(
@@ -419,7 +445,7 @@ class SettingsView(ttk.Frame):
                 if self.settings.remote_connection_mode!='home' or not self.settings.remote_enabled:
                     text=self.t('الاستضافة المحلية متوقفة — اضغط تشغيل الاستضافة أدناه','Home hosting is stopped — start hosting below')
             elif self.current=='pairing' and not self.settings.remote_relay_url:
-                text=self.t('١ / ٣  •  الخادم غير مجهّز — ابدأ باستيراد ملف الإعداد','1 / 3  •  Relay not configured — import server setup first')
+                text=self.t('١ / ٣  •  الخادم غير مجهّز — أدخل مفتاح التسجيل أدناه','1 / 3  •  Relay not configured — enter the enrollment key below')
             label.configure(text=text)
 
     def _choose_github_checkout(self):

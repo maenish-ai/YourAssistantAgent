@@ -172,4 +172,4 @@ def test_refresh_qr_uses_new_lan_address_without_restarting_host(home_view, monk
     assert captured[0]['token'] == captured[1]['token']
     view.remote_ready = lambda: False
     view._show_pairing_qr_when_ready()
-    assert not view._qr_panel.winfo_children()
+    assert not any(child.cget('image') for child in view._qr_panel.winfo_children())

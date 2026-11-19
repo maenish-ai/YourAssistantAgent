@@ -149,3 +149,26 @@ def test_personal_relay_prefill_keeps_saved_address_and_credentials(pairing_view
     view.save()
     assert len(calls) == 2
     assert 'enrollment key for this relay address' in view.status.cget('text')
+
+
+
+def test_relay_waits_for_registration_and_shows_feedback_next_to_qr(pairing_view):
+    view, _, calls, root = pairing_view
+    ready = False
+    view.remote_ready = lambda: ready
+
+    view._show_pairing_qr()
+    assert 'not configured' in view._qr_panel.winfo_children()[0].cget('text')
+    view._check_relay_status()
+    assert 'enter the enrollment key' in view._qr_panel.winfo_children()[0].cget('text')
+
+    view.vars['relay_enrollment_input'].set('E' * 48)
+    view.save()
+    assert len(calls) == 1
+    assert 'will appear when the computer connects' in view._qr_panel.winfo_children()[0].cget('text')
+    ready = True
+    view.after_cancel(view._status_after)
+    view._poll_pairing_status()
+    root.update()
+    assert any(child.cget('image') for child in view._qr_panel.winfo_children())
+    assert len(calls) == 1

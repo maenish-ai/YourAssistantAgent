@@ -616,7 +616,8 @@ class App(tk.Tk):
     def remote_connection_ready(self):
         worker=getattr(self,"remote_worker",None)
         server=getattr(worker,"server",worker)
-        return bool(server and server._accepting.is_set())
+        bridge = getattr(worker, "bridge", None)
+        return bool(server and server._accepting.is_set() and (bridge is None or bridge.connected))
 
     def remote_status_text(self):
         worker = getattr(self, "remote_worker", None)
